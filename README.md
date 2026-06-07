@@ -36,14 +36,14 @@ type Asset struct {
 }
 ```
 
-This interface should support a `.DNG` from a Pixii, an `.ARW` from a Sony camera, or a raw `.txt` file using the same pipeline contract.
+This interface should support image raws (for example, `.DNG` and `.ARW`), plain-text documents (for example, `.txt` or `.md`), and structured payloads (for example, `.json`) using the same pipeline contract.
 
 - **Reference Implementation Migration:** Refactor `flickr-organizer` to consume these extracted packages as a proof point, without coupling core APIs to Flickr-specific concepts.
 
 ### Phase 2: Structured Data & Schema Enforcement (Months 3-4)
 
 - **Struct Mapping:** Implement utilities using JSON Schema validation or provider-specific structured output features to unmarshal LLM responses directly into Go structs.
-- **Domain Applications:** Document structured data extraction use cases, such as parsing unstructured clinical notes into FHIR `VerificationResult` resources or normalizing inconsistent logs into a standard schema.
+- **Domain Applications:** Document structured data extraction use cases, such as parsing unstructured clinical notes into FHIR resources or normalizing inconsistent logs into a standard schema.
 - **Fallback & Retry Logic:** Add automatic retries that feed validation errors back to the LLM (for example, field-level schema failures and JSON formatting corrections).
 - **Product Packaging:** Publish clear package boundaries (`pkg/llmvcr`, `pkg/analyzer`, structured extraction helpers) to support adoption by independent applications.
 
