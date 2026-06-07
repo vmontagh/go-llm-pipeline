@@ -43,7 +43,7 @@ This interface should support a `.DNG` from a Pixii, an `.ARW` from a Sony camer
 ### Phase 2: Structured Data & Schema Enforcement (Months 3-4)
 
 - **Struct Mapping:** Implement utilities using JSON Schema validation or provider-specific structured output features to unmarshal LLM responses directly into Go structs.
-- **Domain Applications:** Document rigid data extraction use cases, such as parsing unstructured clinical notes into FHIR `VerificationResult` resources or normalizing inconsistent logs into a standard schema.
+- **Domain Applications:** Document structured data extraction use cases, such as parsing unstructured clinical notes into FHIR `VerificationResult` resources or normalizing inconsistent logs into a standard schema.
 - **Fallback & Retry Logic:** Add automatic retries that feed validation errors back to the LLM (for example, field-level schema failures and JSON formatting corrections).
 - **Product Packaging:** Publish clear package boundaries (`pkg/llmvcr`, `pkg/analyzer`, structured extraction helpers) to support adoption by independent applications.
 
