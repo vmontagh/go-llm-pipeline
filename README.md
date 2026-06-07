@@ -25,15 +25,16 @@ This project extends the `flickr-organizer` approach into a reusable, domain-agn
   - Implement automatic redaction for common sensitive headers (for example, `Authorization` and API keys) before writing YAML/JSON cassettes.
 - **Define the Generic Asset Interface:**
   - Replace the Flickr-specific `Photo` type in the analyzer with a domain-agnostic `Asset` struct.
-  - Process a `.DNG` from a PIXII, an `.ARW` from a Sony camera, or a raw `.txt` file through the same interface.
-
+  
 ```go
 type Asset struct {
-    ID       string
-    Payload  io.Reader
-    Metadata map[string]any
+    ID       string         // Stable unique identifier (for example, URI, filename, or external ID).
+    Payload  io.Reader      // Raw asset bytes consumed by the pipeline.
+    Metadata map[string]any // Provider-specific attributes that should not be part of raw payload bytes.
 }
 ```
+
+This interface should support a `.DNG` from a Pixii, an `.ARW` from a Sony camera, or a raw `.txt` file using the same pipeline contract.
 
 - **Update the Reference App:** Refactor `flickr-organizer` to import these extracted packages and validate real-world batch-processing utility.
 
@@ -45,7 +46,7 @@ type Asset struct {
 
 ### Phase 3: Operator Ergonomics & Local Execution (Months 5-6)
 
-- **Diagnostic Subcommand (`flickr-organizer doctor`):**
+- **Diagnostic Subcommand (`<app> doctor`):**
   - Check local environment readiness before batch jobs.
   - Verify OS file descriptors.
   - Test network latency to hosted APIs.
