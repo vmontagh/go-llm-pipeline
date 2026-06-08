@@ -35,7 +35,7 @@ Eino is an excellent fit for autonomous conversational systems (complex state gr
 
 [Comet Opik](https://github.com/comet-ml/opik) is an open-source LLM evaluation and observability platform: tracing, experiment tracking, dataset management, online/offline evaluators, prompt management, and dashboards for monitoring production LLM applications. `go-llm-pipeline` solves a different (and largely complementary) problem: it is a Go runtime toolkit for executing deterministic, typed, batch LLM workflows.
 
-**Similarities**
+#### Similarities
 
 - Both target teams that need to take LLM workloads seriously in production rather than as ad-hoc scripts.
 - Both emphasize reproducibility and the ability to iterate confidently on prompts, models, and pipelines.
@@ -43,7 +43,7 @@ Eino is an excellent fit for autonomous conversational systems (complex state gr
 - Both treat provider portability (OpenAI, Gemini, local models, etc.) as a first-class concern.
 - Both acknowledge cost and reliability as primary engineering constraints, not afterthoughts.
 
-**Key differences**
+#### Key differences
 
 - **Category:** Opik is an *observability and evaluation control plane* (UI, backend, SDKs in Python/TypeScript/Java/Ruby). `go-llm-pipeline` is an *execution substrate* — a Go library for orchestrating batch pipelines.
 - **Primary workflow:** Opik instruments arbitrary LLM apps to collect traces, score outputs, and compare experiments. `go-llm-pipeline` runs the pipeline itself: worker pools, typed extraction, retries, and local/remote concurrency tuning.
@@ -53,7 +53,7 @@ Eino is an excellent fit for autonomous conversational systems (complex state gr
 - **Footprint:** `go-llm-pipeline` is a dependency-light Go library with no server component. Opik ships a full platform (backend services, frontend, storage) intended to be run as infrastructure.
 - **UX surface:** Opik's primary surface is a web UI plus SDK instrumentation. `go-llm-pipeline`'s primary surface is Go package APIs consumed by application code and CI.
 
-**How they fit together**
+#### How they fit together
 
 The two projects are largely complementary rather than competitive:
 
@@ -62,7 +62,7 @@ The two projects are largely complementary rather than competitive:
 
 A team building ETL-style LLM enrichment in Go could reasonably adopt `go-llm-pipeline` for the runtime and pipe traces or evaluation results into Opik for quality governance.
 
-**When to choose which**
+#### When to choose which
 
 - Choose **Opik** if your priority is visibility into existing LLM applications, structured evaluation workflows, experiment comparison, or production monitoring across heterogeneous stacks.
 - Choose **`go-llm-pipeline`** if your priority is a typed, dependency-light Go runtime for batch extraction with deterministic, zero-cost CI.
