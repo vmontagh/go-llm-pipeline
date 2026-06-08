@@ -19,6 +19,18 @@ An idiomatic, dependency-free Go toolkit for local-first, deterministic LLM orch
 - **Local-First:** Route natively to local inference engines (Ollama) with configurable concurrency caps.
 - **Use-Case Agnostic:** Support pipelines across media, document, and operational data workflows; not tied to a single vertical application.
 
+### Positioning vs. Eino
+
+Eino is an excellent fit for autonomous conversational systems (complex state graphs, ReAct loops, multi-agent delegation, and streaming chat UX). `go-llm-pipeline` is intentionally optimized for deterministic, production batch workflows.
+
+- **Deterministic testing as a first-class feature:** `pkg/llmvcr` records and replays provider HTTP interactions so CI remains fast, stable, and low-cost.
+- **Batch extraction over chat streaming:** The core workload is high-throughput, typed enrichment of large asset sets into strict Go structs.
+- **Developer-orchestrated execution over autonomous loops:** Pipeline flow is explicit and predictable (for example, ensemble generation and judge synthesis), reducing drift and runtime surprises.
+- **Resource-aware local concurrency:** Local compute-bound workers and remote API-bound workers are tuned independently for practical VRAM/CPU/network constraints.
+- **Reliability toolkit, not orchestration sprawl:** Parse/retry loops, rate-limit handling, provider portability, and deterministic behavior are prioritized over broad agent abstractions.
+
+**Strategic framing:** If you are building an open-ended AI assistant, Eino may be a better fit. If you are building ETL-style enrichment, legacy data migration, bulk tagging/classification, or strict structured extraction with CI-grade reproducibility, `go-llm-pipeline` is the better fit.
+
 ### Phase 1: The Testing Core and Abstraction (Next 1-2 Months)
 
 - **Productize the VCR Package (`pkg/llmvcr`):**
