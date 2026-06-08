@@ -31,6 +31,43 @@ Eino is an excellent fit for autonomous conversational systems (complex state gr
 
 **Strategic framing:** If you are building an open-ended AI assistant, Eino may be a better fit. If you are building ETL-style enrichment, legacy data migration, bulk tagging/classification, or strict structured extraction with CI-grade reproducibility, `go-llm-pipeline` is the better fit.
 
+### Positioning vs. Evaluation/Observability Platforms like Comet Opik
+
+[Comet Opik](https://github.com/comet-ml/opik) is an open-source LLM evaluation and observability platform: tracing, experiment tracking, dataset management, online/offline evaluators, prompt management, and dashboards for monitoring production LLM applications. `go-llm-pipeline` solves a different (and largely complementary) problem: it is a Go runtime toolkit for executing deterministic, typed, batch LLM workflows.
+
+#### Similarities
+
+- Both target teams that need to take LLM workloads seriously in production rather than as ad-hoc scripts.
+- Both emphasize reproducibility and the ability to iterate confidently on prompts, models, and pipelines.
+- Both are open-source, self-hostable, and avoid lock-in to a single hosted vendor.
+- Both treat provider portability (OpenAI, Gemini, local models, etc.) as a first-class concern.
+- Both acknowledge cost and reliability as primary engineering constraints, not afterthoughts.
+
+#### Key differences
+
+- **Category:** Opik is an *observability and evaluation control plane* (UI, backend, SDKs in Python/TypeScript/Java/Ruby). `go-llm-pipeline` is an *execution substrate* — a Go library for orchestrating batch pipelines.
+- **Primary workflow:** Opik instruments arbitrary LLM apps to collect traces, score outputs, and compare experiments. `go-llm-pipeline` runs the pipeline itself: worker pools, typed extraction, retries, and local/remote concurrency tuning.
+- **Determinism model:** `go-llm-pipeline` provides offline determinism via `pkg/llmvcr` cassette record/replay, so CI runs without contacting any provider. Opik provides reproducibility via stored traces, datasets, and versioned experiments against live or recorded calls.
+- **Type system:** `go-llm-pipeline` is built around strict Go structs and schema-enforced extraction with validation-driven retry loops. Opik is language-agnostic and treats outputs primarily as evaluable artifacts rather than typed runtime contracts.
+- **Local-first posture:** `go-llm-pipeline` is designed around local inference (Ollama) with separate concurrency caps for local compute-bound vs. remote API-bound work. Opik is deployment-flexible (self-hosted or Comet Cloud) but is not principally a local inference orchestrator.
+- **Footprint:** `go-llm-pipeline` is a dependency-light Go library with no server component. Opik ships a full platform (backend services, frontend, storage) intended to be run as infrastructure.
+- **UX surface:** Opik's primary surface is a web UI plus SDK instrumentation. `go-llm-pipeline`'s primary surface is Go package APIs consumed by application code and CI.
+
+#### How they fit together
+
+The two projects are largely complementary rather than competitive:
+
+- Use `go-llm-pipeline` to *execute* deterministic, typed, high-throughput Go pipelines with reproducible CI via cassette replay.
+- Use Opik (or a similar platform) to *observe and evaluate* those pipelines in staging and production — collecting traces, scoring outputs, comparing prompt/model variants, and monitoring drift over time.
+
+A team building ETL-style LLM enrichment in Go could reasonably adopt `go-llm-pipeline` for the runtime and pipe traces or evaluation results into Opik for quality governance.
+
+#### When to choose which
+
+- Choose **Opik** if your priority is visibility into existing LLM applications, structured evaluation workflows, experiment comparison, or production monitoring across heterogeneous stacks.
+- Choose **`go-llm-pipeline`** if your priority is a typed, dependency-light Go runtime for batch extraction with deterministic, zero-cost CI.
+- Choose **both** if you want a reliable Go execution substrate underneath an observability and evaluation control plane.
+
 ### Phase 1: The Testing Core and Abstraction (Next 1-2 Months)
 
 - **Productize the VCR Package (`pkg/llmvcr`):**
