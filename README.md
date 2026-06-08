@@ -19,7 +19,7 @@ An idiomatic, dependency-free Go toolkit for local-first, deterministic LLM orch
 - **Local-First:** Route natively to local inference engines (Ollama) with configurable concurrency caps.
 - **Use-Case Agnostic:** Support pipelines across media, document, and operational data workflows; not tied to a single vertical application.
 
-### Positioning vs. Eino
+### Positioning vs. Workflow Orchestrators like Eino
 
 Eino is an excellent fit for autonomous conversational systems (complex state graphs, ReAct loops, multi-agent delegation, and streaming chat UX). `go-llm-pipeline` is intentionally optimized for deterministic, production batch workflows.
 
