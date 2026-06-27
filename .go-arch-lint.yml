@@ -1,0 +1,134 @@
+version: 3
+allow:
+  depOnAnyVendor: true
+
+components:
+  logger:
+    in: pkg/logger/**
+  trace:
+    in: pkg/trace/**
+  httputil:
+    in: pkg/httputil/**
+  observ:
+    in: pkg/observ/**
+  analyzer:
+    in: pkg/analyzer
+  provider:
+    in: pkg/provider/**
+  gemini:
+    in: pkg/provider/gemini/**
+  openai:
+    in: pkg/provider/openai/**
+  ollama:
+    in: pkg/provider/ollama/**
+  strategy:
+    in: pkg/strategy/**
+  pipeline:
+    in: pkg/pipeline/**
+  policy:
+    in: pkg/policy/**
+  vcrpatch:
+    in: pkg/vcrpatch/**
+  llmtest:
+    in: pkg/llmtest/**
+
+deps:
+  logger:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn: []
+
+  trace:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn: []
+
+  httputil:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn: []
+
+  observ:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+
+  policy:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - provider
+
+  provider:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - trace
+      - httputil
+      - provider
+
+  gemini:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - trace
+      - httputil
+      - provider
+
+  openai:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - trace
+      - httputil
+      - provider
+
+  ollama:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - trace
+      - httputil
+      - provider
+
+  analyzer:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - trace
+      - httputil
+      - provider
+      - policy
+
+  strategy:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - trace
+      - policy
+      - strategy
+
+  pipeline:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - logger
+      - pipeline
+
+  vcrpatch:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vcrpatch
+
+  llmtest:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vcrpatch
