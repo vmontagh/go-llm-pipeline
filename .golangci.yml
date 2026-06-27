@@ -1,4 +1,3 @@
-version: 1
 run:
   issues-exit-code: 1
   tests: true
