@@ -358,3 +358,36 @@ func (h *capturingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 func (h *capturingHandler) WithGroup(name string) slog.Handler {
 	return h
 }
+
+func TestNewTemplate_Validation(t *testing.T) {
+	t.Parallel()
+	mockP := newMockProvider(&provider.CallResult{})
+
+	tests := []struct {
+		name    string
+		p       provider.Provider[string]
+		parser  func(string) (string, error)
+		wantErr error
+	}{
+		{
+			name:    "nil provider returns ErrNilProvider",
+			parser:  func(string) (string, error) { return "", nil },
+			wantErr: ErrNilProvider,
+		},
+		{
+			name:    "nil parser returns ErrNilParser",
+			p:       mockP,
+			wantErr: ErrNilParser,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewTemplate[string, string](tt.p, tt.parser)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("NewTemplate() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
