@@ -56,7 +56,7 @@ type transport struct {
 }
 
 // Name implements provpkg.Provider.
-func (t *transport) Name() string { return t.model }
+func (t *transport) Name() string { return "gemini/" + t.model }
 
 // Model implements provpkg.Provider.
 func (t *transport) Model() string { return t.model }

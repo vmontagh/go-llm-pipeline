@@ -1,7 +1,7 @@
 // Package policy holds the foundational, provider-agnostic retry/error
 // taxonomy shared by every layer that needs to make routing decisions
 // on a failure: the analyzer adapters, the orchestrator/tagger pipeline
-// and the CLI composition root. Pulling these types out of internal/analyzer
+// and the CLI composition root. Pulling these types out of pkg/analyzer
 // breaks the latent "tagger -> analyzer" coupling — the tagger's L2 queue
 // retry loop now talks to a vocabulary that does not name a specific LLM
 // provider.
@@ -17,9 +17,9 @@
 //     round-trip used by every retry tier.
 //
 // Provider sentinel errors (ErrQuotaExceeded, ErrRateLimitExceeded, ...)
-// remain in internal/analyzer/provider; analyzer-specific sentinels
+// remain in pkg/provider; analyzer-specific sentinels
 // (ErrParsing, ErrMalformedResponse, ErrRetryableResponse) stay in
-// internal/analyzer because they describe analyzer-internal parsing
+// pkg/analyzer because they describe analyzer-internal parsing
 // failures rather than a retry routing class.
 package policy
 
