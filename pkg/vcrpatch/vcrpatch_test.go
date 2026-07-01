@@ -290,6 +290,97 @@ func TestInjectBeforeAction(t *testing.T) {
 	}
 }
 
+func TestAndOrNilMatcher(t *testing.T) {
+	t.Parallel()
+	req := &InteractionReq{Method: "GET", URL: "http://example.com"}
+	tests := []struct {
+		name    string
+		matcher Matcher
+		want    bool
+	}{
+		{"And with nil element", And(MethodEquals("GET"), nil), false},
+		{"And with only nil", And(nil), false},
+		{"Or ignores nil, other matches", Or(nil, MethodEquals("GET")), true},
+		{"Or ignores nil, none match", Or(nil, MethodEquals("POST")), false},
+		{"Or with only nil", Or(nil), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := tt.matcher.Match(req); got != tt.want {
+				t.Errorf("%s: Match() = %t, want %t", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInjectBeforeNoTemplateMutation(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		headers          map[string][]string
+		transferEncoding []string
+	}{
+		{
+			name:             "headers and transfer-encoding",
+			headers:          map[string][]string{"Content-Length": {"5"}},
+			transferEncoding: []string{"chunked"},
+		},
+		{
+			name:    "headers only",
+			headers: map[string][]string{"Content-Length": {"5"}, "X-Test": {"a", "b"}},
+		},
+		{
+			name:             "transfer-encoding only",
+			transferEncoding: []string{"chunked"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			want := InteractionResp{
+				Code:             500,
+				Status:           "500 Internal Server Error",
+				Duration:         "0s",
+				Headers:          tt.headers,
+				TransferEncoding: tt.transferEncoding,
+			}
+			action := InjectBefore(Interaction{
+				Response: InteractionResp{
+					Code:             500,
+					Headers:          tt.headers,
+					TransferEncoding: tt.transferEncoding,
+				},
+			})
+			matched := &Interaction{Response: InteractionResp{Code: 200}}
+
+			first, err := action.Apply(matched, nil)
+			if err != nil {
+				t.Fatalf("Apply() error: %v", err)
+			}
+			// Simulate a downstream action (e.g. SyncContentLength) mutating
+			// headers and transfer-encoding in-place on the returned interaction.
+			injected := first[0].Response
+			if injected.Headers != nil {
+				injected.Headers["Content-Length"] = []string{"999"}
+				injected.Headers["Injected"] = []string{"yes"}
+			}
+			if len(injected.TransferEncoding) > 0 {
+				injected.TransferEncoding[0] = "identity"
+			}
+
+			second, err := action.Apply(matched, nil)
+			if err != nil {
+				t.Fatalf("Apply() error: %v", err)
+			}
+			got := second[0].Response
+			if diff := cmp.Diff(want, got); diff != "" {
+				t.Errorf("Apply() leaked mutation across calls (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestScrubBody(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
