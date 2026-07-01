@@ -9,11 +9,12 @@ import (
 )
 
 const (
-	roleModelModel = "model"
-	methodPost     = "POST"
-	protoHTTP11    = "HTTP/1.1"
-	contentKey     = "content"
-	roleKey        = "role"
+	roleModel   = "model"
+	modelKey    = "model"
+	methodPost  = "POST"
+	protoHTTP11 = "HTTP/1.1"
+	contentKey  = "content"
+	roleKey     = "role"
 )
 
 // ValidResultObj is a mock JSON string containing a valid tags response object.
@@ -41,7 +42,7 @@ func GeminiResponse(text string) string {
 					"parts": []interface{}{
 						map[string]interface{}{"text": text},
 					},
-					roleKey: roleModelModel,
+					roleKey: roleModel,
 				},
 			},
 		},
@@ -74,7 +75,7 @@ func OpenAIResponse(text string) string {
 		"id":      "chatcmpl-123",
 		"object":  "chat.completion",
 		"created": 1677652288,
-		roleModelModel:   "gpt-4o-mini",
+		modelKey:   "gpt-4o-mini",
 		"choices": []interface{}{
 			map[string]interface{}{
 				"index": 0,
@@ -111,7 +112,7 @@ func OllamaJudgeSuccess() string {
 // OllamaResponse wraps text in response field.
 func OllamaResponse(text string) string {
 	resp := map[string]interface{}{
-		roleModelModel:      "gemma3",
+		modelKey:      "gemma3",
 		"created_at": "2026-06-06T00:00:00Z",
 		"response":   text,
 		"done":       true,
