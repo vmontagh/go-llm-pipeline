@@ -31,6 +31,8 @@ components:
     in: pkg/vcrpatch/**
   llmtest:
     in: pkg/llmtest/**
+  scrub:
+    in: pkg/scrub/**
 
 deps:
   logger:
@@ -132,3 +134,8 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - vcrpatch
+
+  scrub:
+    anyProjectDeps: false
+    anyVendorDeps: false
+    mayDependOn: []

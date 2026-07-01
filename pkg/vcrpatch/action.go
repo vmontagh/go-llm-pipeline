@@ -169,3 +169,19 @@ func (c chainAction) Apply(matched *Interaction, all []Interaction) ([]Interacti
 func Chain(actions ...Action) Action {
 	return chainAction{actions: actions}
 }
+
+type scrubBodyAction struct {
+	fn func(string) string
+}
+
+func (a scrubBodyAction) Apply(matched *Interaction, _ []Interaction) ([]Interaction, error) {
+	matched.Response.Body = a.fn(matched.Response.Body)
+	return []Interaction{*matched}, nil
+}
+
+// ScrubBody returns an action that applies fn to the response body, replacing matched patterns.
+// It is intended for removing PII or secrets from recorded cassette bodies before committing
+// them to source control. fn must be safe to call on any string (including empty).
+func ScrubBody(fn func(string) string) Action {
+	return scrubBodyAction{fn: fn}
+}

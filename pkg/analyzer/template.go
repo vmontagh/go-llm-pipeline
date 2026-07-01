@@ -30,6 +30,7 @@ type Template[T any, R any] struct {
 	maxParseRetries int
 	backOff         backoff.BackOff
 	shortCooldown   time.Duration
+	scrubFn         func(string) string
 }
 
 type templateConfig struct {
@@ -40,6 +41,7 @@ type templateConfig struct {
 	maxParseRetries int
 	backOff         backoff.BackOff
 	shortCooldown   time.Duration
+	scrubFn         func(string) string
 }
 
 const defaultShortCooldownRetryThreshold = 5 * time.Second
@@ -80,6 +82,14 @@ func WithTemplateShortCooldownRetryThreshold(d time.Duration) TemplateConfigurat
 	return templateConfiguratorFunc(func(c *templateConfig) { c.shortCooldown = d })
 }
 
+// WithTemplateScrubFunc sets a function applied to prompt and response text before they are
+// emitted as debug log messages. Use it to redact PII or secrets (e.g. via pkg/scrub.Scrubber.Scrub)
+// while still retaining full detail for local debugging. The scrub function is never applied to
+// the values passed to the provider or parser.
+func WithTemplateScrubFunc(fn func(string) string) TemplateConfigurator {
+	return templateConfiguratorFunc(func(c *templateConfig) { c.scrubFn = fn })
+}
+
 func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, error), opts ...TemplateConfigurator) (*Template[T, R], error) {
 	if parser == nil {
 		return nil, ErrNilParser
@@ -89,6 +99,7 @@ func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, e
 		tracer:        trace.NewNoOpTracer(),
 		policy:        DefaultRetryPolicy(),
 		shortCooldown: defaultShortCooldownRetryThreshold,
+		scrubFn:       func(s string) string { return s },
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -105,6 +116,7 @@ func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, e
 		maxParseRetries: cfg.maxParseRetries,
 		backOff:         cfg.backOff,
 		shortCooldown:   cfg.shortCooldown,
+		scrubFn:         cfg.scrubFn,
 	}, nil
 }
 
@@ -175,11 +187,11 @@ func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams) (strin
 		return "", backoff.Permanent(err)
 	}
 
-	t.logger.Debugf("[%s] %s prompt sent (len=%d):\n\t%s", jobID, t.provider.Name(), len(prompt), strings.ReplaceAll(strings.TrimSpace(prompt), "\n", "\n\t"))
+	t.logger.Debugf("[%s] %s prompt sent (len=%d):\n\t%s", jobID, t.provider.Name(), len(prompt), strings.ReplaceAll(strings.TrimSpace(t.scrubFn(prompt)), "\n", "\n\t"))
 
 	result := t.provider.Call(ctx, lease, prompt, imageData)
 
-	t.logger.Debugf("[%s] %s response received (len=%d):\n\t%s", jobID, t.provider.Name(), len(result.Text), strings.ReplaceAll(strings.TrimSpace(result.Text), "\n", "\n\t"))
+	t.logger.Debugf("[%s] %s response received (len=%d):\n\t%s", jobID, t.provider.Name(), len(result.Text), strings.ReplaceAll(strings.TrimSpace(t.scrubFn(result.Text)), "\n", "\n\t"))
 	switch result.Outcome {
 	case provider.OutcomeSuccess:
 		lease.Release()
