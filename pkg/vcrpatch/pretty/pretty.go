@@ -103,10 +103,13 @@ func FormatCassette(path string) (bool, error) {
 }
 
 // PrintPrettyResult prints formatting results to an output stream.
-func PrintPrettyResult(w io.Writer, path string, changed bool) {
+func PrintPrettyResult(w io.Writer, path string, changed bool) error {
 	msg := msgNoChanges
 	if changed {
 		msg = msgFormattedJSON
 	}
-	fmt.Fprintf(w, msg, path)
+	if _, err := fmt.Fprintf(w, msg, path); err != nil {
+		return fmt.Errorf("writing pretty result: %w", err)
+	}
+	return nil
 }

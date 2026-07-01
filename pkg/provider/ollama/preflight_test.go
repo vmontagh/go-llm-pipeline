@@ -71,7 +71,8 @@ func TestPreflight(t *testing.T) {
 					Header:     make(http.Header),
 				}, nil
 			})},
-			wantErr: ErrContextWindowTooSmall,
+			wantErr:    ErrContextWindowTooSmall,
+			wantCtxLen: 1024,
 		},
 		{
 			name: "user-supplied num_ctx caps the effective window",
@@ -82,8 +83,9 @@ func TestPreflight(t *testing.T) {
 					Header:     make(http.Header),
 				}, nil
 			})},
-			numCtx:  1024,
-			wantErr: ErrContextWindowTooSmall,
+			numCtx:     1024,
+			wantErr:    ErrContextWindowTooSmall,
+			wantCtxLen: 1024,
 		},
 		{
 			name: "missing context_length is tolerated",
@@ -122,9 +124,7 @@ func TestPreflight(t *testing.T) {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("error = %v, want errors.Is(_, %v)", err, tt.wantErr)
 				}
-				return
-			}
-			if err != nil {
+			} else if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if diff := cmp.Diff(tt.wantCtxLen, tr.ContextLength()); diff != "" {

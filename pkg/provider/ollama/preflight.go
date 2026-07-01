@@ -71,12 +71,11 @@ func (t *transport) Preflight(ctx context.Context) error {
 		t.logger.WarnContext(ctx, "ollama preflight: context length unavailable; skipping budget check", "model", t.model, "err", err)
 		return nil
 	}
-	t.contextLength = ctxLen
-
 	effective := ctxLen
-	if t.numCtx > 0 && t.numCtx < ctxLen {
+	if t.numCtx > 0 {
 		effective = t.numCtx
 	}
+	t.contextLength = effective
 	promptBudget := int(float64(effective) * (1 - responseTokenReserveRatio))
 	if promptBudget < minPromptTokenBudget {
 		return fmt.Errorf(
