@@ -99,7 +99,7 @@ func extractContextLength(modelInfo map[string]any) (int, error) {
 		}
 		n, err := toInt(v)
 		if err != nil {
-			return 0, fmt.Errorf("%w: %q has value %T", ErrContextLengthUnsupportedType, k, v)
+			return 0, fmt.Errorf("%w: %q has value %T: %w", ErrContextLengthUnsupportedType, k, v, err)
 		}
 		if !found || n > maxVal {
 			maxVal = n
