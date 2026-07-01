@@ -25,5 +25,5 @@ jobs:
 
       - name: Install and run gomarklint
         run: |
-          go install github.com/shinagawa-web/gomarklint@latest
+          go install github.com/shinagawa-web/gomarklint@v3.3.0
           $(go env GOPATH)/bin/gomarklint .

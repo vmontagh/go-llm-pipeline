@@ -18,6 +18,7 @@ const llmStartedEventType = "LLM_STARTED"
 
 var ErrUnknownCallOutcome = errors.New("analyzer: provider returned unknown CallOutcome")
 var ErrNilParser = errors.New("analyzer: NewTemplate called with nil parser")
+var ErrNilProvider = errors.New("analyzer: NewTemplate called with nil provider")
 
 type Template[T any, R any] struct {
 	provider provider.Provider[T]
@@ -92,6 +93,9 @@ func WithTemplateScrubFunc(fn func(string) string) TemplateConfigurator {
 }
 
 func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, error), opts ...TemplateConfigurator) (*Template[T, R], error) {
+	if p == nil {
+		return nil, ErrNilProvider
+	}
 	if parser == nil {
 		return nil, ErrNilParser
 	}
