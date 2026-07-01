@@ -310,16 +310,20 @@ func TestWithTemplateScrubFunc(t *testing.T) {
 		t.Fatalf("NewTemplate: %v", err)
 	}
 
-	_, err = tmpl.Analyze(t.Context(), "prompt: secret=abc123", nil, "job1", func(string, string, string, bool) {})
+	got, err := tmpl.Analyze(t.Context(), "prompt: secret=abc123", nil, "job1", func(string, string, string, bool) {})
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
+	// Scrubbing must not interfere with the returned result.
+	if want := "response: secret=abc123"; got.Value != want {
+		t.Errorf("Analyze() value = %q, want %q", got.Value, want)
+	}
 
 	// Verify the scrub function was applied: raw secret must not appear in any log record.
-	for _, rec := range logHandler.records {
+	for recIdx, rec := range logHandler.records {
 		for i, a := range rec.attrs {
 			if strings.Contains(a.Value.String(), "secret=abc123") {
-				t.Errorf("log record %d attr %d contains unscrubbed secret: %q", i, i, a.Value.String())
+				t.Errorf("log record %d attr %d contains unscrubbed secret: %q", recIdx, i, a.Value.String())
 			}
 		}
 	}
