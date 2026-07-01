@@ -112,6 +112,9 @@ type nthMatchMatcher struct {
 }
 
 func (m *nthMatchMatcher) Match(req *InteractionReq) bool {
+	if m.inner == nil || m.n <= 0 {
+		return false
+	}
 	if m.inner.Match(req) {
 		m.count++
 		return m.count == m.n

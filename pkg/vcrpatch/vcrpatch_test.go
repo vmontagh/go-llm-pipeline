@@ -98,20 +98,49 @@ func TestMatchers(t *testing.T) {
 
 func TestNthMatch(t *testing.T) {
 	t.Parallel()
-	matcher := NthMatch(MethodEquals("POST"), 2)
 
-	req1 := &InteractionReq{Method: "POST"}
-	req2 := &InteractionReq{Method: "GET"}
-	req3 := &InteractionReq{Method: "POST"}
+	tests := []struct {
+		name     string
+		matcher  Matcher
+		reqs     []*InteractionReq
+		expected []bool
+	}{
+		{
+			name:     "match on Nth post",
+			matcher:  NthMatch(MethodEquals("POST"), 2),
+			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "GET"}, {Method: "POST"}},
+			expected: []bool{false, false, true},
+		},
+		{
+			name:     "nil inner matcher",
+			matcher:  NthMatch(nil, 2),
+			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			expected: []bool{false, false},
+		},
+		{
+			name:     "invalid negative n",
+			matcher:  NthMatch(MethodEquals("POST"), -1),
+			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			expected: []bool{false, false},
+		},
+		{
+			name:     "invalid zero n",
+			matcher:  NthMatch(MethodEquals("POST"), 0),
+			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			expected: []bool{false, false},
+		},
+	}
 
-	if matcher.Match(req1) {
-		t.Error("expected 1st match to be false (n=2)")
-	}
-	if matcher.Match(req2) {
-		t.Error("expected 2nd non-matching request to be false")
-	}
-	if !matcher.Match(req3) {
-		t.Error("expected 3rd request (2nd POST match) to be true")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for idx, req := range tt.reqs {
+				got := tt.matcher.Match(req)
+				if got != tt.expected[idx] {
+					t.Errorf("at index %d: Match() = %v, want %v", idx, got, tt.expected[idx])
+				}
+			}
+		})
 	}
 }
 
