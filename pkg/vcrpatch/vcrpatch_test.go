@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -455,19 +454,19 @@ func TestPatchInteractionBody(t *testing.T) {
 	}
 
 	tests := []struct {
-		name       string
-		index      int
-		isRequest  bool
-		newBody    string
-		wantErrSub string
-		wantBody   string
+		name      string
+		index     int
+		isRequest bool
+		newBody   string
+		wantErr   error
+		wantBody  string
 	}{
 		{
-			name:       "out of bounds error message format",
-			index:      5,
-			isRequest:  true,
-			newBody:    "new",
-			wantErrSub: "index 5 out of bounds (len 1)",
+			name:      "out of bounds error",
+			index:     5,
+			isRequest: true,
+			newBody:   "new",
+			wantErr:   ErrIndexOutOfBounds,
 		},
 		{
 			name:      "success patch request",
@@ -487,14 +486,11 @@ func TestPatchInteractionBody(t *testing.T) {
 			}
 
 			_, err := PatchInteractionBody(filePath, tt.index, tt.isRequest, tt.newBody)
-			if tt.wantErrSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrSub)) {
-				t.Fatalf("error = %v, want substring %q", err, tt.wantErrSub)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
 			}
-			if tt.wantErrSub != "" {
+			if tt.wantErr != nil {
 				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
 			}
 
 			c, err := LoadCassette(filePath)

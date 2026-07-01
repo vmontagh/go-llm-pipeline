@@ -239,8 +239,8 @@ func TestPrintPrettyResult(t *testing.T) {
 	t.Run("error on write failure", func(t *testing.T) {
 		t.Parallel()
 		err := PrintPrettyResult(errorWriter{}, "some/path", true)
-		if err == nil {
-			t.Error("PrintPrettyResult() got nil error, want error on write failure")
+		if !errors.Is(err, errWriteFailed) {
+			t.Errorf("PrintPrettyResult() error = %v, want %v", err, errWriteFailed)
 		}
 	})
 }
