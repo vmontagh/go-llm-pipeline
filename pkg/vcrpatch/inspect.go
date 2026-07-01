@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	maxURLWidth    = 80
-	truncateSuffix = "..."
+	maxURLWidth     = 80
+	truncateSuffix  = "..."
 	truncatePadding = 3
 )
 

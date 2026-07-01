@@ -75,7 +75,7 @@ func OpenAIResponse(text string) string {
 		"id":      "chatcmpl-123",
 		"object":  "chat.completion",
 		"created": 1677652288,
-		modelKey:   "gpt-4o-mini",
+		modelKey:  "gpt-4o-mini",
 		"choices": []interface{}{
 			map[string]interface{}{
 				"index": 0,
@@ -112,7 +112,7 @@ func OllamaJudgeSuccess() string {
 // OllamaResponse wraps text in response field.
 func OllamaResponse(text string) string {
 	resp := map[string]interface{}{
-		modelKey:      "gemma3",
+		modelKey:     "gemma3",
 		"created_at": "2026-06-06T00:00:00Z",
 		"response":   text,
 		"done":       true,
@@ -139,23 +139,23 @@ func GeminiInteraction(code int, body string) vcrpatch.Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
 	return vcrpatch.Interaction{
 		Request: vcrpatch.InteractionReq{
-			Method:           methodPost,
-			Host:             "generativelanguage.googleapis.com",
-			URL:              "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Method:     methodPost,
+			Host:       "generativelanguage.googleapis.com",
+			URL:        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 		Response: vcrpatch.InteractionResp{
-			Body:             body,
-			Code:             code,
-			Status:           status,
-			Duration:         "0s",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Body:       body,
+			Code:       code,
+			Status:     status,
+			Duration:   "0s",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 	}
 }
@@ -165,23 +165,23 @@ func OpenAIInteraction(code int, body string) vcrpatch.Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
 	return vcrpatch.Interaction{
 		Request: vcrpatch.InteractionReq{
-			Method:           methodPost,
-			Host:             "api.openai.com",
-			URL:              "https://api.openai.com/v1/chat/completions",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Method:     methodPost,
+			Host:       "api.openai.com",
+			URL:        "https://api.openai.com/v1/chat/completions",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 		Response: vcrpatch.InteractionResp{
-			Body:             body,
-			Code:             code,
-			Status:           status,
-			Duration:         "0s",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Body:       body,
+			Code:       code,
+			Status:     status,
+			Duration:   "0s",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 	}
 }
@@ -191,23 +191,23 @@ func OllamaInteraction(code int, body string) vcrpatch.Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
 	return vcrpatch.Interaction{
 		Request: vcrpatch.InteractionReq{
-			Method:           methodPost,
-			Host:             "localhost:11434",
-			URL:              "http://localhost:11434/api/generate",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Method:     methodPost,
+			Host:       "localhost:11434",
+			URL:        "http://localhost:11434/api/generate",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 		Response: vcrpatch.InteractionResp{
-			Body:             body,
-			Code:             code,
-			Status:           status,
-			Duration:         "0s",
-			Proto:            protoHTTP11,
-			ProtoMajor:       1,
-			ProtoMinor:       1,
-			Headers:          map[string][]string{},
+			Body:       body,
+			Code:       code,
+			Status:     status,
+			Duration:   "0s",
+			Proto:      protoHTTP11,
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Headers:    map[string][]string{},
 		},
 	}
 }

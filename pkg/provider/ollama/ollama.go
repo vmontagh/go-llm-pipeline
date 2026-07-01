@@ -18,11 +18,10 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
-	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
+	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
-
 
 const providerLabel = "ollama"
 const traceRegionName = "Analyze_Ollama"
@@ -79,12 +78,12 @@ type transport struct {
 	tracer         Tracer
 }
 
-func (t *transport) Name() string { return "ollama/" + t.model }
-func (t *transport) Model() string { return t.model }
-func (t *transport) ProviderLabel() string { return providerLabel }
+func (t *transport) Name() string            { return "ollama/" + t.model }
+func (t *transport) Model() string           { return t.model }
+func (t *transport) ProviderLabel() string   { return providerLabel }
 func (t *transport) TraceRegionName() string { return traceRegionName }
-func (t *transport) Keys() *endpointKeyPool { return t.endpoint }
-func (t *transport) ContextLength() int { return t.contextLength }
+func (t *transport) Keys() *endpointKeyPool  { return t.endpoint }
+func (t *transport) ContextLength() int      { return t.contextLength }
 
 func (t *transport) ClassifyError(in provpkg.ClassifyInput, _ provpkg.RetryContext) provpkg.ErrorTier {
 	switch {
