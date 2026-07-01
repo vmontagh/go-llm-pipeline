@@ -10,7 +10,10 @@ type Preflighter interface {
 	Preflight(ctx context.Context) error
 }
 
-// RunPreflight invokes pf.Preflight.
+// RunPreflight invokes pf.Preflight. If pf is nil, it is treated as a no-op and returns nil.
 func RunPreflight(ctx context.Context, pf Preflighter) error {
+	if pf == nil {
+		return nil
+	}
 	return pf.Preflight(ctx)
 }

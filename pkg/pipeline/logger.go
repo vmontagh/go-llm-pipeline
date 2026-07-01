@@ -22,6 +22,9 @@ type EventLogger struct {
 
 // NewEventLogger creates a new EventLogger.
 func NewEventLogger(appLogger *slog.Logger) *EventLogger {
+	if appLogger == nil {
+		appLogger = slog.New(slog.DiscardHandler)
+	}
 	return &EventLogger{
 		appLogger: appLogger,
 	}

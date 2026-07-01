@@ -45,6 +45,9 @@ func NewScrubber(rules ...Rule) *Scrubber {
 // Scrub applies all rules to text and returns the scrubbed result.
 func (s *Scrubber) Scrub(text string) string {
 	for _, r := range s.rules {
+		if r.pattern == nil {
+			continue
+		}
 		text = r.pattern.ReplaceAllString(text, r.replacement)
 	}
 	return text
