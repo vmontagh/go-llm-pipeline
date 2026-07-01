@@ -1,6 +1,9 @@
 package pretty
 
 import (
+	"bytes"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -208,4 +211,36 @@ func TestFormatInteraction(t *testing.T) {
 			}
 		})
 	}
+}
+
+var errWriteFailed = errors.New("write failed")
+
+type errorWriter struct{}
+
+func (errorWriter) Write(p []byte) (int, error) {
+	return 0, errWriteFailed
+}
+
+func TestPrintPrettyResult(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+		var buf bytes.Buffer
+		err := PrintPrettyResult(&buf, "some/path", true)
+		if err != nil {
+			t.Errorf("PrintPrettyResult() unexpected error: %v", err)
+		}
+		if !strings.Contains(buf.String(), "Formatted JSON") {
+			t.Errorf("PrintPrettyResult() output = %q, expected to contain 'Formatted JSON'", buf.String())
+		}
+	})
+
+	t.Run("error on write failure", func(t *testing.T) {
+		t.Parallel()
+		err := PrintPrettyResult(errorWriter{}, "some/path", true)
+		if err == nil {
+			t.Error("PrintPrettyResult() expected error on write failure, got nil")
+		}
+	})
 }
