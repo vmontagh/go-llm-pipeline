@@ -62,12 +62,15 @@ func (s *Scenario) Execute() error {
 
 		// Automatically sync content length and format for all replaced/injected responses
 		syncAct := SyncContentLength()
+		var syncedReplacement []Interaction
 		for idx := range replacement {
-			_, err = syncAct.Apply(&replacement[idx], c.Interactions)
+			res, err := syncAct.Apply(&replacement[idx], c.Interactions)
 			if err != nil {
 				return fmt.Errorf("syncing content length: %w", err)
 			}
+			syncedReplacement = append(syncedReplacement, res...)
 		}
+		replacement = syncedReplacement
 
 		newInteractions = append(newInteractions, replacement...)
 	}

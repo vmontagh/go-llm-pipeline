@@ -77,6 +77,9 @@ func SetupRecorder(cassettePath string, mode recorder.Mode, opts ...RecorderOpti
 	}
 
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
 		opt(&cfg)
 	}
 
@@ -95,6 +98,9 @@ func SetupRecorder(cassettePath string, mode recorder.Mode, opts ...RecorderOpti
 		return nil, nil, err
 	}
 
+	if cfg.customMatcher == nil {
+		cfg.customMatcher = DefaultLLMMatcher
+	}
 	rec.SetMatcher(cfg.customMatcher)
 
 	rec.AddHook(func(i *cassette.Interaction) error {

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 )
@@ -18,6 +19,8 @@ var ErrContextWindowTooSmall = errors.New("ollama preflight: context window too 
 var ErrContextLengthMissing = errors.New("ollama preflight: model_info has no .context_length key")
 var ErrUnsupportedNumericType = errors.New("unsupported numeric type")
 var ErrContextLengthUnsupportedType = errors.New("ollama preflight: .context_length value is not numeric")
+var ErrFractionalValue = errors.New("fractional numeric value")
+var ErrNumericOutOfRange = errors.New("numeric value out of int range")
 
 type showRequest struct {
 	Model string `json:"model"`
@@ -88,6 +91,8 @@ func (t *transport) Preflight(ctx context.Context) error {
 }
 
 func extractContextLength(modelInfo map[string]any) (int, error) {
+	var maxVal int
+	found := false
 	for k, v := range modelInfo {
 		if !strings.HasSuffix(k, ".context_length") {
 			continue
@@ -96,23 +101,41 @@ func extractContextLength(modelInfo map[string]any) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("%w: %q has value %T", ErrContextLengthUnsupportedType, k, v)
 		}
-		return n, nil
+		if !found || n > maxVal {
+			maxVal = n
+			found = true
+		}
 	}
-	return 0, ErrContextLengthMissing
+	if !found {
+		return 0, ErrContextLengthMissing
+	}
+	return maxVal, nil
 }
 
 func toInt(v any) (int, error) {
 	switch n := v.(type) {
 	case float64:
+		if n != math.Trunc(n) {
+			return 0, fmt.Errorf("%w: %f", ErrFractionalValue, n)
+		}
+		if n < float64(math.MinInt) || n > float64(math.MaxInt) {
+			return 0, fmt.Errorf("%w: %f", ErrNumericOutOfRange, n)
+		}
 		return int(n), nil
 	case int:
 		return n, nil
 	case int64:
+		if n < int64(math.MinInt) || n > int64(math.MaxInt) {
+			return 0, fmt.Errorf("%w: %d", ErrNumericOutOfRange, n)
+		}
 		return int(n), nil
 	case json.Number:
 		i, err := n.Int64()
 		if err != nil {
 			return 0, err
+		}
+		if i < int64(math.MinInt) || i > int64(math.MaxInt) {
+			return 0, fmt.Errorf("%w: %d", ErrNumericOutOfRange, i)
 		}
 		return int(i), nil
 	default:
