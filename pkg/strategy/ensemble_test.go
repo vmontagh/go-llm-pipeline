@@ -84,6 +84,14 @@ func TestEnsembleAnalyzer_Init(t *testing.T) {
 		}
 	})
 
+	t.Run("nil_merger", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewEnsembleAnalyzer[dummyAnalysisResult]([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}}, nil)
+		if !errors.Is(err, ErrEnsembleNoMerger) {
+			t.Errorf("expected ErrEnsembleNoMerger, got %v", err)
+		}
+	})
+
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
 		a, err := NewEnsembleAnalyzer([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}}, testMerger)

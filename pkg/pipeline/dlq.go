@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	dirPermissions  = 0o755
-	filePermissions = 0o644
+	dirPermissions  = 0o700
+	filePermissions = 0o600
 )
 
 // DLQLogger defines the consumer interface for logging in the DLQ.

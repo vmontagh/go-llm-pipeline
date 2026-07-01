@@ -43,7 +43,17 @@ func NewServer(addr string) *Server {
 
 // Start runs the HTTP server. This is a blocking call.
 func (s *Server) Start() error {
-	host, _, err := net.SplitHostPort(s.addr)
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", s.addr)
+	if err != nil {
+		return fmt.Errorf("failed to listen on %s: %w", s.addr, err)
+	}
+	return s.StartListener(l)
+}
+
+// StartListener runs the HTTP server on the given listener. This is a blocking call.
+func (s *Server) StartListener(l net.Listener) error {
+	host, _, err := net.SplitHostPort(l.Addr().String())
 	if err != nil {
 		return fmt.Errorf("invalid address: %w", err)
 	}
@@ -56,7 +66,7 @@ func (s *Server) Start() error {
 			return fmt.Errorf("%w: got %q", ErrPProfNonLoopback, host)
 		}
 	}
-	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	if err := s.server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("observability server error: %w", err)
 	}
 	return nil

@@ -16,6 +16,9 @@ type ensembleAnalyzer[R any] struct {
 // ErrEnsembleNoGenerators indicates NewEnsembleAnalyzer was called with no generators.
 var ErrEnsembleNoGenerators = errors.New("at least one generator is required")
 
+// ErrEnsembleNoMerger indicates NewEnsembleAnalyzer was called with a nil merger.
+var ErrEnsembleNoMerger = errors.New("merger is required")
+
 // EnsembleOption configures the ensembleAnalyzer.
 type EnsembleOption[R any] func(*ensembleAnalyzer[R])
 
@@ -34,6 +37,9 @@ func NewEnsembleAnalyzer[R any](
 ) (Generator[R], error) {
 	if len(generators) == 0 {
 		return nil, ErrEnsembleNoGenerators
+	}
+	if merger == nil {
+		return nil, ErrEnsembleNoMerger
 	}
 	e := &ensembleAnalyzer[R]{
 		generators: make([]Generator[R], len(generators)),

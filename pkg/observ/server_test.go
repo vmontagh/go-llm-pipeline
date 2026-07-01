@@ -2,6 +2,7 @@ package observ
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -28,12 +29,16 @@ func TestServer(t *testing.T) {
 			t.Parallel()
 			srv := NewServer(tt.addr)
 
+			var lc net.ListenConfig
+			l, err := lc.Listen(context.Background(), "tcp", tt.addr)
+			if err != nil {
+				t.Fatalf("failed to listen: %v", err)
+			}
+
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- srv.Start()
+				errCh <- srv.StartListener(l)
 			}()
-
-			time.Sleep(50 * time.Millisecond)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -43,9 +48,9 @@ func TestServer(t *testing.T) {
 				t.Fatalf("Stop failed: %v", stopErr)
 			}
 
-			err := <-errCh
+			err = <-errCh
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("Start() error mismatch (-want +got):\n%s", diff)
+				t.Errorf("StartListener() error mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

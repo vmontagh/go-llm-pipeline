@@ -174,6 +174,11 @@ func (j *judgeAnalyzer[R]) Analyze(
 			msg := fmt.Errorf("%w: %d (draft count: %d) on attempt %d/%d", ErrJudgeOutOfBounds, idx, len(drafts), attempt, j.maxAttempts)
 			switch j.outOfBoundsBehavior {
 			case OutOfBoundsBehaviorRetry:
+				if attempt < j.maxAttempts {
+					j.logger.Warnf("Judge returned out-of-bounds selected_draft_index %d (draft count: %d) on attempt %d/%d, retrying...", idx, len(drafts), attempt, j.maxAttempts)
+					feedbackHistory = append(feedbackHistory, fmt.Sprintf("Judge selected out-of-bounds draft index %d.", idx))
+					continue
+				}
 				return zero, policy.WithCode(codes.Unavailable, msg)
 			case OutOfBoundsBehaviorFail:
 				return zero, msg
