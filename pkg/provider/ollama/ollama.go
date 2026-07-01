@@ -92,7 +92,7 @@ func (t *transport) ClassifyError(in provpkg.ClassifyInput, _ provpkg.RetryConte
 	case in.StatusCode == 0:
 		return provpkg.TierTerminal
 	case in.StatusCode == http.StatusTooManyRequests:
-		return provpkg.TierShortTransient
+		return provpkg.TierShortRateLimit
 	case in.StatusCode >= http.StatusInternalServerError:
 		return provpkg.TierShortTransient
 	default:
