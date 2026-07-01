@@ -1,6 +1,7 @@
 package vcrpatch
 
 import (
+	"errors"
 	"fmt"
 )
 
@@ -17,8 +18,20 @@ type Patch struct {
 	Action Action
 }
 
+// ErrInvalidPatch is returned when a patch has a nil Match or Action.
+var ErrInvalidPatch = errors.New("invalid patch")
+
 // Execute loads the BaseCassette, applies all Patches sequentially, and saves it to TargetCassette.
 func (s *Scenario) Execute() error {
+	for i, p := range s.Patches {
+		if p.Match == nil {
+			return fmt.Errorf("%w: patch %d has nil Match", ErrInvalidPatch, i)
+		}
+		if p.Action == nil {
+			return fmt.Errorf("%w: patch %d has nil Action", ErrInvalidPatch, i)
+		}
+	}
+
 	c, err := LoadCassette(s.BaseCassette)
 	if err != nil {
 		return fmt.Errorf("loading base cassette %q: %w", s.BaseCassette, err)

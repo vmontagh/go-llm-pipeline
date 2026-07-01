@@ -469,7 +469,7 @@ func TestJudgeAnalyzer_OutOfBoundsBehavior(t *testing.T) {
 			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "g1", result: draft0}},
 			wantCode:      codes.Unavailable,
 			wantRetryable: true,
-			wantErrSubstr: "attempt 1/3",
+			wantErrSubstr: "attempt 3/3",
 		},
 		{
 			name:          "fail returns terminal error for index past end",

@@ -318,3 +318,35 @@ func TestMutateBodyError(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+func TestScenario_ValidatePatches(t *testing.T) {
+	t.Parallel()
+
+	scenarioNilMatch := Scenario{
+		BaseCassette:   "base.yaml",
+		TargetCassette: "target.yaml",
+		Patches: []Patch{
+			{
+				Match:  nil,
+				Action: ReplaceStatusCode(500),
+			},
+		},
+	}
+	if err := scenarioNilMatch.Execute(); err == nil || !errors.Is(err, ErrInvalidPatch) {
+		t.Errorf("expected ErrInvalidPatch, got: %v", err)
+	}
+
+	scenarioNilAction := Scenario{
+		BaseCassette:   "base.yaml",
+		TargetCassette: "target.yaml",
+		Patches: []Patch{
+			{
+				Match:  URLContains("/api"),
+				Action: nil,
+			},
+		},
+	}
+	if err := scenarioNilAction.Execute(); err == nil || !errors.Is(err, ErrInvalidPatch) {
+		t.Errorf("expected ErrInvalidPatch, got: %v", err)
+	}
+}
