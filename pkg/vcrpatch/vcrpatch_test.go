@@ -228,6 +228,9 @@ func TestInjectBeforeAction(t *testing.T) {
 	if c.Interactions[0].Response.Code != 500 || c.Interactions[0].Response.Body != "error" {
 		t.Errorf("unexpected injected interaction: %+v", c.Interactions[0])
 	}
+	if c.Interactions[0].Response.Status != "500 Internal Server Error" {
+		t.Errorf("expected injected status to be '500 Internal Server Error', got %q", c.Interactions[0].Response.Status)
+	}
 	if c.Interactions[1].Response.Code != 200 || c.Interactions[1].Response.Body != "success" {
 		t.Errorf("unexpected original interaction: %+v", c.Interactions[1])
 	}
