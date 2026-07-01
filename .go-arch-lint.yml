@@ -137,5 +137,5 @@ deps:
 
   scrub:
     anyProjectDeps: false
-    anyVendorDeps: false
+    anyVendorDeps: true
     mayDependOn: []
