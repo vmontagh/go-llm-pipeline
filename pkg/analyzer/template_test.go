@@ -341,7 +341,7 @@ type logRecord struct {
 
 func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
 
-func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error { //nolint:gocritic // slog.Handler interface requires slog.Record by value
 	lr := logRecord{msg: r.Message}
 	r.Attrs(func(a slog.Attr) bool {
 		lr.attrs = append(lr.attrs, a)
