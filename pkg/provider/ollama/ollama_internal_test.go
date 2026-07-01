@@ -27,7 +27,7 @@ func TestTransport_ClassifyError(t *testing.T) {
 		want provpkg.ErrorTier
 	}{
 		{name: "network error", in: provpkg.ClassifyInput{Err: errTest}, want: provpkg.TierShortTransient},
-		{name: "429", in: provpkg.ClassifyInput{StatusCode: http.StatusTooManyRequests}, want: provpkg.TierShortTransient},
+		{name: "429", in: provpkg.ClassifyInput{StatusCode: http.StatusTooManyRequests}, want: provpkg.TierShortRateLimit},
 		{name: "500", in: provpkg.ClassifyInput{StatusCode: http.StatusInternalServerError}, want: provpkg.TierShortTransient},
 		{name: "503", in: provpkg.ClassifyInput{StatusCode: http.StatusServiceUnavailable}, want: provpkg.TierShortTransient},
 		{name: "400", in: provpkg.ClassifyInput{StatusCode: http.StatusBadRequest}, want: provpkg.TierTerminal},
