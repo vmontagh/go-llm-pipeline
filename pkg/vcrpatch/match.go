@@ -120,6 +120,9 @@ func (m *nthMatchMatcher) Match(req *InteractionReq) bool {
 }
 
 // NthMatch matches only on the Nth occurrence (1-based index) of the inner matcher.
+// Note: The returned Matcher is stateful (it keeps track of matches across calls)
+// and is not safe for concurrent use. If a Scenario or Patch is reused, or executed
+// concurrently, a fresh Matcher must be constructed.
 func NthMatch(inner Matcher, n int) Matcher {
 	return &nthMatchMatcher{inner: inner, n: n}
 }

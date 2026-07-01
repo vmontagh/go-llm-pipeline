@@ -96,7 +96,17 @@ func (a injectBeforeAction) Apply(matched *Interaction, _ []Interaction) ([]Inte
 		clone := *matched
 		clone.Response.Body = inject.Response.Body
 		clone.Response.Code = inject.Response.Code
-		clone.Response.Status = inject.Response.Status
+
+		status := inject.Response.Status
+		if status == "" && inject.Response.Code != 0 {
+			statusText := http.StatusText(inject.Response.Code)
+			status = fmt.Sprintf("%d %s", inject.Response.Code, statusText)
+			if statusText == "" {
+				status = fmt.Sprintf("%d Status", inject.Response.Code)
+			}
+		}
+		clone.Response.Status = status
+
 		if inject.Response.Headers != nil {
 			clone.Response.Headers = inject.Response.Headers
 		}
