@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -16,7 +17,6 @@ import (
 
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
-	"github.com/vmontagh/go-llm-pipeline/pkg/logger"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
 
@@ -40,13 +40,6 @@ const traceRegionName = "Analyze_OpenAI"
 // callRegionName is the trace region opened around each individual Call
 // invocation by the transport.
 const callRegionName = "Call_OpenAI"
-
-// Logger is the logging interface required by the OpenAI transport.
-type Logger interface {
-	Debugf(format string, v ...any)
-	Warnf(format string, v ...any)
-	Errorf(format string, v ...any)
-}
 
 // Tracer is the tracing interface required by the OpenAI transport.
 type Tracer interface {
@@ -169,7 +162,7 @@ type transport struct {
 	responseSchema     any
 	responseSchemaName string
 	client             *http.Client
-	logger             Logger
+	logger             *slog.Logger
 	tracer             Tracer
 }
 
@@ -208,7 +201,7 @@ func (t *transport) ClassifyError(in provpkg.ClassifyInput, _ provpkg.RetryConte
 func (t *transport) classify429(body []byte) provpkg.ErrorTier {
 	var apiErr APIError
 	if err := json.Unmarshal(body, &apiErr); err != nil {
-		t.logger.Debugf("openai: malformed 429 body, defaulting to rate-limit tier: %v", err)
+		t.logger.Debug("openai: malformed 429 body, defaulting to rate-limit tier", "err", err)
 		return provpkg.TierShortRateLimit
 	}
 	if apiErr.Error.Type == insufficientQuotaType {
@@ -258,7 +251,7 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warnf("close error: %v", cerr)
+			t.logger.Warn("close error", "err", cerr)
 		}
 	}()
 
@@ -299,7 +292,7 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 	}
 
 	if len(response.Choices) == 0 {
-		t.logger.Errorf("GPT response is not recognizable %q", string(bodyBytes))
+		t.logger.Error("GPT response is not recognizable", "body", string(bodyBytes))
 		return provpkg.CallResult{
 			Outcome: provpkg.OutcomeTerminal,
 			Err:     backoff.Permanent(fmt.Errorf("%w: %+v", provpkg.ErrEmptyCandidate, response)),
@@ -348,7 +341,7 @@ type providerConfig struct {
 	responseSchemaName string
 	client             *http.Client
 	httpTimeout        time.Duration
-	logger             Logger
+	logger             *slog.Logger
 	tracer             Tracer
 }
 
@@ -393,8 +386,8 @@ func WithHTTPClientTimeout(d time.Duration) ProviderOption {
 	return func(c *providerConfig) { c.httpTimeout = d }
 }
 
-// WithLogger sets the logger used by the transport
-func WithLogger(l Logger) ProviderOption {
+// WithLogger sets the *slog.Logger used by the transport.
+func WithLogger(l *slog.Logger) ProviderOption {
 	return func(c *providerConfig) { c.logger = l }
 }
 
@@ -406,7 +399,7 @@ func WithTracer(tr Tracer) ProviderOption {
 
 // Preflight is a no-op for OpenAI
 func (t *transport) Preflight(_ context.Context) error {
-	t.logger.Warnf("openai preflight: not configured (skipping model-catalog / key-liveness check)")
+	t.logger.Warn("openai preflight: not configured (skipping model-catalog / key-liveness check)")
 	return nil
 }
 
@@ -422,7 +415,7 @@ func NewProvider(apiKeys []string, opts ...ProviderOption) provpkg.Provider[stri
 		}
 	}
 	if cfg.logger == nil {
-		cfg.logger = logger.NewNoOpLogger()
+		cfg.logger = slog.New(slog.DiscardHandler)
 	}
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()

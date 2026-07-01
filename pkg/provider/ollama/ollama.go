@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -19,7 +20,6 @@ import (
 
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
-	"github.com/vmontagh/go-llm-pipeline/pkg/logger"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
 
@@ -27,11 +27,6 @@ import (
 const providerLabel = "ollama"
 const traceRegionName = "Analyze_Ollama"
 const callRegionName = "Call_Ollama"
-
-type Logger interface {
-	Debugf(format string, v ...any)
-	Warnf(format string, v ...any)
-}
 
 type Tracer interface {
 	StartRegion(ctx context.Context, name string) interface{ End() }
@@ -80,7 +75,7 @@ type transport struct {
 	responseSchema any
 	client         *http.Client
 	endpoint       *endpointKeyPool
-	logger         Logger
+	logger         *slog.Logger
 	tracer         Tracer
 }
 
@@ -150,7 +145,7 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warnf("close error: %v", cerr)
+			t.logger.Warn("close error", "err", cerr)
 		}
 	}()
 
@@ -189,8 +184,15 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 			Err:     backoff.Permanent(fmt.Errorf("%w: parsing response: %w", provpkg.ErrInvalidResponsePart, err)),
 		}
 	}
-	t.logger.Debugf("ollama call meta model=%s done=%v done_reason=%q prompt_eval_count=%d eval_count=%d total_duration_ms=%d response_len=%d",
-		t.model, ollamaResp.Done, ollamaResp.DoneReason, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, ollamaResp.TotalDuration/1e6, len(ollamaResp.Response))
+	t.logger.Debug("ollama call meta",
+		"model", t.model,
+		"done", ollamaResp.Done,
+		"done_reason", ollamaResp.DoneReason,
+		"prompt_eval_count", ollamaResp.PromptEvalCount,
+		"eval_count", ollamaResp.EvalCount,
+		"total_duration_ms", ollamaResp.TotalDuration/1e6,
+		"response_len", len(ollamaResp.Response),
+	)
 
 	if ollamaResp.DoneReason == doneReasonLength {
 		total := ollamaResp.PromptEvalCount + ollamaResp.EvalCount
@@ -292,7 +294,7 @@ type providerConfig struct {
 	responseSchema any
 	client         *http.Client
 	httpTimeout    time.Duration
-	logger         Logger
+	logger         *slog.Logger
 	tracer         Tracer
 }
 
@@ -320,7 +322,8 @@ func WithHTTPClientTimeout(d time.Duration) ProviderOption {
 	return func(c *providerConfig) { c.httpTimeout = d }
 }
 
-func WithLogger(l Logger) ProviderOption {
+// WithLogger sets the *slog.Logger used by the transport.
+func WithLogger(l *slog.Logger) ProviderOption {
 	return func(c *providerConfig) { c.logger = l }
 }
 
@@ -336,7 +339,7 @@ func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[st
 		}
 	}
 	if cfg.logger == nil {
-		cfg.logger = logger.NewNoOpLogger()
+		cfg.logger = slog.New(slog.DiscardHandler)
 	}
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()

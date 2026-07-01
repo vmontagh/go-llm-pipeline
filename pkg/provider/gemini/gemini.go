@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/cenkalti/backoff/v4"
@@ -36,15 +37,6 @@ type Tracer interface {
 	StartRegion(ctx context.Context, name string) interface{ End() }
 }
 
-// Logger is the minimal logging interface used by the Gemini transport
-type Logger interface {
-	Warnf(format string, v ...any)
-}
-
-type noOpLogger struct{}
-
-func (noOpLogger) Warnf(string, ...any) {}
-
 
 // transport is the Gemini implementation of provpkg.Provider[*genai.Client].
 type transport struct {
@@ -52,7 +44,7 @@ type transport struct {
 	clients        *provpkg.KeyPool[*genai.Client]
 	responseSchema *genai.Schema
 	tracer         Tracer
-	logger         Logger
+	logger         *slog.Logger
 }
 
 // Name implements provpkg.Provider.
@@ -152,7 +144,7 @@ type providerConfig struct {
 	clock          provpkg.PoolClock
 	responseSchema *genai.Schema
 	tracer         Tracer
-	logger         Logger
+	logger         *slog.Logger
 }
 
 func withClock(clk provpkg.PoolClock) ProviderOption {
@@ -170,14 +162,14 @@ func WithResponseSchema(schema map[string]any) ProviderOption {
 	return func(c *providerConfig) { c.responseSchema = converted }
 }
 
-// WithLogger sets the logger used by the transport
-func WithLogger(l Logger) ProviderOption {
+// WithLogger sets the *slog.Logger used by the transport.
+func WithLogger(l *slog.Logger) ProviderOption {
 	return func(c *providerConfig) { c.logger = l }
 }
 
 // Preflight is a no-op for Gemini
 func (t *transport) Preflight(_ context.Context) error {
-	t.logger.Warnf("gemini preflight: not configured (skipping model-catalog / vision-support check)")
+	t.logger.Warn("gemini preflight: not configured (skipping model-catalog / vision-support check)")
 	return nil
 }
 
@@ -202,7 +194,7 @@ func NewProvider(model string, clients []*genai.Client, opts ...ProviderOption) 
 	}
 	lg := cfg.logger
 	if lg == nil {
-		lg = noOpLogger{}
+		lg = slog.New(slog.DiscardHandler)
 	}
 	return &transport{
 		model:          model,

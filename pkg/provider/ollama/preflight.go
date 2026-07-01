@@ -42,22 +42,22 @@ func (t *transport) Preflight(ctx context.Context) error {
 
 	resp, err := t.client.Do(req)
 	if err != nil {
-		t.logger.Warnf("ollama preflight: skipping context-window check (cannot reach /api/show for %q: %v)", t.model, err)
+		t.logger.WarnContext(ctx, "ollama preflight: skipping context-window check (cannot reach /api/show)", "model", t.model, "err", err)
 		return nil
 	}
 	defer func() {
 		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warnf("ollama preflight: close error: %v", cerr)
+			t.logger.WarnContext(ctx, "ollama preflight: close error", "err", cerr)
 		}
 	}()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.logger.Warnf("ollama preflight: skipping context-window check (cannot read /api/show body for %q: %v)", t.model, err)
+		t.logger.WarnContext(ctx, "ollama preflight: skipping context-window check (cannot read /api/show body)", "model", t.model, "err", err)
 		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.logger.Warnf("ollama preflight: skipping context-window check (/api/show for %q returned %d: %s)", t.model, resp.StatusCode, strings.TrimSpace(string(respBody)))
+		t.logger.WarnContext(ctx, "ollama preflight: skipping context-window check (/api/show returned non-200)", "model", t.model, "status", resp.StatusCode, "body", strings.TrimSpace(string(respBody)))
 		return nil
 	}
 
@@ -68,7 +68,7 @@ func (t *transport) Preflight(ctx context.Context) error {
 
 	ctxLen, err := extractContextLength(sr.ModelInfo)
 	if err != nil {
-		t.logger.Warnf("ollama preflight: model %q context length unavailable (%v); skipping budget check", t.model, err)
+		t.logger.WarnContext(ctx, "ollama preflight: context length unavailable; skipping budget check", "model", t.model, "err", err)
 		return nil
 	}
 	t.contextLength = ctxLen
@@ -84,7 +84,7 @@ func (t *transport) Preflight(ctx context.Context) error {
 			ErrContextWindowTooSmall, t.model, effective, promptBudget, minPromptTokenBudget,
 		)
 	}
-	t.logger.Debugf("ollama preflight: model=%s context_length=%d prompt_budget=%d", t.model, effective, promptBudget)
+	t.logger.DebugContext(ctx, "ollama preflight", "model", t.model, "context_length", effective, "prompt_budget", promptBudget)
 	return nil
 }
 

@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -13,7 +14,7 @@ type RetryConfig struct {
 	ModelName       string
 	JobID           string
 	Publish         func(eventType, itemID, message string, isError bool)
-	Logger          Logger
+	Logger          *slog.Logger
 	MaxElapsedTime  time.Duration
 	MaxParseRetries int
 	BackOff         backoff.BackOff // Optional: for injecting logical time or max retries in tests
@@ -60,7 +61,12 @@ func ExecuteWithRetries[R any](
 				cfg.Publish(EventLLMRetrying, cfg.JobID, fmt.Sprintf("Retrying %s due to parse error: %v", cfg.ModelName, parseErr), true)
 			}
 			if cfg.Logger != nil {
-				cfg.Logger.Warnf("Retrying %s due to parse failure (attempt %d/%d): %v", cfg.ModelName, parseAttempts, cfg.MaxParseRetries, parseErr)
+				cfg.Logger.Warn("retrying due to parse failure",
+					"model", cfg.ModelName,
+					"attempt", parseAttempts,
+					"max", cfg.MaxParseRetries,
+					"err", parseErr,
+				)
 			}
 			return fmt.Errorf("parsing %s response: %w", cfg.ModelName, parseErr)
 		}

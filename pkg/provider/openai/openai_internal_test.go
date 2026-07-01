@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -13,14 +14,13 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
-	"github.com/vmontagh/go-llm-pipeline/pkg/logger"
 )
 
 var errTest = errors.New("test sentinel")
 
 func TestTransport_ClassifyError(t *testing.T) {
 	t.Parallel()
-	tr := &transport{model: DefaultModel, logger: logger.NewNoOpLogger()}
+	tr := &transport{model: DefaultModel, logger: slog.New(slog.DiscardHandler)}
 	mustBody := func(t *testing.T, v any) []byte {
 		t.Helper()
 		b, err := json.Marshal(v)
@@ -235,7 +235,7 @@ func TestTransport_Call(t *testing.T) {
 				model:   DefaultModel,
 				baseURL: "http://example.test",
 				client:  tt.client,
-				logger:  logger.NewNoOpLogger(),
+				logger:  slog.New(slog.DiscardHandler),
 				tracer:  noopTracer{},
 			}
 			got := tr.Call(context.Background(), &provpkg.Lease[string]{Value: "k"}, "prompt", []byte("img"))
