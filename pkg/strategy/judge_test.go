@@ -92,6 +92,28 @@ func TestJudgeAnalyzer_Init(t *testing.T) {
 		}
 	})
 
+	t.Run("nil generator in slice", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewJudgeAnalyzer[*dummyAnalysisResult](&fakeJudgeAnalyzer{name: "j"}, []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}, nil}, dummyPromptBuilder)
+		if !errors.Is(err, ErrGeneratorRequired) {
+			t.Errorf("error = %v, want %v", err, ErrGeneratorRequired)
+		}
+	})
+
+	t.Run("nil logger and tracer options ignored", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewJudgeAnalyzer[*dummyAnalysisResult](
+			&fakeJudgeAnalyzer{name: "j"},
+			[]Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
+			dummyPromptBuilder,
+			WithJudgeLogger[*dummyAnalysisResult](nil),
+			WithJudgeTracer[*dummyAnalysisResult](nil),
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
 		a, err := NewJudgeAnalyzer[*dummyAnalysisResult](&fakeJudgeAnalyzer{name: "j"}, []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "g1"}, &fakePointerAnalyzer{name: "g2"}}, dummyPromptBuilder)

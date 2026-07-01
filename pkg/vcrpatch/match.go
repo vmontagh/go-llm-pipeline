@@ -15,6 +15,9 @@ type urlContainsMatcher struct {
 }
 
 func (m urlContainsMatcher) Match(req *InteractionReq) bool {
+	if req == nil {
+		return false
+	}
 	return strings.Contains(req.URL, m.substr)
 }
 
@@ -28,6 +31,9 @@ type methodEqualsMatcher struct {
 }
 
 func (m methodEqualsMatcher) Match(req *InteractionReq) bool {
+	if req == nil {
+		return false
+	}
 	return strings.EqualFold(req.Method, m.method)
 }
 
@@ -41,6 +47,9 @@ type bodyContainsMatcher struct {
 }
 
 func (m bodyContainsMatcher) Match(req *InteractionReq) bool {
+	if req == nil {
+		return false
+	}
 	return strings.Contains(req.Body, m.substr)
 }
 
@@ -54,7 +63,7 @@ type headerEqualsMatcher struct {
 }
 
 func (m headerEqualsMatcher) Match(req *InteractionReq) bool {
-	if req.Headers == nil {
+	if req == nil || req.Headers == nil {
 		return false
 	}
 	vals, ok := req.Headers[m.key]
@@ -88,6 +97,9 @@ type urlQueryParamMatcher struct {
 }
 
 func (m urlQueryParamMatcher) Match(req *InteractionReq) bool {
+	if req == nil {
+		return false
+	}
 	u, err := url.Parse(req.URL)
 	if err != nil {
 		return false
