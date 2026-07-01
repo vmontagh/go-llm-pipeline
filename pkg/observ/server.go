@@ -56,8 +56,6 @@ func (s *Server) Start() error {
 			return fmt.Errorf("%w: got %q", ErrPProfNonLoopback, host)
 		}
 	}
-
-	fmt.Printf("Starting observability server on %s\n", s.addr)
 	if err := s.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return fmt.Errorf("observability server error: %w", err)
 	}

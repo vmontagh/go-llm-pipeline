@@ -45,21 +45,6 @@ type noOpLogger struct{}
 
 func (noOpLogger) Warnf(string, ...any) {}
 
-type preflighter interface {
-	Preflight(ctx context.Context) error
-}
-
-type provider interface {
-	Name() string
-	Model() string
-	ProviderLabel() string
-	TraceRegionName() string
-	Keys() *provpkg.KeyPool[*genai.Client]
-	ClassifyError(provpkg.ClassifyInput, provpkg.RetryContext) provpkg.ErrorTier
-	EnrichError(provpkg.ClassifyInput, error, []byte) error
-	Call(ctx context.Context, lease *provpkg.Lease[*genai.Client], prompt string, imageData []byte) provpkg.CallResult
-	preflighter
-}
 
 // transport is the Gemini implementation of provpkg.Provider[*genai.Client].
 type transport struct {

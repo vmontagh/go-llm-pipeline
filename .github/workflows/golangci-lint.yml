@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
-          cache: ${{ runner.environment != 'self-hosted' }}
+          cache: false
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:

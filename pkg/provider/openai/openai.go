@@ -403,21 +403,6 @@ func WithTracer(tr Tracer) ProviderOption {
 	return func(c *providerConfig) { c.tracer = tr }
 }
 
-type preflighter interface {
-	Preflight(ctx context.Context) error
-}
-
-type provider interface {
-	Name() string
-	Model() string
-	ProviderLabel() string
-	TraceRegionName() string
-	Keys() *provpkg.KeyPool[string]
-	ClassifyError(provpkg.ClassifyInput, provpkg.RetryContext) provpkg.ErrorTier
-	EnrichError(provpkg.ClassifyInput, error, []byte) error // Wait, signature in transport was (ErrorTier, error, []byte) -> let's make it match provpkg.Provider[string]
-	Call(ctx context.Context, lease *provpkg.Lease[string], prompt string, imageData []byte) provpkg.CallResult
-	preflighter
-}
 
 // Preflight is a no-op for OpenAI
 func (t *transport) Preflight(_ context.Context) error {

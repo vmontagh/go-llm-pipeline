@@ -23,21 +23,6 @@ import (
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
 
-type preflighter interface {
-	Preflight(ctx context.Context) error
-}
-
-type provider interface {
-	Name() string
-	Model() string
-	ProviderLabel() string
-	TraceRegionName() string
-	Keys() *provpkg.KeyPool[struct{}]
-	ClassifyError(provpkg.ClassifyInput, provpkg.RetryContext) provpkg.ErrorTier
-	EnrichError(tier provpkg.ErrorTier, rawErr error, body []byte) error
-	Call(ctx context.Context, lease *provpkg.Lease[struct{}], prompt string, imageData []byte) provpkg.CallResult
-	preflighter
-}
 
 const providerLabel = "ollama"
 const traceRegionName = "Analyze_Ollama"
