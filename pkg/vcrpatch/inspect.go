@@ -14,11 +14,12 @@ const (
 
 const inspectTemplateText = `--- {{ .Path }} (Interactions: {{ len .Cassette.Interactions }}) ---
 {{- range $i, $int := .Cassette.Interactions }}
-[{{ printf "%2d" $i }}] {{ printf "%-6s" $int.Request.Method }} {{ printf "%-80s" (truncateURL $int.Request.URL) }} -> {{ printf "%3d" $int.Response.Code }} (ReqBody: {{ printf "%5d" (len $int.Request.Body) }} bytes, RespBody: {{ printf "%5d" (len $int.Response.Body) }} bytes)
+[{{ printf "%2d" $i }}] {{ printf "%-6s" $int.Request.Method }} {{ printf "%-*s" maxURLWidth (truncateURL $int.Request.URL) }} -> {{ printf "%3d" $int.Response.Code }} (ReqBody: {{ printf "%5d" (len $int.Request.Body) }} bytes, RespBody: {{ printf "%5d" (len $int.Response.Body) }} bytes)
 {{- end }}
 `
 
 var inspectTemplate = template.Must(template.New("inspect").Funcs(template.FuncMap{
+	"maxURLWidth": func() int { return maxURLWidth },
 	"truncateURL": func(u string) string {
 		if len(u) > maxURLWidth {
 			return u[:maxURLWidth-truncatePadding] + truncateSuffix

@@ -1,6 +1,6 @@
 module github.com/vmontagh/go-llm-pipeline
 
-go 1.26.4
+go 1.26
 
 require (
 	github.com/blaze2305/partial-json-parser v0.1.1
