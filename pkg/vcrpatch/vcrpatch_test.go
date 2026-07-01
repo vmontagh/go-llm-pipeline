@@ -532,3 +532,109 @@ func TestPatchInteractionBody(t *testing.T) {
 		})
 	}
 }
+
+func TestHasJSONContentType(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		headers map[string][]string
+		want    bool
+	}{
+		{
+			name:    "canonical casing",
+			headers: map[string][]string{"Content-Type": {"application/json"}},
+			want:    true,
+		},
+		{
+			name:    "lowercase key",
+			headers: map[string][]string{"content-type": {"application/json"}},
+			want:    true,
+		},
+		{
+			name:    "uppercase value",
+			headers: map[string][]string{"Content-Type": {"Application/JSON"}},
+			want:    true,
+		},
+		{
+			name:    "mixed case key and value",
+			headers: map[string][]string{"CONTENT-TYPE": {"Application/Json; charset=utf-8"}},
+			want:    true,
+		},
+		{
+			name:    "non-JSON content type",
+			headers: map[string][]string{"Content-Type": {"text/plain"}},
+			want:    false,
+		},
+		{
+			name:    "empty headers",
+			headers: map[string][]string{},
+			want:    false,
+		},
+		{
+			name:    "nil headers",
+			headers: nil,
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hasJSONContentType(tt.headers)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("hasJSONContentType mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestSyncContentLength_CaseInsensitive(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		headers  map[string][]string
+		body     string
+		wantBody string
+	}{
+		{
+			name:     "lowercase content-type triggers JSON formatting",
+			headers:  map[string][]string{"content-type": {"Application/JSON"}},
+			body:     `{"a":1}`,
+			wantBody: "{\n  \"a\": 1\n}",
+		},
+		{
+			name:     "canonical Content-Type triggers JSON formatting",
+			headers:  map[string][]string{"Content-Type": {"application/json"}},
+			body:     `{"a":1}`,
+			wantBody: "{\n  \"a\": 1\n}",
+		},
+		{
+			name:     "non-JSON Content-Type leaves body unchanged",
+			headers:  map[string][]string{"Content-Type": {"text/plain"}},
+			body:     `{"a":1}`,
+			wantBody: `{"a":1}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			interaction := Interaction{
+				Response: InteractionResp{
+					Headers:       tt.headers,
+					Body:          tt.body,
+					ContentLength: len(tt.body),
+				},
+			}
+			action := SyncContentLength()
+			result, err := action.Apply(&interaction, nil)
+			if err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+			gotBody := result[0].Response.Body
+			if diff := cmp.Diff(tt.wantBody, gotBody); diff != "" {
+				t.Errorf("body mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}

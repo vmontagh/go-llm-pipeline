@@ -152,8 +152,15 @@ func prettyFormatBody(body *string, headers map[string][]string, cl *int64) {
 }
 
 func hasJSONContentType(headers map[string][]string) bool {
-	contentType := headers["Content-Type"]
-	return len(contentType) > 0 && strings.Contains(contentType[0], "application/json")
+	for k, v := range headers {
+		if !strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		if len(v) > 0 && strings.Contains(strings.ToLower(v[0]), "application/json") {
+			return true
+		}
+	}
+	return false
 }
 
 func prettyJSON(raw string) (string, bool) {
