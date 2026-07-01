@@ -1,0 +1,29 @@
+name: Lint Markdown
+
+on:
+  pull_request:
+    branches: [ main ]
+
+# Automatically cancel in-progress runs for the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  markdown-lint:
+    name: Run gomarklint
+    runs-on: self-hosted
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Install and run gomarklint
+        run: |
+          go install github.com/shinagawa-web/gomarklint@v1.5.0
+          $(go env GOPATH)/bin/gomarklint .

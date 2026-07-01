@@ -1,0 +1,13 @@
+{
+  "minHeadingLevel": 2,
+  "include": [
+    "."
+  ],
+  "ignore": [],
+  "output": "text",
+  "enableDuplicateHeadingCheck": true,
+  "enableHeadingLevelCheck": true,
+  "enableNoMultipleBlankLinesCheck": true,
+  "enableNoSetextHeadingsCheck": true,
+  "enableFinalBlankLineCheck": true
+}
