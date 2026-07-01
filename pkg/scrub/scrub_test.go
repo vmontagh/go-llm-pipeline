@@ -96,3 +96,12 @@ func TestScrubber_ZeroValue(t *testing.T) {
 		t.Errorf("zero-value Scrubber must pass text through: (-want +got):\n%s", diff)
 	}
 }
+
+func TestScrubber_ZeroValueRule(t *testing.T) {
+	t.Parallel()
+	s := NewScrubber(Rule{})
+	got := s.Scrub("unchanged")
+	if diff := cmp.Diff("unchanged", got); diff != "" {
+		t.Errorf("Scrubber with zero-value Rule must pass text through: (-want +got):\n%s", diff)
+	}
+}

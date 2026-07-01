@@ -6,7 +6,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -97,7 +96,7 @@ type Lease[T any] struct {
 //   - ctx already cancelled: returns ctx.Err().
 func (p *KeyPool[T]) Acquire(ctx context.Context) (*Lease[T], error) {
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("KeyPool.Acquire: %w", err)
+		return nil, err
 	}
 
 	p.mu.Lock()

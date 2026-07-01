@@ -45,6 +45,10 @@ func NewDeadLetterQueue(filePath string, appLogger *slog.Logger) (*DeadLetterQue
 		return nil, fmt.Errorf("opening DLQ file: %w", err)
 	}
 
+	if appLogger == nil {
+		appLogger = slog.New(slog.DiscardHandler)
+	}
+
 	return &DeadLetterQueue{
 		filePath: filePath,
 		file:     file,
