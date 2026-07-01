@@ -458,13 +458,10 @@ func TestPatchInteractionBody(t *testing.T) {
 			}
 
 			_, err := PatchInteractionBody(filePath, tt.index, tt.isRequest, tt.newBody)
+			if tt.wantErrSub != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErrSub)) {
+				t.Fatalf("error = %v, want substring %q", err, tt.wantErrSub)
+			}
 			if tt.wantErrSub != "" {
-				if err == nil {
-					t.Fatal("expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), tt.wantErrSub) {
-					t.Errorf("expected error to contain %q, got %q", tt.wantErrSub, err.Error())
-				}
 				return
 			}
 			if err != nil {
@@ -475,15 +472,12 @@ func TestPatchInteractionBody(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loading cassette: %v", err)
 			}
+			gotBody := c.Interactions[tt.index].Response.Body
 			if tt.isRequest {
-				if c.Interactions[tt.index].Request.Body != tt.wantBody {
-					t.Errorf("expected request body %q, got %q", tt.wantBody, c.Interactions[tt.index].Request.Body)
-				}
+				gotBody = c.Interactions[tt.index].Request.Body
 			}
-			if !tt.isRequest {
-				if c.Interactions[tt.index].Response.Body != tt.wantBody {
-					t.Errorf("expected response body %q, got %q", tt.wantBody, c.Interactions[tt.index].Response.Body)
-				}
+			if gotBody != tt.wantBody {
+				t.Errorf("got body = %q, want %q", gotBody, tt.wantBody)
 			}
 		})
 	}
