@@ -563,3 +563,37 @@ func TestJudgeAnalyzer_OutOfBoundsBehavior(t *testing.T) {
 		})
 	}
 }
+
+func TestIsNil(t *testing.T) {
+	t.Parallel()
+	var nilPtr *dummyAnalysisResult
+	var nilMap map[string]int
+	var nilSlice []int
+	var nilChan chan int
+	var nilFunc func()
+
+	tests := []struct {
+		name string
+		val  any
+		want bool
+	}{
+		{"untyped nil", nil, true},
+		{"nil pointer", nilPtr, true},
+		{"nil map", nilMap, true},
+		{"nil slice", nilSlice, true},
+		{"nil chan", nilChan, true},
+		{"nil func", nilFunc, true},
+		{"non-nil pointer", &dummyAnalysisResult{}, false},
+		{"non-nil value", dummyAnalysisResult{}, false},
+		{"int value", 0, false},
+		{"string value", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := isNil(tt.val); got != tt.want {
+				t.Errorf("isNil(%#v) = %t, want %t", tt.val, got, tt.want)
+			}
+		})
+	}
+}

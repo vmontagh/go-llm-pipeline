@@ -108,10 +108,14 @@ func (a injectBeforeAction) Apply(matched *Interaction, _ []Interaction) ([]Inte
 		clone.Response.Status = status
 
 		if inject.Response.Headers != nil {
-			clone.Response.Headers = inject.Response.Headers
+			headers := make(map[string][]string, len(inject.Response.Headers))
+			for k, v := range inject.Response.Headers {
+				headers[k] = append([]string(nil), v...)
+			}
+			clone.Response.Headers = headers
 		}
 		if inject.Response.TransferEncoding != nil {
-			clone.Response.TransferEncoding = inject.Response.TransferEncoding
+			clone.Response.TransferEncoding = append([]string(nil), inject.Response.TransferEncoding...)
 		}
 		clone.Response.Duration = "0s"
 		result = append(result, clone)

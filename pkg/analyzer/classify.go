@@ -78,10 +78,15 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 	tp := req.Policy.Lookup(tier)
 	req.Lease.MarkCooldown(tp, req.RetryAfter)
 
+	effectiveCooldown := tp.Cooldown
+	if tp.HonorRetryAfter && req.RetryAfter > effectiveCooldown {
+		effectiveCooldown = req.RetryAfter
+	}
+
 	switch tier {
 	case TierLongTransientInfinite, TierLongTransientBounded, TierShortRateLimit:
 		msg := fmt.Sprintf("%s credential %d/%d cooled for %v after rate-limit/quota: %v",
-			req.Info.Provider, req.Info.CredentialIdx+1, req.Info.CredentialCount, tp.Cooldown, req.Err)
+			req.Info.Provider, req.Info.CredentialIdx+1, req.Info.CredentialCount, effectiveCooldown, req.Err)
 		if len(req.Info.ResponseBody) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, string(req.Info.ResponseBody))
 		}
@@ -92,7 +97,7 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 			"provider", req.Info.Provider,
 			"credential", req.Info.CredentialIdx+1,
 			"total", req.Info.CredentialCount,
-			"cooldown", tp.Cooldown,
+			"cooldown", effectiveCooldown,
 			"err", req.Err,
 		)
 	case TierShortTransient:

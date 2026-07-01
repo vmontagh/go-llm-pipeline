@@ -148,7 +148,7 @@ type andMatcher struct {
 
 func (m andMatcher) Match(req *InteractionReq) bool {
 	for _, matcher := range m.matchers {
-		if !matcher.Match(req) {
+		if matcher == nil || !matcher.Match(req) {
 			return false
 		}
 	}
@@ -166,7 +166,7 @@ type orMatcher struct {
 
 func (m orMatcher) Match(req *InteractionReq) bool {
 	for _, matcher := range m.matchers {
-		if matcher.Match(req) {
+		if matcher != nil && matcher.Match(req) {
 			return true
 		}
 	}
