@@ -1,11 +1,9 @@
-package scrub_test
+package scrub
 
 import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/scrub"
 )
 
 func TestRegexpRule(t *testing.T) {
@@ -42,14 +40,14 @@ func TestRegexpRule(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r, err := scrub.RegexpRule(tt.pattern, tt.replacement)
+			r, err := RegexpRule(tt.pattern, tt.replacement)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("RegexpRule() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if tt.wantErr {
 				return
 			}
-			got := scrub.NewScrubber(r).Scrub(tt.input)
+			got := NewScrubber(r).Scrub(tt.input)
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Errorf("Scrub() mismatch (-want +got):\n%s", diff)
 			}
@@ -64,16 +62,16 @@ func TestMustRegexpRule_Panics(t *testing.T) {
 			t.Error("expected panic for invalid pattern, got none")
 		}
 	}()
-	scrub.MustRegexpRule(`[invalid`, "[REDACTED]")
+	MustRegexpRule(`[invalid`, "[REDACTED]")
 }
 
 func TestScrubber_RulesAppliedInOrder(t *testing.T) {
 	t.Parallel()
 	// First rule turns "foo" into "bar", second turns "bar" into "baz".
 	// Applied in order: "foo" -> "bar" -> "baz".
-	s := scrub.NewScrubber(
-		scrub.MustRegexpRule(`foo`, "bar"),
-		scrub.MustRegexpRule(`bar`, "baz"),
+	s := NewScrubber(
+		MustRegexpRule(`foo`, "bar"),
+		MustRegexpRule(`bar`, "baz"),
 	)
 	got := s.Scrub("foo")
 	if diff := cmp.Diff("baz", got); diff != "" {
@@ -83,7 +81,7 @@ func TestScrubber_RulesAppliedInOrder(t *testing.T) {
 
 func TestScrubber_MultipleMatches(t *testing.T) {
 	t.Parallel()
-	s := scrub.NewScrubber(scrub.MustRegexpRule(`\d+`, "[NUM]"))
+	s := NewScrubber(MustRegexpRule(`\d+`, "[NUM]"))
 	got := s.Scrub("id=123, count=456")
 	if diff := cmp.Diff("id=[NUM], count=[NUM]", got); diff != "" {
 		t.Errorf("Scrub() mismatch (-want +got):\n%s", diff)
@@ -92,7 +90,7 @@ func TestScrubber_MultipleMatches(t *testing.T) {
 
 func TestScrubber_ZeroValue(t *testing.T) {
 	t.Parallel()
-	var s scrub.Scrubber
+	var s Scrubber
 	got := s.Scrub("unchanged")
 	if diff := cmp.Diff("unchanged", got); diff != "" {
 		t.Errorf("zero-value Scrubber must pass text through: (-want +got):\n%s", diff)
