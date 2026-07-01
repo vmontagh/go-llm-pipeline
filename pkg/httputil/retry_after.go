@@ -1,7 +1,7 @@
 // Package httputil contains small, protocol-level HTTP helpers that
 // are independent of any business logic in this repository.
 //
-// These helpers are intentionally placed outside of internal/analyzer
+// These helpers are intentionally placed outside of pkg/analyzer
 // so that LLM provider implementations (OpenAI, Gemini, Ollama, …) can
 // consume generic HTTP utilities without taking a dependency on the
 // analyzer "core" (interfaces, key pool, retry policy, error

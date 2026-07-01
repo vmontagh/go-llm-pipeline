@@ -106,7 +106,7 @@ func TestTransport_MetadataAndNewProvider(t *testing.T) {
 	if !ok {
 		t.Fatal("NewProvider did not return *transport")
 	}
-	if diff := cmp.Diff(DefaultModel, p.Name()); diff != "" {
+	if diff := cmp.Diff("gemini/"+DefaultModel, p.Name()); diff != "" {
 		t.Fatalf("Name mismatch (-want +got):\n%s", diff)
 	}
 	if diff := cmp.Diff(DefaultModel, p.Model()); diff != "" {

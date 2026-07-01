@@ -21,7 +21,7 @@ type Patch struct {
 // ErrInvalidPatch is returned when a patch has a nil Match or Action.
 var ErrInvalidPatch = errors.New("invalid patch")
 
-// Execute loads the BaseCassette, applies all Patches sequentially, and saves it to TargetCassette.
+// Execute loads the BaseCassette, applies the first matching Patch to each interaction, and saves the result to TargetCassette.
 func (s *Scenario) Execute() error {
 	for i, p := range s.Patches {
 		if p.Match == nil {
@@ -61,8 +61,8 @@ func (s *Scenario) Execute() error {
 		}
 
 		// Automatically sync content length and format for all replaced/injected responses
+		syncAct := SyncContentLength()
 		for idx := range replacement {
-			syncAct := SyncContentLength()
 			_, err = syncAct.Apply(&replacement[idx], c.Interactions)
 			if err != nil {
 				return fmt.Errorf("syncing content length: %w", err)
