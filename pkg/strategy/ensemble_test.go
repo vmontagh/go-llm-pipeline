@@ -76,52 +76,66 @@ func testMerger(results []dummyAnalysisResult, errs []error) (dummyAnalysisResul
 
 func TestEnsembleAnalyzer_Init(t *testing.T) {
 	t.Parallel()
-	t.Run("empty", func(t *testing.T) {
-		t.Parallel()
-		_, err := NewEnsembleAnalyzer[dummyAnalysisResult](nil, testMerger)
-		if err == nil {
-			t.Fatal("want error for empty analyzers")
-		}
-	})
 
-	t.Run("nil_merger", func(t *testing.T) {
-		t.Parallel()
-		_, err := NewEnsembleAnalyzer[dummyAnalysisResult]([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}}, nil)
-		if !errors.Is(err, ErrEnsembleNoMerger) {
-			t.Errorf("got %v, want %v", err, ErrEnsembleNoMerger)
-		}
-	})
+	tests := []struct {
+		name       string
+		generators []Generator[dummyAnalysisResult]
+		merger     func([]dummyAnalysisResult, []error) (dummyAnalysisResult, error)
+		options    []EnsembleOption[dummyAnalysisResult]
+		wantErr    error
+		wantName   string
+	}{
+		{
+			name:       "empty",
+			generators: nil,
+			merger:     testMerger,
+			wantErr:    ErrEnsembleNoGenerators,
+		},
+		{
+			name:       "nil_merger",
+			generators: []Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}},
+			merger:     nil,
+			wantErr:    ErrEnsembleNoMerger,
+		},
+		{
+			name:       "nil generator in slice",
+			generators: []Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}, nil},
+			merger:     testMerger,
+			wantErr:    ErrGeneratorRequired,
+		},
+		{
+			name:       "nil tracer option ignored",
+			generators: []Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}},
+			merger:     testMerger,
+			options: []EnsembleOption[dummyAnalysisResult]{
+				WithEnsembleTracer[dummyAnalysisResult](nil),
+			},
+			wantErr: nil,
+		},
+		{
+			name:       "success",
+			generators: []Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}},
+			merger:     testMerger,
+			wantErr:    nil,
+			wantName:   "ensemble(a)",
+		},
+	}
 
-	t.Run("nil generator in slice", func(t *testing.T) {
-		t.Parallel()
-		_, err := NewEnsembleAnalyzer[dummyAnalysisResult]([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}, nil}, testMerger)
-		if !errors.Is(err, ErrGeneratorRequired) {
-			t.Errorf("error = %v, want %v", err, ErrGeneratorRequired)
-		}
-	})
-
-	t.Run("nil tracer option ignored", func(t *testing.T) {
-		t.Parallel()
-		_, err := NewEnsembleAnalyzer[dummyAnalysisResult](
-			[]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}},
-			testMerger,
-			WithEnsembleTracer[dummyAnalysisResult](nil),
-		)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("success", func(t *testing.T) {
-		t.Parallel()
-		a, err := NewEnsembleAnalyzer([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}}, testMerger)
-		if err != nil {
-			t.Fatalf("unwant error: %v", err)
-		}
-		if a.Name() != "ensemble(a)" {
-			t.Errorf("Name() got %q", a.Name())
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			a, err := NewEnsembleAnalyzer[dummyAnalysisResult](tt.generators, tt.merger, tt.options...)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil {
+				return
+			}
+			if tt.wantName != "" && a.Name() != tt.wantName {
+				t.Errorf("a.Name() = %q, want %q", a.Name(), tt.wantName)
+			}
+		})
+	}
 }
 
 func TestEnsembleAnalyzer_Analyze(t *testing.T) {

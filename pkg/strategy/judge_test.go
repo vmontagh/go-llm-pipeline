@@ -76,35 +76,41 @@ func TestJudgeAnalyzer_Init(t *testing.T) {
 		promptBuilder func(ctx context.Context, generatorPrompt string, drafts []*dummyAnalysisResult, feedback []string, attempt int) string
 		options       []JudgeOption[*dummyAnalysisResult]
 		wantErr       error
+		wantName      string
 	}{
 		{
-			name:       "empty judge",
-			judge:      nil,
-			generators: []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
-			wantErr:    ErrJudgeRequired,
+			name:          "empty judge",
+			judge:         nil,
+			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
+			promptBuilder: dummyPromptBuilder,
+			wantErr:       ErrJudgeRequired,
 		},
 		{
-			name:       "empty generators",
-			judge:      &fakeJudgeAnalyzer{name: "j"},
-			generators: nil,
-			wantErr:    ErrJudgeNoGenerators,
+			name:          "empty generators",
+			judge:         &fakeJudgeAnalyzer{name: "j"},
+			generators:    nil,
+			promptBuilder: dummyPromptBuilder,
+			wantErr:       ErrJudgeNoGenerators,
 		},
 		{
-			name:       "empty prompt builder",
-			judge:      &fakeJudgeAnalyzer{name: "j"},
-			generators: []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
-			wantErr:    ErrPromptBuilderRequired,
+			name:          "empty prompt builder",
+			judge:         &fakeJudgeAnalyzer{name: "j"},
+			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
+			promptBuilder: nil,
+			wantErr:       ErrPromptBuilderRequired,
 		},
 		{
-			name:       "nil generator in slice",
-			judge:      &fakeJudgeAnalyzer{name: "j"},
-			generators: []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}, nil},
-			wantErr:    ErrGeneratorRequired,
+			name:          "nil generator in slice",
+			judge:         &fakeJudgeAnalyzer{name: "j"},
+			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}, nil},
+			promptBuilder: dummyPromptBuilder,
+			wantErr:       ErrGeneratorRequired,
 		},
 		{
-			name:       "nil logger and tracer options ignored",
-			judge:      &fakeJudgeAnalyzer{name: "j"},
-			generators: []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
+			name:          "nil logger and tracer options ignored",
+			judge:         &fakeJudgeAnalyzer{name: "j"},
+			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "a"}},
+			promptBuilder: dummyPromptBuilder,
 			options: []JudgeOption[*dummyAnalysisResult]{
 				WithJudgeLogger[*dummyAnalysisResult](nil),
 				WithJudgeTracer[*dummyAnalysisResult](nil),
@@ -112,30 +118,27 @@ func TestJudgeAnalyzer_Init(t *testing.T) {
 			wantErr: nil,
 		},
 		{
-			name:       "success",
-			judge:      &fakeJudgeAnalyzer{name: "j"},
-			generators: []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "g1"}, &fakePointerAnalyzer{name: "g2"}},
-			wantErr:    nil,
+			name:          "success",
+			judge:         &fakeJudgeAnalyzer{name: "j"},
+			generators:    []Generator[*dummyAnalysisResult]{&fakePointerAnalyzer{name: "g1"}, &fakePointerAnalyzer{name: "g2"}},
+			promptBuilder: dummyPromptBuilder,
+			wantErr:       nil,
+			wantName:      "judge(j) <- generators(g1,g2)",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			builder := dummyPromptBuilder
-			if tt.name == "empty prompt builder" {
-				builder = nil
-			}
-			a, err := NewJudgeAnalyzer[*dummyAnalysisResult](tt.judge, tt.generators, builder, tt.options...)
+			a, err := NewJudgeAnalyzer[*dummyAnalysisResult](tt.judge, tt.generators, tt.promptBuilder, tt.options...)
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("err = %v, want error %v", err, tt.wantErr)
 			}
 			if tt.wantErr != nil {
 				return
 			}
-			wantName := "judge(j) <- generators(g1,g2)"
-			if tt.name == "success" && a.Name() != wantName {
-				t.Errorf("Name() got %q, want %q", a.Name(), wantName)
+			if tt.wantName != "" && a.Name() != tt.wantName {
+				t.Errorf("a.Name() = %q, want %q", a.Name(), tt.wantName)
 			}
 		})
 	}
