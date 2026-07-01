@@ -244,3 +244,10 @@ func TestPrintPrettyResult(t *testing.T) {
 		}
 	})
 }
+
+func TestFormatInteraction_Nil(t *testing.T) {
+	t.Parallel()
+	if FormatInteraction(nil) {
+		t.Error("FormatInteraction(nil) expected to return false, got true")
+	}
+}

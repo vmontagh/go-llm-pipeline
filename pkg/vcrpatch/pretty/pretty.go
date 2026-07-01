@@ -35,6 +35,9 @@ func FormatJSON(raw string) string {
 
 // FormatInteraction pretty-prints request/response JSON bodies in an interaction.
 func FormatInteraction(i *vcrpatch.Interaction) bool {
+	if i == nil {
+		return false
+	}
 	requestChanged := formatRequest(i)
 	responseChanged := formatResponse(i)
 	return requestChanged || responseChanged

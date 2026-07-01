@@ -17,12 +17,13 @@ func PatchInteractionBody(path string, index int, isRequest bool, newBody string
 		return "", fmt.Errorf("loading %s: %w", path, err)
 	}
 	if index < 0 || index >= len(c.Interactions) {
-		return "", fmt.Errorf("index %d out of bounds (max %d): %w", index, len(c.Interactions)-1, ErrIndexOutOfBounds)
+		return "", fmt.Errorf("index %d out of bounds (len %d): %w", index, len(c.Interactions), ErrIndexOutOfBounds)
 	}
 
 	if isRequest {
 		patchRequest(&c.Interactions[index], newBody)
-	} else {
+	}
+	if !isRequest {
 		patchResponse(&c.Interactions[index], newBody)
 	}
 

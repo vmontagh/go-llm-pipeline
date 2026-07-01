@@ -12,6 +12,9 @@ import (
 // read from an input channel, check for context cancellation, and execute a process function.
 // It manages the provided WaitGroup (if not nil) to ensure all workers are cleanly awaited.
 func Consume[T any](ctx context.Context, input <-chan T, concurrency int, wg *sync.WaitGroup, process func(context.Context, T)) {
+	if process == nil {
+		return
+	}
 	if concurrency <= 0 {
 		concurrency = 1
 	}

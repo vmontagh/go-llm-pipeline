@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -402,5 +403,88 @@ func TestScenario_ValidatePatches(t *testing.T) {
 	}
 	if err := scenarioNilAction.Execute(); err == nil || !errors.Is(err, ErrInvalidPatch) {
 		t.Errorf("expected ErrInvalidPatch, got: %v", err)
+	}
+}
+
+func TestPatchInteractionBody(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+
+	baseYAML := `interactions:
+- id: 1
+  request:
+    method: GET
+    url: http://example.com/api
+    body: 'hello'
+  response:
+    code: 200
+    body: 'world'
+`
+	basePath := filepath.Join(tempDir, "base.yaml")
+	if err := os.WriteFile(basePath, []byte(baseYAML), 0o600); err != nil {
+		t.Fatalf("error writing file: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		index      int
+		isRequest  bool
+		newBody    string
+		wantErrSub string
+		wantBody   string
+	}{
+		{
+			name:       "out of bounds error message format",
+			index:      5,
+			isRequest:  true,
+			newBody:    "new",
+			wantErrSub: "index 5 out of bounds (len 1)",
+		},
+		{
+			name:      "success patch request",
+			index:     0,
+			isRequest: true,
+			newBody:   "new_request",
+			wantBody:  "new_request",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			filePath := filepath.Join(tempDir, tt.name+".yaml")
+			if err := os.WriteFile(filePath, []byte(baseYAML), 0o600); err != nil {
+				t.Fatalf("error writing file: %v", err)
+			}
+
+			_, err := PatchInteractionBody(filePath, tt.index, tt.isRequest, tt.newBody)
+			if tt.wantErrSub != "" {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.wantErrSub) {
+					t.Errorf("expected error to contain %q, got %q", tt.wantErrSub, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			c, err := LoadCassette(filePath)
+			if err != nil {
+				t.Fatalf("loading cassette: %v", err)
+			}
+			if tt.isRequest {
+				if c.Interactions[tt.index].Request.Body != tt.wantBody {
+					t.Errorf("expected request body %q, got %q", tt.wantBody, c.Interactions[tt.index].Request.Body)
+				}
+			}
+			if !tt.isRequest {
+				if c.Interactions[tt.index].Response.Body != tt.wantBody {
+					t.Errorf("expected response body %q, got %q", tt.wantBody, c.Interactions[tt.index].Response.Body)
+				}
+			}
+		})
 	}
 }
