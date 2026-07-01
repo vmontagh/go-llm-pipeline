@@ -31,7 +31,7 @@ StartRegion(ctx context.Context, name string) interface{ End() }
 // noOpTracer is a tracer that does nothing.
 type noOpTracer struct{}
 
-func (noOpTracer) StartRegion(_ context.Context, _ string) interface{ End() } {
+func (noOpTracer) StartRegion(context.Context, string) interface{ End() } {
 return noOpRegion{}
 }
 
