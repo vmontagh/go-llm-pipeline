@@ -171,7 +171,7 @@ func (p *KeyPool[T]) MinCooldown() time.Duration {
 // Release marks the lease's slot as successfully used (no cooldown)
 // and frees it for future Acquire calls. Safe to call more than once.
 func (l *Lease[T]) Release() {
-	if l == nil || l.pool == nil {
+	if l == nil || l.pool == nil || l.slot == nil {
 		return
 	}
 	l.pool.releaseSlot(l.slot, 0)
@@ -182,7 +182,7 @@ func (l *Lease[T]) Release() {
 // floor when policy.HonorRetryAfter is true. Negative or zero
 // policy.Cooldown values release the slot immediately.
 func (l *Lease[T]) MarkCooldown(policy TierPolicy, retryAfter time.Duration) {
-	if l == nil || l.pool == nil {
+	if l == nil || l.pool == nil || l.slot == nil {
 		return
 	}
 	cd := policy.Cooldown
