@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 )
@@ -19,7 +20,12 @@ type replaceStatusCodeAction struct {
 
 func (a replaceStatusCodeAction) Apply(matched *Interaction, _ []Interaction) ([]Interaction, error) {
 	matched.Response.Code = a.code
-	matched.Response.Status = fmt.Sprintf("%d Status", a.code)
+	statusText := http.StatusText(a.code)
+	if statusText != "" {
+		matched.Response.Status = fmt.Sprintf("%d %s", a.code, statusText)
+	} else {
+		matched.Response.Status = fmt.Sprintf("%d Status", a.code)
+	}
 	return []Interaction{*matched}, nil
 }
 

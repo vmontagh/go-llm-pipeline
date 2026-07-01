@@ -1,6 +1,7 @@
 package vcrpatch
 
 import (
+	"net/url"
 	"strings"
 )
 
@@ -87,7 +88,16 @@ type urlQueryParamMatcher struct {
 }
 
 func (m urlQueryParamMatcher) Match(req *InteractionReq) bool {
-	return strings.Contains(req.URL, m.key+"="+m.value)
+	u, err := url.Parse(req.URL)
+	if err != nil {
+		return false
+	}
+	for _, val := range u.Query()[m.key] {
+		if val == m.value {
+			return true
+		}
+	}
+	return false
 }
 
 // URLQueryParam matches if the request URL contains a query param matching key=value.
