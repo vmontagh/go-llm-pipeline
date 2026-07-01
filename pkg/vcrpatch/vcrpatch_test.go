@@ -100,34 +100,34 @@ func TestNthMatch(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		matcher  Matcher
-		reqs     []*InteractionReq
-		expected []bool
+		name    string
+		matcher Matcher
+		reqs    []*InteractionReq
+		want    []bool
 	}{
 		{
-			name:     "match on Nth post",
-			matcher:  NthMatch(MethodEquals("POST"), 2),
-			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "GET"}, {Method: "POST"}},
-			expected: []bool{false, false, true},
+			name:    "match on Nth post",
+			matcher: NthMatch(MethodEquals("POST"), 2),
+			reqs:    []*InteractionReq{{Method: "POST"}, {Method: "GET"}, {Method: "POST"}},
+			want:    []bool{false, false, true},
 		},
 		{
-			name:     "nil inner matcher",
-			matcher:  NthMatch(nil, 2),
-			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
-			expected: []bool{false, false},
+			name:    "nil inner matcher",
+			matcher: NthMatch(nil, 2),
+			reqs:    []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			want:    []bool{false, false},
 		},
 		{
-			name:     "invalid negative n",
-			matcher:  NthMatch(MethodEquals("POST"), -1),
-			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
-			expected: []bool{false, false},
+			name:    "invalid negative n",
+			matcher: NthMatch(MethodEquals("POST"), -1),
+			reqs:    []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			want:    []bool{false, false},
 		},
 		{
-			name:     "invalid zero n",
-			matcher:  NthMatch(MethodEquals("POST"), 0),
-			reqs:     []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
-			expected: []bool{false, false},
+			name:    "invalid zero n",
+			matcher: NthMatch(MethodEquals("POST"), 0),
+			reqs:    []*InteractionReq{{Method: "POST"}, {Method: "POST"}},
+			want:    []bool{false, false},
 		},
 	}
 
@@ -136,8 +136,8 @@ func TestNthMatch(t *testing.T) {
 			t.Parallel()
 			for idx, req := range tt.reqs {
 				got := tt.matcher.Match(req)
-				if got != tt.expected[idx] {
-					t.Errorf("at index %d: Match() = %v, want %v", idx, got, tt.expected[idx])
+				if got != tt.want[idx] {
+					t.Errorf("at index %d: Match() = %v, want %v", idx, got, tt.want[idx])
 				}
 			}
 		})
@@ -399,7 +399,7 @@ func TestMutateBodyError(t *testing.T) {
 
 	err := scenario.Execute()
 	if err == nil {
-		t.Fatal("expected error, got nil")
+		t.Fatal("got nil error, want error")
 	}
 }
 
@@ -417,7 +417,7 @@ func TestScenario_ValidatePatches(t *testing.T) {
 		},
 	}
 	if err := scenarioNilMatch.Execute(); err == nil || !errors.Is(err, ErrInvalidPatch) {
-		t.Errorf("expected ErrInvalidPatch, got: %v", err)
+		t.Errorf("Execute() err = %v, want %v", err, ErrInvalidPatch)
 	}
 
 	scenarioNilAction := Scenario{
@@ -431,7 +431,7 @@ func TestScenario_ValidatePatches(t *testing.T) {
 		},
 	}
 	if err := scenarioNilAction.Execute(); err == nil || !errors.Is(err, ErrInvalidPatch) {
-		t.Errorf("expected ErrInvalidPatch, got: %v", err)
+		t.Errorf("Execute() err = %v, want %v", err, ErrInvalidPatch)
 	}
 }
 

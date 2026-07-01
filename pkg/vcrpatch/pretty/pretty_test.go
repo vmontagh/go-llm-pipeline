@@ -232,7 +232,7 @@ func TestPrintPrettyResult(t *testing.T) {
 			t.Errorf("PrintPrettyResult() unexpected error: %v", err)
 		}
 		if !strings.Contains(buf.String(), "Formatted JSON") {
-			t.Errorf("PrintPrettyResult() output = %q, expected to contain 'Formatted JSON'", buf.String())
+			t.Errorf("PrintPrettyResult() output = %q, want it to contain 'Formatted JSON'", buf.String())
 		}
 	})
 
@@ -240,7 +240,7 @@ func TestPrintPrettyResult(t *testing.T) {
 		t.Parallel()
 		err := PrintPrettyResult(errorWriter{}, "some/path", true)
 		if err == nil {
-			t.Error("PrintPrettyResult() expected error on write failure, got nil")
+			t.Error("PrintPrettyResult() got nil error, want error on write failure")
 		}
 	})
 }
@@ -248,6 +248,6 @@ func TestPrintPrettyResult(t *testing.T) {
 func TestFormatInteraction_Nil(t *testing.T) {
 	t.Parallel()
 	if FormatInteraction(nil) {
-		t.Error("FormatInteraction(nil) expected to return false, got true")
+		t.Error("FormatInteraction(nil) got true, want false")
 	}
 }

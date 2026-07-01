@@ -34,6 +34,6 @@ func TestConsume_Success(t *testing.T) {
 	wg.Wait()
 
 	if len(processed) != 3 {
-		t.Errorf("expected 3 processed items, got %d", len(processed))
+		t.Errorf("len(processed) = %d, want 3", len(processed))
 	}
 }
