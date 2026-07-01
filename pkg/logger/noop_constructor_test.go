@@ -1,14 +1,12 @@
-package logger_test
+package logger
 
 import (
-"testing"
-
-"github.com/vmontagh/go-llm-pipeline/pkg/logger"
+	"testing"
 )
 
 func TestNewNoOp_DoesNotPanic(t *testing.T) {
-t.Parallel()
-l := logger.NewNoOp()
+	t.Parallel()
+	l := NewNoOp()
 if l == nil {
 t.Fatal("NewNoOp() returned nil")
 }

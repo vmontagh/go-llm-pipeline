@@ -1,14 +1,12 @@
-package logger_test
+package logger
 
 import (
-"bytes"
-"log/slog"
-"strings"
-"testing"
+	"bytes"
+	"log/slog"
+	"strings"
+	"testing"
 
-"github.com/google/go-cmp/cmp"
-
-"github.com/vmontagh/go-llm-pipeline/pkg/logger"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestNew_LevelFiltering(t *testing.T) {
@@ -54,7 +52,7 @@ for _, tt := range tests {
 t.Run(tt.name, func(t *testing.T) {
 t.Parallel()
 var buf bytes.Buffer
-l := logger.New(&buf, tt.minLevel)
+l := New(&buf, tt.minLevel)
 
 switch tt.logLevel {
 case slog.LevelDebug:
@@ -83,7 +81,7 @@ t.Errorf("New(%v).Log(%v, %q): want no output (-want +got):\n%s", tt.minLevel, t
 
 func TestNewNoOp_DiscardsAllLevels(t *testing.T) {
 t.Parallel()
-l := logger.NewNoOp()
+l := NewNoOp()
 if l == nil {
 t.Fatal("NewNoOp() returned nil")
 }
@@ -97,7 +95,7 @@ l.Error("e")
 func TestNew_StructuredAttributes(t *testing.T) {
 t.Parallel()
 var buf bytes.Buffer
-l := logger.New(&buf, slog.LevelInfo)
+l := New(&buf, slog.LevelInfo)
 l.Info("hello", "key", "value")
 got := buf.String()
 if !strings.Contains(got, "key") || !strings.Contains(got, "value") {
