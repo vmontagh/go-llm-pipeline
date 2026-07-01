@@ -15,8 +15,8 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
-	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
+	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
 
@@ -395,7 +395,6 @@ func WithLogger(l *slog.Logger) ProviderOption {
 func WithTracer(tr Tracer) ProviderOption {
 	return func(c *providerConfig) { c.tracer = tr }
 }
-
 
 // Preflight is a no-op for OpenAI
 func (t *transport) Preflight(_ context.Context) error {

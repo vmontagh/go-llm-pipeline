@@ -37,7 +37,6 @@ type Tracer interface {
 	StartRegion(ctx context.Context, name string) interface{ End() }
 }
 
-
 // transport is the Gemini implementation of provpkg.Provider[*genai.Client].
 type transport struct {
 	model          string
