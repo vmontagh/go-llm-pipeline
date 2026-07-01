@@ -137,25 +137,29 @@ func TestPreflight(t *testing.T) {
 func TestExtractContextLength(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		in      map[string]any
-		want    int
-		wantErr error
+		name     string
+		in       map[string]any
+		want     int
+		wantErrs []error
 	}{
 		{name: "llama prefix", in: map[string]any{"llama.context_length": float64(8192)}, want: 8192},
 		{name: "gemma2 prefix", in: map[string]any{"gemma2.context_length": float64(4096)}, want: 4096},
 		{name: "int value", in: map[string]any{"llava.context_length": 2048}, want: 2048},
-		{name: "unrelated keys are ignored", in: map[string]any{"general.parameter_count": float64(34000000000)}, wantErr: ErrContextLengthMissing},
-		{name: "missing context_length", in: map[string]any{}, wantErr: ErrContextLengthMissing},
-		{name: "non-numeric value", in: map[string]any{"llama.context_length": "big"}, wantErr: ErrContextLengthUnsupportedType},
+		{name: "unrelated keys are ignored", in: map[string]any{"general.parameter_count": float64(34000000000)}, wantErrs: []error{ErrContextLengthMissing}},
+		{name: "missing context_length", in: map[string]any{}, wantErrs: []error{ErrContextLengthMissing}},
+		{name: "non-numeric value preserves root cause", in: map[string]any{"llama.context_length": "big"}, wantErrs: []error{ErrContextLengthUnsupportedType, ErrUnsupportedNumericType}},
+		{name: "fractional value preserves root cause", in: map[string]any{"llama.context_length": float64(8192.5)}, wantErrs: []error{ErrContextLengthUnsupportedType, ErrFractionalValue}},
+		{name: "unsupported type preserves root cause", in: map[string]any{"llama.context_length": true}, wantErrs: []error{ErrContextLengthUnsupportedType, ErrUnsupportedNumericType}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got, err := extractContextLength(tt.in)
-			if tt.wantErr != nil {
-				if !errors.Is(err, tt.wantErr) {
-					t.Fatalf("error = %v, want errors.Is(_, %v)", err, tt.wantErr)
+			if len(tt.wantErrs) > 0 {
+				for _, want := range tt.wantErrs {
+					if !errors.Is(err, want) {
+						t.Errorf("extractContextLength(%v) = %v, want errors.Is(_, %v)", tt.in, err, want)
+					}
 				}
 				return
 			}
