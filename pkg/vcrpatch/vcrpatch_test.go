@@ -93,6 +93,31 @@ func TestMatchers(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("nil request safety", func(t *testing.T) {
+		t.Parallel()
+		tests := []struct {
+			name    string
+			matcher Matcher
+		}{
+			{"URLContains", URLContains("/v1/")},
+			{"MethodEquals", MethodEquals("post")},
+			{"BodyContains", BodyContains("hello")},
+			{"HeaderEquals", HeaderEquals("Content-Type", "application/json")},
+			{"URLQueryParam", URLQueryParam("method", "test")},
+			{"And", And(MethodEquals("POST"), URLContains("example.com"))},
+			{"Or", Or(MethodEquals("GET"), URLContains("example.com"))},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+				if tt.matcher.Match(nil) {
+					t.Errorf("Match(nil) got true, want false")
+				}
+			})
+		}
+	})
 }
 
 func TestNthMatch(t *testing.T) {

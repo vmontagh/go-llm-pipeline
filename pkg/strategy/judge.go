@@ -31,6 +31,7 @@ var (
 	ErrGeneratorsAllNil       = errors.New("all generator(s) returned nil drafts without an error, cannot judge")
 	ErrPromptBuilderRequired  = errors.New("promptBuilder is required")
 	ErrGeneratorsAllFailed    = errors.New("all generator(s) failed, cannot judge")
+	ErrGeneratorRequired      = errors.New("generator cannot be nil")
 )
 
 type judgeAnalyzer[R any] struct {
@@ -50,14 +51,18 @@ type JudgeOption[R any] func(*judgeAnalyzer[R])
 // WithJudgeLogger sets the *slog.Logger for the judgeAnalyzer.
 func WithJudgeLogger[R any](l *slog.Logger) JudgeOption[R] {
 	return func(j *judgeAnalyzer[R]) {
-		j.logger = l
+		if l != nil {
+			j.logger = l
+		}
 	}
 }
 
 // WithJudgeTracer sets the tracer for the judgeAnalyzer.
 func WithJudgeTracer[R any](tracer Tracer) JudgeOption[R] {
 	return func(j *judgeAnalyzer[R]) {
-		j.tracer = tracer
+		if tracer != nil {
+			j.tracer = tracer
+		}
 	}
 }
 
@@ -97,6 +102,11 @@ func NewJudgeAnalyzer[R any](
 	}
 	if len(generators) == 0 {
 		return nil, ErrJudgeNoGenerators
+	}
+	for _, g := range generators {
+		if g == nil {
+			return nil, ErrGeneratorRequired
+		}
 	}
 	if promptBuilder == nil {
 		return nil, ErrPromptBuilderRequired

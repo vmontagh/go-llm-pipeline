@@ -25,7 +25,9 @@ type EnsembleOption[R any] func(*ensembleAnalyzer[R])
 // WithEnsembleTracer sets the tracer for the ensembleAnalyzer.
 func WithEnsembleTracer[R any](tracer Tracer) EnsembleOption[R] {
 	return func(e *ensembleAnalyzer[R]) {
-		e.tracer = tracer
+		if tracer != nil {
+			e.tracer = tracer
+		}
 	}
 }
 
@@ -37,6 +39,11 @@ func NewEnsembleAnalyzer[R any](
 ) (Generator[R], error) {
 	if len(generators) == 0 {
 		return nil, ErrEnsembleNoGenerators
+	}
+	for _, g := range generators {
+		if g == nil {
+			return nil, ErrGeneratorRequired
+		}
 	}
 	if merger == nil {
 		return nil, ErrEnsembleNoMerger

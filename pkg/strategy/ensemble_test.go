@@ -88,7 +88,27 @@ func TestEnsembleAnalyzer_Init(t *testing.T) {
 		t.Parallel()
 		_, err := NewEnsembleAnalyzer[dummyAnalysisResult]([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}}, nil)
 		if !errors.Is(err, ErrEnsembleNoMerger) {
-			t.Errorf("expected ErrEnsembleNoMerger, got %v", err)
+			t.Errorf("got %v, want %v", err, ErrEnsembleNoMerger)
+		}
+	})
+
+	t.Run("nil generator in slice", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewEnsembleAnalyzer[dummyAnalysisResult]([]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}, nil}, testMerger)
+		if !errors.Is(err, ErrGeneratorRequired) {
+			t.Errorf("error = %v, want %v", err, ErrGeneratorRequired)
+		}
+	})
+
+	t.Run("nil tracer option ignored", func(t *testing.T) {
+		t.Parallel()
+		_, err := NewEnsembleAnalyzer[dummyAnalysisResult](
+			[]Generator[dummyAnalysisResult]{&fakeAnalyzer{name: "a"}},
+			testMerger,
+			WithEnsembleTracer[dummyAnalysisResult](nil),
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
@@ -190,6 +210,6 @@ func TestEnsembleAnalyzer_ContextCancellation(t *testing.T) {
 
 	_, err = ens.Analyze(ctx, "prompt", nil, "job123", nil)
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("expected context.Canceled, got %v", err)
+		t.Errorf("Analyze() err = %v, want %v", err, context.Canceled)
 	}
 }
