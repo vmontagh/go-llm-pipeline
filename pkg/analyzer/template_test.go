@@ -3,6 +3,8 @@ package analyzer
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -279,4 +281,76 @@ func (c *advancingClock) Now() time.Time {
 	now := c.now
 	c.now = c.now.Add(c.step)
 	return now
+}
+
+func TestWithTemplateScrubFunc(t *testing.T) {
+	t.Parallel()
+
+	logHandler := &capturingHandler{}
+	lg := slog.New(logHandler)
+
+	p := newMockProvider(&provider.CallResult{
+		Outcome: provider.OutcomeSuccess,
+		Text:    "response: secret=abc123",
+	})
+	p.keys = provider.NewKeyPool([]string{"k1"})
+
+	scrub := func(s string) string {
+		return strings.ReplaceAll(s, "secret=abc123", "secret=[REDACTED]")
+	}
+
+	tmpl, err := NewTemplate[string, parsedResult](
+		p,
+		func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil },
+		WithTemplateBackOff(&backoff.StopBackOff{}),
+		WithTemplateLogger(lg),
+		WithTemplateScrubFunc(scrub),
+	)
+	if err != nil {
+		t.Fatalf("NewTemplate: %v", err)
+	}
+
+	_, err = tmpl.Analyze(t.Context(), "prompt: secret=abc123", nil, "job1", func(string, string, string, bool) {})
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+
+	// Verify the scrub function was applied: raw secret must not appear in any log record.
+	for _, rec := range logHandler.records {
+		for i, a := range rec.attrs {
+			if strings.Contains(a.Value.String(), "secret=abc123") {
+				t.Errorf("log record %d attr %d contains unscrubbed secret: %q", i, i, a.Value.String())
+			}
+		}
+	}
+}
+
+// capturingHandler is a slog.Handler that records all logged attributes for inspection.
+type capturingHandler struct {
+	records []logRecord
+}
+
+type logRecord struct {
+	msg   string
+	attrs []slog.Attr
+}
+
+func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+
+func (h *capturingHandler) Handle(_ context.Context, r slog.Record) error {
+	lr := logRecord{msg: r.Message}
+	r.Attrs(func(a slog.Attr) bool {
+		lr.attrs = append(lr.attrs, a)
+		return true
+	})
+	h.records = append(h.records, lr)
+	return nil
+}
+
+func (h *capturingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *capturingHandler) WithGroup(name string) slog.Handler {
+	return h
 }

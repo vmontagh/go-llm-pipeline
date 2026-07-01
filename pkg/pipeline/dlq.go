@@ -3,6 +3,7 @@ package pipeline
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,15 +15,10 @@ const (
 	filePermissions = 0o600
 )
 
-// DLQLogger defines the consumer interface for logging in the DLQ.
-type DLQLogger interface {
-	Errorf(format string, v ...any)
-}
-
 // DeadLetterQueue listens for failed events and writes them to a JSONL file.
 type DeadLetterQueue struct {
 	filePath string
-	logger   DLQLogger
+	logger   *slog.Logger
 
 	mu      sync.Mutex
 	file    *os.File
@@ -38,7 +34,7 @@ type DLQEntry struct {
 }
 
 // NewDeadLetterQueue creates a new DLQ that appends to the specified file.
-func NewDeadLetterQueue(filePath string, appLogger DLQLogger) (*DeadLetterQueue, error) {
+func NewDeadLetterQueue(filePath string, appLogger *slog.Logger) (*DeadLetterQueue, error) {
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating DLQ directory: %w", err)
@@ -85,6 +81,6 @@ func (d *DeadLetterQueue) Record(timestamp time.Time, itemID, stage string, err 
 	}
 
 	if err := d.encoder.Encode(entry); err != nil {
-		d.logger.Errorf("Failed to write to DLQ for ItemID=%s: %v", itemID, err)
+		d.logger.Error("writing to DLQ failed", "itemID", itemID, "err", err)
 	}
 }

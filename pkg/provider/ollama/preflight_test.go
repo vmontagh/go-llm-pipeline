@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func newTestTransport(client *http.Client, numCtx int) *transport {
 		model:  "test-model",
 		numCtx: numCtx,
 		client: client,
-		logger: noOpLogger{},
+		logger: slog.New(slog.DiscardHandler),
 		tracer: noOpTracer{},
 	}
 }

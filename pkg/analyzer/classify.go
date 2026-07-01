@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -56,7 +57,7 @@ type providerErrorInfo struct {
 	CredentialCount int
 	ResponseBody    []byte
 	Publish         func(eventType, itemID, message string, isError bool)
-	Logger          Logger
+	Logger          *slog.Logger
 	Tracer          Tracer
 }
 
@@ -87,16 +88,29 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 		if req.Info.Publish != nil {
 			req.Info.Publish(EventLLMRetrying, req.Info.JobID, msg, false)
 		}
-		req.Info.Logger.Warnf("%s", msg)
+		req.Info.Logger.WarnContext(ctx, "credential cooled after rate-limit/quota",
+			"provider", req.Info.Provider,
+			"credential", req.Info.CredentialIdx+1,
+			"total", req.Info.CredentialCount,
+			"cooldown", tp.Cooldown,
+			"err", req.Err,
+		)
 	case TierShortTransient:
 		msg := fmt.Sprintf("Retrying %s due to transient error: %v", req.Info.Model, req.Err)
 		if req.Info.Publish != nil {
 			req.Info.Publish(EventLLMRetrying, req.Info.JobID, msg, true)
 		}
-		req.Info.Logger.Debugf("%s", msg)
+		req.Info.Logger.DebugContext(ctx, "retrying due to transient error",
+			"model", req.Info.Model,
+			"err", req.Err,
+		)
 	case TierTerminal:
-		req.Info.Logger.Debugf("%s terminal error on credential %d/%d: %v",
-			req.Info.Provider, req.Info.CredentialIdx+1, req.Info.CredentialCount, req.Err)
+		req.Info.Logger.DebugContext(ctx, "terminal error",
+			"provider", req.Info.Provider,
+			"credential", req.Info.CredentialIdx+1,
+			"total", req.Info.CredentialCount,
+			"err", req.Err,
+		)
 	}
 
 	wrapped := WithCode(TierCode(tier, req.Err), req.Err)

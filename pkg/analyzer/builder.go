@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"log/slog"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -20,8 +21,8 @@ func NewBuilder[T any, R any](p provider.Provider[T], parser func(string) (R, er
 	return &Builder[T, R]{provider: p, parser: parser}
 }
 
-// WithLogger sets the logger forwarded to the Template.
-func (b *Builder[T, R]) WithLogger(l Logger) *Builder[T, R] {
+// WithLogger sets the *slog.Logger forwarded to the Template.
+func (b *Builder[T, R]) WithLogger(l *slog.Logger) *Builder[T, R] {
 	if l != nil {
 		b.opts = append(b.opts, WithTemplateLogger(l))
 	}

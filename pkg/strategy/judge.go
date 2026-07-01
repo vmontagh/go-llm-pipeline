@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -36,7 +37,7 @@ type judgeAnalyzer[R any] struct {
 	judge               Judge
 	generators          []Generator[R]
 	promptBuilder       func(ctx context.Context, generatorPrompt string, drafts []R, feedback []string, attempt int) string
-	logger              Logger
+	logger              *slog.Logger
 	tracer              Tracer
 	multimodalJudge     bool
 	maxAttempts         int
@@ -46,8 +47,8 @@ type judgeAnalyzer[R any] struct {
 // JudgeOption configures the judgeAnalyzer.
 type JudgeOption[R any] func(*judgeAnalyzer[R])
 
-// WithJudgeLogger sets the logger for the judgeAnalyzer.
-func WithJudgeLogger[R any](l Logger) JudgeOption[R] {
+// WithJudgeLogger sets the *slog.Logger for the judgeAnalyzer.
+func WithJudgeLogger[R any](l *slog.Logger) JudgeOption[R] {
 	return func(j *judgeAnalyzer[R]) {
 		j.logger = l
 	}
@@ -105,7 +106,7 @@ func NewJudgeAnalyzer[R any](
 		judge:               judge,
 		generators:          make([]Generator[R], len(generators)),
 		promptBuilder:       promptBuilder,
-		logger:              noOpLogger{},
+		logger:              slog.New(slog.DiscardHandler),
 		tracer:              noOpTracer{},
 		maxAttempts:         3,
 		outOfBoundsBehavior: OutOfBoundsBehaviorFallback,
@@ -175,7 +176,12 @@ func (j *judgeAnalyzer[R]) Analyze(
 			switch j.outOfBoundsBehavior {
 			case OutOfBoundsBehaviorRetry:
 				if attempt < j.maxAttempts {
-					j.logger.Warnf("Judge returned out-of-bounds selected_draft_index %d (draft count: %d) on attempt %d/%d, retrying...", idx, len(drafts), attempt, j.maxAttempts)
+					j.logger.WarnContext(ctx, "judge returned out-of-bounds index, retrying",
+						"index", idx,
+						"drafts", len(drafts),
+						"attempt", attempt,
+						"max", j.maxAttempts,
+					)
 					feedbackHistory = append(feedbackHistory, fmt.Sprintf("Judge selected out-of-bounds draft index %d.", idx))
 					continue
 				}
@@ -185,7 +191,10 @@ func (j *judgeAnalyzer[R]) Analyze(
 			}
 
 			// Fallback behavior
-			j.logger.Warnf("Judge returned out-of-bounds selected_draft_index %d (draft count: %d). Falling back to index 0.", idx, len(drafts))
+			j.logger.WarnContext(ctx, "judge returned out-of-bounds index, falling back to 0",
+				"index", idx,
+				"drafts", len(drafts),
+			)
 			if publish != nil {
 				publish("warn", jobID, fmt.Sprintf("Judge returned out-of-bounds selected_draft_index %d. draft count: %d.", idx, len(drafts)), false)
 			}
@@ -199,7 +208,11 @@ func (j *judgeAnalyzer[R]) Analyze(
 		if feedback := resp.Feedback; feedback != "" {
 			feedbackHistory = append(feedbackHistory, feedback)
 		}
-		j.logger.Debugf("Judge rejected (attempt %d/%d): %s", attempt, j.maxAttempts, resp.Feedback)
+		j.logger.DebugContext(ctx, "judge rejected",
+			"attempt", attempt,
+			"max", j.maxAttempts,
+			"feedback", resp.Feedback,
+		)
 	}
 
 	return zero, fmt.Errorf("%w: %d", ErrJudgeAttemptsExhausted, j.maxAttempts)
@@ -217,7 +230,7 @@ func (j *judgeAnalyzer[R]) generateDrafts(
 	errs := make([]error, len(j.generators))
 	hasResult := make([]bool, len(j.generators))
 
-	j.logger.Debugf("Running %d generators for Judge pattern", len(j.generators))
+	j.logger.DebugContext(ctx, "running generators for judge pattern", "count", len(j.generators))
 	for i, g := range j.generators {
 		wg.Add(1)
 		go func(idx int, a Generator[R]) {
@@ -241,7 +254,7 @@ func (j *judgeAnalyzer[R]) generateDrafts(
 	var drafts []R
 	for i, hasRes := range hasResult {
 		if errs[i] != nil {
-			j.logger.Warnf("Generator %s failed: %v", j.generators[i].Name(), errs[i])
+			j.logger.WarnContext(ctx, "generator failed", "generator", j.generators[i].Name(), "err", errs[i])
 			continue
 		}
 		if hasRes {

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -329,7 +330,7 @@ func TestTransport_Call(t *testing.T) {
 				host:       "http://example.test",
 				model:      "m",
 				client:     tt.client,
-				logger:     noOpLogger{},
+				logger:     slog.New(slog.DiscardHandler),
 				tracer:     noOpTracer{},
 				numPredict: tt.numPredict,
 			}
@@ -347,13 +348,6 @@ type errReadCloser struct{}
 
 func (errReadCloser) Read([]byte) (int, error) { return 0, errTest }
 func (errReadCloser) Close() error             { return nil }
-
-type noOpLogger struct{}
-
-func (noOpLogger) Debugf(string, ...interface{}) {}
-func (noOpLogger) Infof(string, ...interface{})  {}
-func (noOpLogger) Warnf(string, ...interface{})  {}
-func (noOpLogger) Errorf(string, ...interface{}) {}
 
 type noOpRegion struct{}
 

@@ -233,6 +233,57 @@ func TestInjectBeforeAction(t *testing.T) {
 	}
 }
 
+func TestScrubBody(t *testing.T) {
+	t.Parallel()
+	tempDir := t.TempDir()
+
+	baseYAML := `interactions:
+- id: 1
+  request:
+    method: GET
+    url: http://example.com/api
+  response:
+    code: 200
+    body: 'secret=abc123 hello'
+`
+	basePath := filepath.Join(tempDir, "base.yaml")
+	targetPath := filepath.Join(tempDir, "target.yaml")
+
+	if err := os.WriteFile(basePath, []byte(baseYAML), 0o600); err != nil {
+		t.Fatalf("writing base cassette: %v", err)
+	}
+
+	redact := func(s string) string {
+		// replace everything after "secret=" with "[REDACTED]"
+		if idx := len("secret="); len(s) > idx {
+			return s[:idx] + "[REDACTED]" + s[idx+len("abc123"):]
+		}
+		return s
+	}
+
+	scenario := Scenario{
+		BaseCassette:   basePath,
+		TargetCassette: targetPath,
+		Patches: []Patch{
+			{Match: URLContains("/api"), Action: ScrubBody(redact)},
+		},
+	}
+
+	if err := scenario.Execute(); err != nil {
+		t.Fatalf("Scenario.Execute() error: %v", err)
+	}
+
+	c, err := LoadCassette(targetPath)
+	if err != nil {
+		t.Fatalf("LoadCassette target: %v", err)
+	}
+
+	want := "secret=[REDACTED] hello"
+	if got := c.Interactions[0].Response.Body; got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+}
+
 func TestMutateBody(t *testing.T) {
 	t.Parallel()
 	tempDir := t.TempDir()
