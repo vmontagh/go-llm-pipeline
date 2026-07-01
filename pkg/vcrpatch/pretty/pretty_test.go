@@ -196,6 +196,42 @@ func TestFormatInteraction(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "case-insensitive Content-Type is detected as JSON",
+			interaction: vcrpatch.Interaction{
+				Request: vcrpatch.InteractionReq{
+					Headers: map[string][]string{
+						"content-type":   {"Application/JSON"},
+						"Content-Length": {"7"},
+					},
+					Body:          `{"a":1}`,
+					ContentLength: 7,
+				},
+				Response: vcrpatch.InteractionResp{
+					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
+					Body:          `{"b":2}`,
+					ContentLength: 7,
+				},
+			},
+			wantChanged: true,
+			wantInteraction: vcrpatch.Interaction{
+				Request: vcrpatch.InteractionReq{
+					Headers: map[string][]string{
+						"content-type":   {"Application/JSON"},
+						"Content-Length": {"12"},
+					},
+					Body: `{
+  "a": 1
+}`,
+					ContentLength: 12,
+				},
+				Response: vcrpatch.InteractionResp{
+					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
+					Body:          `{"b":2}`,
+					ContentLength: 7,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {

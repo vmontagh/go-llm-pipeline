@@ -399,6 +399,55 @@ func TestLease_MarkCooldown(t *testing.T) {
 		})
 	}
 }
+func TestLease_Idempotent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		action    func(*provider.Lease[string])
+		wantAvail int
+	}{
+		{
+			name: "Release after MarkCooldown is no-op",
+			action: func(l *provider.Lease[string]) {
+				l.MarkCooldown(provider.TierPolicy{Cooldown: 10 * time.Second}, 0)
+				l.Release() // must NOT clear the cooldown
+			},
+			wantAvail: 0,
+		},
+		{
+			name: "double Release is no-op",
+			action: func(l *provider.Lease[string]) {
+				l.Release()
+				l.Release()
+			},
+			wantAvail: 1,
+		},
+		{
+			name: "MarkCooldown after Release is no-op",
+			action: func(l *provider.Lease[string]) {
+				l.Release()
+				l.MarkCooldown(provider.TierPolicy{Cooldown: 10 * time.Second}, 0) // must NOT set cooldown
+			},
+			wantAvail: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			clk := newFakeClock()
+			p := provider.NewKeyPoolWithClock([]string{"a"}, clk)
+			l, err := p.Acquire(context.Background())
+			if err != nil {
+				t.Fatalf("Acquire: %v", err)
+			}
+			tt.action(l)
+			if diff := cmp.Diff(tt.wantAvail, p.Available()); diff != "" {
+				t.Errorf("Available mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
 
 func TestDefaultEnrichError(t *testing.T) {
 	sentinel := errTestSentinel

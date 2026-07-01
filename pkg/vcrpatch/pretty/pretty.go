@@ -78,8 +78,15 @@ func formatBody(body string, headers map[string][]string, contentLength int) (st
 }
 
 func isJSONContent(headers map[string][]string) bool {
-	values := headers[headerContentType]
-	return len(values) > 0 && strings.Contains(values[0], contentTypeJSON)
+	for k, v := range headers {
+		if !strings.EqualFold(k, headerContentType) {
+			continue
+		}
+		if len(v) > 0 && strings.Contains(strings.ToLower(v[0]), contentTypeJSON) {
+			return true
+		}
+	}
+	return false
 }
 
 // FormatCassette reads a cassette file, pretty-prints its JSON interactions, and saves it.

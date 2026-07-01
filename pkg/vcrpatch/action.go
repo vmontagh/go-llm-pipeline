@@ -131,7 +131,7 @@ const contentTypeJSON = "application/json"
 
 func (syncContentLengthAction) Apply(matched *Interaction, _ []Interaction) ([]Interaction, error) {
 	resp := &matched.Response
-	if len(resp.Headers["Content-Type"]) > 0 && strings.Contains(resp.Headers["Content-Type"][0], contentTypeJSON) {
+	if hasJSONContentType(resp.Headers) {
 		if resp.Body != "" {
 			var buf bytes.Buffer
 			if err := json.Indent(&buf, []byte(resp.Body), "", "  "); err == nil {
@@ -153,6 +153,21 @@ func (syncContentLengthAction) Apply(matched *Interaction, _ []Interaction) ([]I
 // SyncContentLength returns an action to format JSON bodies and sync the Content-Length header.
 func SyncContentLength() Action {
 	return syncContentLengthAction{}
+}
+
+// hasJSONContentType checks whether any Content-Type header contains
+// "application/json", using case-insensitive matching for both the
+// header key and value per HTTP spec.
+func hasJSONContentType(headers map[string][]string) bool {
+	for k, v := range headers {
+		if !strings.EqualFold(k, "Content-Type") {
+			continue
+		}
+		if len(v) > 0 && strings.Contains(strings.ToLower(v[0]), contentTypeJSON) {
+			return true
+		}
+	}
+	return false
 }
 
 type chainAction struct {

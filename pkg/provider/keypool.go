@@ -83,10 +83,11 @@ func (p *KeyPool[T]) Available() int {
 // Lease is the handle returned by Acquire. The caller must eventually
 // pass it to exactly one of Release / MarkCooldown.
 type Lease[T any] struct {
-	Value T
-	Index int
-	pool  *KeyPool[T]
-	slot  *keySlot[T]
+	Value    T
+	Index    int
+	pool     *KeyPool[T]
+	slot     *keySlot[T]
+	released bool
 }
 
 // Acquire returns a Lease on an available key without blocking.
@@ -168,11 +169,13 @@ func (p *KeyPool[T]) MinCooldown() time.Duration {
 }
 
 // Release marks the lease's slot as successfully used (no cooldown)
-// and frees it for future Acquire calls. Safe to call more than once.
+// and frees it for future Acquire calls. Safe to call more than once;
+// subsequent calls are no-ops.
 func (l *Lease[T]) Release() {
-	if l == nil || l.pool == nil || l.slot == nil {
+	if l == nil || l.pool == nil || l.slot == nil || l.released {
 		return
 	}
+	l.released = true
 	l.pool.releaseSlot(l.slot, 0)
 }
 
@@ -180,10 +183,12 @@ func (l *Lease[T]) Release() {
 // specified by the policy, with retryAfter optionally acting as a
 // floor when policy.HonorRetryAfter is true. Negative or zero
 // policy.Cooldown values release the slot immediately.
+// Safe to call more than once; subsequent calls are no-ops.
 func (l *Lease[T]) MarkCooldown(policy TierPolicy, retryAfter time.Duration) {
-	if l == nil || l.pool == nil || l.slot == nil {
+	if l == nil || l.pool == nil || l.slot == nil || l.released {
 		return
 	}
+	l.released = true
 	cd := policy.Cooldown
 	if policy.HonorRetryAfter && retryAfter > cd {
 		cd = retryAfter
