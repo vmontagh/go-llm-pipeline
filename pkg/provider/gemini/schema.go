@@ -11,17 +11,17 @@ const (
 	typeObject  = "object"
 )
 
-// convertJSONSchema translates a provider-agnostic JSON Schema
+// convertJSONSchema translates a provider-agnostic JSON Schema representation into a genai.Schema struct.
 func convertJSONSchema(s map[string]any) *genai.Schema {
 	if len(s) == 0 {
 		return nil
 	}
 	out := &genai.Schema{}
-	if t, ok := s["type"].(string); ok {
-		out.Type = jsonTypeToGenAI(t)
-	} else {
+	t, ok := s["type"].(string)
+	if !ok {
 		return nil
 	}
+	out.Type = jsonTypeToGenAI(t)
 	if d, ok := s["description"].(string); ok {
 		out.Description = d
 	}
