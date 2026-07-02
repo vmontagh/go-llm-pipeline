@@ -10,6 +10,9 @@ on:
 jobs:
   test:
     runs-on: self-hosted
+    permissions:
+      contents: read
+      code-quality: write
     steps:
       - uses: actions/checkout@v4
 
@@ -23,7 +26,19 @@ jobs:
         run: make build
 
       - name: Test
-        run: make test
+        run: make test-unit-cover
+
+      - name: Convert coverage to Cobertura
+        run: |
+          go install github.com/t-yuki/gocover-cobertura@latest
+          gocover-cobertura < coverage.out > cobertura.xml
+
+      - name: Upload coverage report to GitHub
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: cobertura.xml
+          language: Go
+          label: go-unit-tests
 
       - name: Check Architecture Dependencies
         run: make lint-arch
