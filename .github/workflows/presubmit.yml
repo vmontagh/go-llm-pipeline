@@ -9,11 +9,12 @@ on:
 
 jobs:
   test:
+    name: Run tests and linting
     runs-on: self-hosted
     permissions:
-      contents: read
-      code-quality: write
       pull-requests: write
+      checks: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
