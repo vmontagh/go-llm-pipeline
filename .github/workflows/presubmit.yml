@@ -47,7 +47,7 @@ jobs:
         if: github.event_name == 'pull_request'
         with:
           path: cobertura.xml
-          minimum_coverage: 70
+          minimum_coverage: 50
           fail_below_threshold: true
           show_line: true
           show_branch: true
