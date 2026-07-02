@@ -43,11 +43,12 @@ jobs:
 
       - name: Upload coverage report to GitHub
         uses: actions/upload-code-coverage@v1
+        continue-on-error: true
         with:
           file: cobertura.xml
           language: Go
           label: go-unit-tests
-          fail-on-error: false
+          fail-on-error: 'false'
 
       - name: Check Architecture Dependencies
         run: make lint-arch
