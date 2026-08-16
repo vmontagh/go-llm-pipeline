@@ -146,13 +146,16 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 		schema = derived
 	}
 
-	var lastErr error
+	var (
+		lastErr      error
+		lastFeedback *FeedbackInput
+	)
 	for attempt := 1; attempt <= cfg.maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
 
-		prompt := buildPrompt(req.Prompt, schema, lastErr, cfg.formatter)
+		prompt := buildPrompt(req.Prompt, schema, lastFeedback, cfg.formatter)
 		raw, err := a.Analyze(ctx, prompt, req.ImageData, req.JobID, req.Publish)
 		if err != nil {
 			return zero, fmt.Errorf("analyzing (attempt %d): %w", attempt, err)
@@ -162,10 +165,11 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 		if err == nil {
 			return value, nil
 		}
-		lastErr = &attemptError{feedback: feedback, cause: err}
+		lastErr = err
+		lastFeedback = &feedback
 	}
 
-	return zero, fmt.Errorf("%w: %d attempts: %w", ErrMaxAttemptsExceeded, cfg.maxAttempts, unwrapAttempt(lastErr))
+	return zero, fmt.Errorf("%w: %d attempts: %w", ErrMaxAttemptsExceeded, cfg.maxAttempts, lastErr)
 }
 
 // decodeAndValidate finds the first JSON object in raw, decodes it into T, and
@@ -197,36 +201,17 @@ func decodeAndValidate[T any](schema map[string]any, raw string, strict bool) (T
 	return value, FeedbackInput{}, nil
 }
 
-// attemptError bundles the feedback and cause of a single failed attempt so the
-// next iteration can render feedback while the terminal error preserves cause.
-type attemptError struct {
-	feedback FeedbackInput
-	cause    error
-}
-
-func (e *attemptError) Error() string { return e.cause.Error() }
-func (e *attemptError) Unwrap() error { return e.cause }
-
-func unwrapAttempt(err error) error {
-	var ae *attemptError
-	if errors.As(err, &ae) {
-		return ae.cause
-	}
-	return err
-}
-
 // buildPrompt appends the schema instruction and, when the previous attempt
 // failed, the correction feedback to the base prompt. Feedback is replaced each
 // attempt rather than compounded.
-func buildPrompt(base string, schema map[string]any, lastErr error, formatter func(FeedbackInput) string) string {
+func buildPrompt(base string, schema map[string]any, feedback *FeedbackInput, formatter func(FeedbackInput) string) string {
 	var b strings.Builder
 	b.WriteString(base)
 	b.WriteString("\n\nRespond with ONLY a single JSON object conforming to this JSON Schema:\n")
 	b.WriteString(schemaJSON(schema))
-	var ae *attemptError
-	if errors.As(lastErr, &ae) {
+	if feedback != nil {
 		b.WriteString("\n\n")
-		b.WriteString(formatter(ae.feedback))
+		b.WriteString(formatter(*feedback))
 	}
 	return b.String()
 }
