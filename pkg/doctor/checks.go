@@ -3,11 +3,12 @@ package doctor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
+	"net/url"
 	"strings"
 	"time"
 
@@ -26,11 +27,13 @@ const (
 
 // API paths and headers used by the network checks.
 const (
-	modelsPath          = "/models"
-	ollamaTagsPath      = "/api/tags"
+	modelsPath          = "models"
+	ollamaTagsPath      = "api/tags"
 	authorizationHeader = "Authorization"
 	bearerPrefix        = "Bearer "
-	maxProbeBodyBytes   = 1 << 20
+	//nolint:gosec // G101: this is an HTTP header name, not a credential value.
+	geminiAPIKeyHeader = "x-goog-api-key"
+	maxProbeBodyBytes  = 1 << 20
 )
 
 // httpProbe is the outcome of a single HTTP request, decoupled from the clock
@@ -42,10 +45,26 @@ type httpProbe struct {
 	err     error
 }
 
-// probe performs a GET against rawURL and returns the observed httpProbe. It
-// never returns the URL or headers in the result, so callers may pass secrets
-// in the query string or headers without leaking them.
-func (r *Runner) probe(ctx context.Context, rawURL string, header http.Header) httpProbe {
+// buildURL joins base and path using net/url so trailing slashes and path
+// escaping are handled correctly instead of by fragile string concatenation.
+func buildURL(base, path string) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("parsing base url: %w", err)
+	}
+	return u.JoinPath(path).String(), nil
+}
+
+// probe performs a GET against base+path with the given headers and returns the
+// observed httpProbe. Secrets must be passed via header, never baked into base
+// or path; the result never surfaces the built URL, so a transport error cannot
+// leak a credential.
+func (r *Runner) probe(ctx context.Context, base, path string, header http.Header) httpProbe {
+	rawURL, err := buildURL(base, path)
+	if err != nil {
+		return httpProbe{err: err}
+	}
+
 	reqCtx := ctx
 	if r.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -67,13 +86,9 @@ func (r *Runner) probe(ctx context.Context, rawURL string, header http.Header) h
 	resp, err := r.client.Do(req)
 	elapsed := time.Since(start)
 	if err != nil {
-		return httpProbe{elapsed: elapsed, err: err}
+		return httpProbe{elapsed: elapsed, err: sanitizeURLError(err)}
 	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			r.logger.Debug("doctor: response close error", "err", cerr)
-		}
-	}()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
 	if err != nil {
@@ -82,20 +97,43 @@ func (r *Runner) probe(ctx context.Context, rawURL string, header http.Header) h
 	return httpProbe{status: resp.StatusCode, elapsed: elapsed, body: body}
 }
 
+// sanitizeURLError strips the URL from a *url.Error so a credential carried in
+// the request URL can never reach logs. It is defense in depth: the checks pass
+// secrets via headers, but a future caller might not.
+func sanitizeURLError(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) {
+		return fmt.Errorf("%s: %w", uerr.Op, uerr.Err)
+	}
+	return err
+}
+
 // checkFileDescriptors verifies the process open-file soft limit against the
 // configured thresholds.
 func (r *Runner) checkFileDescriptors(_ context.Context) Result {
 	soft, hard, err := r.fdReader.ReadFileLimit()
 	if err != nil {
+		if errors.Is(err, ErrFileLimitUnsupported) {
+			return Result{
+				Check:  CheckFileDescriptors,
+				Name:   nameFileDescriptors,
+				Status: StatusSkip,
+				Detail: "file-descriptor limit unavailable on this platform",
+			}
+		}
 		return Result{
-			Name:   nameFileDescriptors,
-			Status: StatusSkip,
-			Detail: "file-descriptor limit unavailable on this platform",
+			Check:       CheckFileDescriptors,
+			Name:        nameFileDescriptors,
+			Status:      StatusWarn,
+			Detail:      "could not read the file-descriptor limit",
+			Remediation: "inspect the host's rlimit configuration",
+			Attrs:       []slog.Attr{slog.String("err", err.Error())},
 		}
 	}
 
 	status, detail := classifyFileLimit(soft, r.cfg.FileLimitMin, r.cfg.FileLimitWarn)
 	res := Result{
+		Check:  CheckFileDescriptors,
 		Name:   nameFileDescriptors,
 		Status: status,
 		Detail: detail,
@@ -124,20 +162,21 @@ func classifyFileLimit(soft, minLimit, warnLimit uint64) (status Status, detail 
 
 // checkOpenAILatency probes OpenAI reachability without authenticating.
 func (r *Runner) checkOpenAILatency(ctx context.Context) Result {
-	p := r.probe(ctx, r.cfg.OpenAIBaseURL+modelsPath, nil)
-	return latencyResult(nameOpenAILatency, p, r.cfg.OpenAIAPIKey != "", r.cfg.LatencyWarn)
+	p := r.probe(ctx, r.cfg.OpenAIBaseURL, modelsPath, nil)
+	return latencyResult(CheckOpenAILatency, nameOpenAILatency, p, r.cfg.OpenAIAPIKey != "", r.cfg.LatencyWarn)
 }
 
 // checkGeminiLatency probes Gemini reachability without authenticating.
 func (r *Runner) checkGeminiLatency(ctx context.Context) Result {
-	p := r.probe(ctx, r.cfg.GeminiBaseURL+modelsPath, nil)
-	return latencyResult(nameGeminiLatency, p, r.cfg.GeminiAPIKey != "", r.cfg.LatencyWarn)
+	p := r.probe(ctx, r.cfg.GeminiBaseURL, modelsPath, nil)
+	return latencyResult(CheckGeminiLatency, nameGeminiLatency, p, r.cfg.GeminiAPIKey != "", r.cfg.LatencyWarn)
 }
 
 // latencyResult builds a Result from a reachability probe.
-func latencyResult(name string, p httpProbe, keyConfigured bool, warn time.Duration) Result {
+func latencyResult(check, name string, p httpProbe, keyConfigured bool, warn time.Duration) Result {
 	status, detail := classifyLatency(p, keyConfigured, warn)
 	res := Result{
+		Check:    check,
 		Name:     name,
 		Status:   status,
 		Detail:   detail,
@@ -148,6 +187,9 @@ func latencyResult(name string, p httpProbe, keyConfigured bool, warn time.Durat
 		res.Remediation = "check network connectivity and any proxy or firewall rules"
 	} else {
 		res.Attrs = append(res.Attrs, slog.Int("status", p.status))
+		if status == StatusWarn {
+			res.Remediation = "investigate network latency to the provider or a nearby region"
+		}
 	}
 	return res
 }
@@ -171,27 +213,31 @@ func classifyLatency(p httpProbe, keyConfigured bool, warn time.Duration) (statu
 // checkOpenAIKey validates the OpenAI credential against the models endpoint.
 func (r *Runner) checkOpenAIKey(ctx context.Context) Result {
 	if r.cfg.OpenAIAPIKey == "" {
-		return skippedKeyResult(nameOpenAIKey, "OpenAI API key")
+		return skippedKeyResult(CheckOpenAIKey, nameOpenAIKey, "OpenAI API key")
 	}
 	header := http.Header{}
 	header.Set(authorizationHeader, bearerPrefix+r.cfg.OpenAIAPIKey)
-	p := r.probe(ctx, r.cfg.OpenAIBaseURL+modelsPath, header)
-	return keyResult(nameOpenAIKey, p)
+	p := r.probe(ctx, r.cfg.OpenAIBaseURL, modelsPath, header)
+	return keyResult(CheckOpenAIKey, nameOpenAIKey, p)
 }
 
 // checkGeminiKey validates the Gemini credential against the models endpoint.
+// The key travels in the x-goog-api-key header (not the URL query) so it can
+// never appear in a request URL, and therefore never in an error string.
 func (r *Runner) checkGeminiKey(ctx context.Context) Result {
 	if r.cfg.GeminiAPIKey == "" {
-		return skippedKeyResult(nameGeminiKey, "Gemini API key")
+		return skippedKeyResult(CheckGeminiKey, nameGeminiKey, "Gemini API key")
 	}
-	// The key travels as a query parameter; probe never surfaces the URL.
-	p := r.probe(ctx, r.cfg.GeminiBaseURL+modelsPath+"?key="+r.cfg.GeminiAPIKey, nil)
-	return keyResult(nameGeminiKey, p)
+	header := http.Header{}
+	header.Set(geminiAPIKeyHeader, r.cfg.GeminiAPIKey)
+	p := r.probe(ctx, r.cfg.GeminiBaseURL, modelsPath, header)
+	return keyResult(CheckGeminiKey, nameGeminiKey, p)
 }
 
 // skippedKeyResult builds the SKIP Result used when a credential is absent.
-func skippedKeyResult(name, label string) Result {
+func skippedKeyResult(check, name, label string) Result {
 	return Result{
+		Check:       check,
 		Name:        name,
 		Status:      StatusSkip,
 		Detail:      label + " is not configured",
@@ -200,13 +246,16 @@ func skippedKeyResult(name, label string) Result {
 }
 
 // keyResult builds a Result from an authenticated probe.
-func keyResult(name string, p httpProbe) Result {
+func keyResult(check, name string, p httpProbe) Result {
 	status, detail := classifyKey(p)
-	res := Result{Name: name, Status: status, Detail: detail, Duration: p.elapsed}
+	res := Result{Check: check, Name: name, Status: status, Detail: detail, Duration: p.elapsed}
 	if p.err != nil {
 		res.Attrs = append(res.Attrs, slog.String("err", p.err.Error()))
 	} else {
 		res.Attrs = append(res.Attrs, slog.Int("status", p.status))
+	}
+	if status == StatusFail {
+		res.Remediation = "verify the API key value and that it has access to this provider"
 	}
 	return res
 }
@@ -240,23 +289,35 @@ type ollamaModel struct {
 	Name string `json:"name"`
 }
 
-// checkOllama probes the local Ollama instance and lists loaded models. When
-// Config.OllamaModel is set it also asserts that model is present and runs the
-// Ollama context-window preflight against it.
+// checkOllama probes the local Ollama instance and lists installed models. When
+// Config.OllamaModel is set it also asserts that model is installed and runs the
+// Ollama context-window preflight against it. An empty OllamaHost skips the
+// check entirely.
 func (r *Runner) checkOllama(ctx context.Context) Result {
-	p := r.probe(ctx, strings.TrimRight(r.cfg.OllamaHost, "/")+ollamaTagsPath, nil)
+	if r.cfg.OllamaHost == "" {
+		return Result{
+			Check:  CheckOllama,
+			Name:   nameOllama,
+			Status: StatusSkip,
+			Detail: "Ollama host is not configured",
+		}
+	}
+
+	p := r.probe(ctx, r.cfg.OllamaHost, ollamaTagsPath, nil)
 	if p.err != nil {
 		return Result{
+			Check:       CheckOllama,
 			Name:        nameOllama,
 			Status:      StatusWarn,
 			Detail:      "local Ollama instance unreachable",
 			Duration:    p.elapsed,
-			Remediation: "start Ollama or unset the Ollama host if unused",
+			Remediation: "start Ollama or clear the Ollama host if unused",
 			Attrs:       []slog.Attr{slog.String("err", p.err.Error())},
 		}
 	}
 	if p.status != http.StatusOK {
 		return Result{
+			Check:    CheckOllama,
 			Name:     nameOllama,
 			Status:   StatusWarn,
 			Detail:   "Ollama returned an unexpected status",
@@ -268,6 +329,7 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 	var tags ollamaTagsResponse
 	if err := json.Unmarshal(p.body, &tags); err != nil {
 		return Result{
+			Check:    CheckOllama,
 			Name:     nameOllama,
 			Status:   StatusFail,
 			Detail:   "Ollama returned a malformed /api/tags response",
@@ -283,18 +345,20 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 
 	if len(models) == 0 {
 		return Result{
+			Check:       CheckOllama,
 			Name:        nameOllama,
 			Status:      StatusWarn,
-			Detail:      "Ollama is reachable but no models are loaded",
+			Detail:      "Ollama is reachable but no models are installed",
 			Duration:    p.elapsed,
 			Remediation: "pull a model (for example, ollama pull llama3)",
 		}
 	}
 
 	res := Result{
+		Check:    CheckOllama,
 		Name:     nameOllama,
 		Status:   StatusPass,
-		Detail:   fmt.Sprintf("reachable with %d model(s) loaded", len(models)),
+		Detail:   fmt.Sprintf("reachable with %d model(s) installed", len(models)),
 		Duration: p.elapsed,
 		Attrs:    []slog.Attr{slog.String("models", strings.Join(models, ","))},
 	}
@@ -302,11 +366,12 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 	if r.cfg.OllamaModel == "" {
 		return res
 	}
-	if !slices.Contains(models, r.cfg.OllamaModel) {
+	if !modelInstalled(models, r.cfg.OllamaModel) {
 		return Result{
+			Check:       CheckOllama,
 			Name:        nameOllama,
 			Status:      StatusFail,
-			Detail:      fmt.Sprintf("requested model %q is not loaded", r.cfg.OllamaModel),
+			Detail:      fmt.Sprintf("requested model %q is not installed", r.cfg.OllamaModel),
 			Duration:    p.elapsed,
 			Remediation: fmt.Sprintf("pull the model (ollama pull %s)", r.cfg.OllamaModel),
 			Attrs:       []slog.Attr{slog.String("models", strings.Join(models, ","))},
@@ -315,21 +380,44 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 
 	if err := r.ollamaPreflight(ctx); err != nil {
 		res.Status = StatusWarn
-		res.Detail = fmt.Sprintf("model %q is loaded but preflight reported an issue", r.cfg.OllamaModel)
+		res.Detail = fmt.Sprintf("model %q is installed but preflight reported an issue", r.cfg.OllamaModel)
+		res.Remediation = "review the model's context window or set ollama.num_ctx"
 		res.Attrs = append(res.Attrs, slog.String("err", err.Error()))
 	}
 	return res
 }
 
+// modelInstalled reports whether want matches any installed model. Ollama tags
+// carry a ":tag" suffix (for example, "llama3:latest"); a request without a tag
+// matches the untagged base name, mirroring Ollama's own alias behavior.
+func modelInstalled(models []string, want string) bool {
+	for _, m := range models {
+		if m == want {
+			return true
+		}
+		base, _, found := strings.Cut(m, ":")
+		if found && base == want {
+			return true
+		}
+	}
+	return false
+}
+
 // ollamaPreflight reuses the Ollama provider's context-window preflight for the
 // configured model. It is best-effort: providers without a Preflight method are
-// treated as a pass.
+// treated as a pass. The provider is given a discard logger so a diagnostic Run
+// stays quiet — callers surface findings via the returned Report.
 func (r *Runner) ollamaPreflight(ctx context.Context) error {
+	if r.cfg.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.cfg.Timeout)
+		defer cancel()
+	}
 	p := ollama.NewProvider(
 		r.cfg.OllamaHost,
 		r.cfg.OllamaModel,
 		ollama.WithHTTPClient(r.client),
-		ollama.WithLogger(r.logger),
+		ollama.WithLogger(slog.New(slog.DiscardHandler)),
 	)
 	pf, ok := p.(interface {
 		Preflight(context.Context) error

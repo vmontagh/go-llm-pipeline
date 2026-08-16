@@ -2,8 +2,28 @@ package doctor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
+)
+
+// Check identifiers are stable, machine-readable IDs for each diagnostic
+// check. Unlike Result.Name (a human-readable label that may change), these
+// values are part of the API contract and safe for consumers to switch on.
+const (
+	// CheckFileDescriptors is the OS open-file limit check.
+	CheckFileDescriptors = "file_descriptors"
+	// CheckOpenAILatency is the OpenAI reachability check.
+	CheckOpenAILatency = "openai_latency"
+	// CheckGeminiLatency is the Gemini reachability check.
+	CheckGeminiLatency = "gemini_latency"
+	// CheckOpenAIKey is the OpenAI credential-validity check.
+	CheckOpenAIKey = "openai_key"
+	// CheckGeminiKey is the Gemini credential-validity check.
+	CheckGeminiKey = "gemini_key"
+	// CheckOllama is the local Ollama reachability and model check.
+	CheckOllama = "ollama"
 )
 
 // Status classifies the outcome of a single diagnostic check. The zero value
@@ -42,7 +62,10 @@ func (s Status) String() string {
 
 // Result is the outcome of one diagnostic check.
 type Result struct {
-	// Name identifies the check (for example, "openai api key").
+	// Check is the stable, machine-readable identifier (for example,
+	// CheckOpenAIKey). Consumers should switch on this rather than Name.
+	Check string
+	// Name identifies the check for humans (for example, "openai api key").
 	Name string
 	// Status is the check outcome.
 	Status Status
@@ -73,10 +96,11 @@ func (r Report) HasFailure() bool {
 
 // Summary counts Results by Status.
 type Summary struct {
-	Pass int
-	Warn int
-	Fail int
-	Skip int
+	Pass    int
+	Warn    int
+	Fail    int
+	Skip    int
+	Unknown int
 }
 
 // Summary tallies the Results by Status.
@@ -93,9 +117,30 @@ func (r Report) Summary() Summary {
 		case StatusSkip:
 			s.Skip++
 		case StatusUnknown:
+			s.Unknown++
 		}
 	}
 	return s
+}
+
+// String renders the Report as a plain-text pass/fail report, one line per
+// Result plus a trailing summary. It is intended for consumers that want to
+// print a human-readable report in addition to (or instead of) structured
+// logging via Log.
+func (r Report) String() string {
+	var b strings.Builder
+	for _, res := range r.Results {
+		fmt.Fprintf(&b, "[%s] %s: %s\n", res.Status, res.Name, res.Detail)
+		if res.Remediation != "" {
+			fmt.Fprintf(&b, "       remediation: %s\n", res.Remediation)
+		}
+	}
+	s := r.Summary()
+	fmt.Fprintf(&b, "summary: %d pass, %d warn, %d fail, %d skip", s.Pass, s.Warn, s.Fail, s.Skip)
+	if s.Unknown > 0 {
+		fmt.Fprintf(&b, ", %d unknown", s.Unknown)
+	}
+	return b.String()
 }
 
 // Log writes every Result and a final summary through logger. The log level
@@ -106,6 +151,9 @@ func (r Report) Log(ctx context.Context, logger *slog.Logger) {
 	}
 	for _, res := range r.Results {
 		attrs := []slog.Attr{slog.String("check", res.Name)}
+		if res.Check != "" {
+			attrs = append(attrs, slog.String("check_id", res.Check))
+		}
 		if res.Detail != "" {
 			attrs = append(attrs, slog.String("detail", res.Detail))
 		}
@@ -125,6 +173,7 @@ func (r Report) Log(ctx context.Context, logger *slog.Logger) {
 		slog.Int("warn", s.Warn),
 		slog.Int("fail", s.Fail),
 		slog.Int("skip", s.Skip),
+		slog.Int("unknown", s.Unknown),
 	)
 }
 
@@ -141,12 +190,13 @@ func levelFor(s Status) slog.Level {
 }
 
 // summaryStatus returns the most severe Status represented in a Summary so the
-// summary line is logged at a matching level.
+// summary line is logged at a matching level. Unknown results are treated as a
+// warning because an unset Status signals a check that never ran to completion.
 func summaryStatus(s Summary) Status {
 	switch {
 	case s.Fail > 0:
 		return StatusFail
-	case s.Warn > 0:
+	case s.Warn > 0, s.Unknown > 0:
 		return StatusWarn
 	default:
 		return StatusPass

@@ -109,7 +109,6 @@ deps:
       - doctor
       - openai
       - ollama
-      - provider
 
   analyzer:
     anyProjectDeps: false

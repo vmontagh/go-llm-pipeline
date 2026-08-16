@@ -69,7 +69,7 @@ Checks:
 - OS file-descriptor soft limit against configurable floors.
 - Network latency/reachability to the OpenAI and Gemini hosted APIs.
 - OpenAI and Gemini API key validity.
-- Local Ollama reachability and loaded-model listing, with an optional
+- Local Ollama reachability and installed-model listing, with an optional
   context-window preflight when a specific model is requested.
 
 ```go
@@ -79,7 +79,8 @@ cfg.GeminiAPIKey = cmp.Or(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY
 cfg.OllamaHost = cmp.Or(os.Getenv("OLLAMA_HOST"), cfg.OllamaHost)
 
 report := doctor.NewRunner(&cfg, logger).Run(ctx)
-report.Log(ctx, logger) // pass/skip at INFO, warn at WARN, fail at ERROR
+report.Log(ctx, logger)   // pass/skip at INFO, warn at WARN, fail at ERROR
+fmt.Print(report.String()) // or render a plain-text summary for a CLI
 
 if report.HasFailure() {
 	os.Exit(1) // hard failures should block batch jobs; warnings do not

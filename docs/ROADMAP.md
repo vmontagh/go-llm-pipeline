@@ -103,7 +103,7 @@ This interface should support image raws (for example, `.DNG` and `.ARW`), plain
   - Verify OS file descriptors.
   - Test network latency to hosted APIs.
   - Validate API keys.
-  - Probe local Ollama instances and list loaded models.
+  - Probe local Ollama instances and list installed models.
   - Implemented as the `pkg/doctor` library API so consumer applications own the
     subcommand UX (see the "Doctor diagnostics" section in the README).
 - **Local Embeddings (Optional Add-on):** Introduce a lightweight in-memory vector store (or SQLite extension) for local semantic similarity, deduplication, and clustering without external network calls.

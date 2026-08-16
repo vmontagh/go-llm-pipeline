@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -90,6 +91,7 @@ func TestRunner_FileDescriptors(t *testing.T) {
 		{name: "below_warn_warns", reader: fakeFDReader{soft: 2048, hard: 4096}, want: doctor.StatusWarn},
 		{name: "healthy_passes", reader: fakeFDReader{soft: 65536, hard: 65536}, want: doctor.StatusPass},
 		{name: "unsupported_skips", reader: fakeFDReader{err: doctor.ErrFileLimitUnsupported}, want: doctor.StatusSkip},
+		{name: "unexpected_error_warns", reader: fakeFDReader{err: errConnRefused}, want: doctor.StatusWarn},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -192,7 +194,7 @@ func TestRunner_GeminiKeyNotLeaked(t *testing.T) {
 	cfg.GeminiAPIKey = "AIzaSECRET"
 	var seenKey bool
 	client := clientFunc(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Query().Get("key") != "" {
+		if req.Header.Get("x-goog-api-key") != "" {
 			seenKey = true
 		}
 		if strings.Contains(req.URL.Path, "/api/tags") {
@@ -210,7 +212,7 @@ func TestRunner_GeminiKeyNotLeaked(t *testing.T) {
 	report.Log(t.Context(), logger)
 
 	if !seenKey {
-		t.Fatal("gemini key check did not send the key as a query parameter")
+		t.Fatal("gemini key check did not send the key in the x-goog-api-key header")
 	}
 	got := resultByName(t, report, "gemini api key")
 	if diff := cmp.Diff(doctor.StatusPass, got.Status); diff != "" {
@@ -218,6 +220,38 @@ func TestRunner_GeminiKeyNotLeaked(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "AIzaSECRET") {
 		t.Errorf("log output leaked the Gemini API key:\n%s", buf.String())
+	}
+}
+
+// TestRunner_GeminiKeyNotLeakedOnNetworkError guards the highest-risk leak
+// path: when the transport itself errors, the key must not surface in the
+// error string or the logged report.
+func TestRunner_GeminiKeyNotLeakedOnNetworkError(t *testing.T) {
+	t.Parallel()
+	cfg := baseConfig()
+	cfg.GeminiAPIKey = "AIzaSECRET"
+	client := clientFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "/api/tags") {
+			return jsonResp(http.StatusOK, `{"models":[{"name":"llama3"}]}`), nil
+		}
+		// Mimic net/http wrapping the request URL in a *url.Error.
+		return nil, &url.Error{Op: "Get", URL: req.URL.String(), Err: errConnRefused}
+	})
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	r := doctor.NewRunner(cfg, logger,
+		doctor.WithHTTPClient(client),
+		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
+	)
+	report := r.Run(t.Context())
+	report.Log(t.Context(), logger)
+
+	got := resultByName(t, report, "gemini api key")
+	if diff := cmp.Diff(doctor.StatusWarn, got.Status); diff != "" {
+		t.Errorf("gemini api key status mismatch (-want +got):\n%s", diff)
+	}
+	if strings.Contains(buf.String(), "AIzaSECRET") {
+		t.Errorf("log output leaked the Gemini API key on network error:\n%s", buf.String())
 	}
 }
 
@@ -237,6 +271,7 @@ func TestRunner_Ollama(t *testing.T) {
 		{name: "no_models_warns", status: http.StatusOK, body: `{"models":[]}`, want: doctor.StatusWarn},
 		{name: "models_loaded_passes", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusPass},
 		{name: "requested_model_missing_fails", model: "mistral", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusFail},
+		{name: "requested_model_alias_passes", model: "llama3", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusPass},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -320,5 +355,73 @@ func TestRunner_LogEmitsSummary(t *testing.T) {
 	report.Log(t.Context(), logger)
 	if !strings.Contains(buf.String(), "doctor summary") {
 		t.Errorf("Log output missing summary line:\n%s", buf.String())
+	}
+}
+
+// TestRunner_EmptyOllamaHostSkips verifies that an empty OllamaHost is treated
+// as "not configured" and skipped rather than defaulted to localhost.
+func TestRunner_EmptyOllamaHostSkips(t *testing.T) {
+	t.Parallel()
+	cfg := baseConfig()
+	cfg.OllamaHost = ""
+	r := doctor.NewRunner(cfg, nil,
+		doctor.WithHTTPClient(healthyClient()),
+		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
+	)
+	got := resultByName(t, r.Run(t.Context()), "ollama")
+	if diff := cmp.Diff(doctor.StatusSkip, got.Status); diff != "" {
+		t.Errorf("ollama status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestNewRunner_PartialConfigFillsDefaults checks that a caller-supplied Config
+// with only a subset of fields set inherits the remaining defaults, while an
+// empty OllamaHost is preserved (empty means skip, not localhost).
+func TestNewRunner_PartialConfigFillsDefaults(t *testing.T) {
+	t.Parallel()
+	client := clientFunc(func(req *http.Request) (*http.Response, error) {
+		// Any Ollama call would mean the empty host was defaulted; fail loudly.
+		if strings.Contains(req.URL.Path, "/api/tags") {
+			t.Errorf("ollama check ran despite empty OllamaHost; URL = %s", req.URL)
+		}
+		return jsonResp(http.StatusOK, `{}`), nil
+	})
+	r := doctor.NewRunner(&doctor.Config{OpenAIAPIKey: "sk-test"}, nil,
+		doctor.WithHTTPClient(client),
+		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
+	)
+	report := r.Run(t.Context())
+	// File-descriptor thresholds came from defaults, so a healthy reader passes.
+	if diff := cmp.Diff(doctor.StatusPass, resultByName(t, report, "file descriptors").Status); diff != "" {
+		t.Errorf("file descriptors status mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(doctor.StatusSkip, resultByName(t, report, "ollama").Status); diff != "" {
+		t.Errorf("ollama status mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestReport_SummaryCountsUnknown(t *testing.T) {
+	t.Parallel()
+	report := doctor.Report{Results: []doctor.Result{
+		{Name: "a", Status: doctor.StatusPass},
+		{Name: "b", Status: doctor.StatusUnknown},
+	}}
+	want := doctor.Summary{Pass: 1, Unknown: 1}
+	if diff := cmp.Diff(want, report.Summary()); diff != "" {
+		t.Errorf("Summary() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestReport_String(t *testing.T) {
+	t.Parallel()
+	report := doctor.Report{Results: []doctor.Result{
+		{Check: doctor.CheckOpenAIKey, Name: "openai api key", Status: doctor.StatusFail, Detail: "rejected", Remediation: "check the key"},
+		{Check: doctor.CheckOllama, Name: "ollama", Status: doctor.StatusSkip, Detail: "not configured"},
+	}}
+	out := report.String()
+	for _, want := range []string{"openai api key", "rejected", "check the key", "ollama", "FAIL", "SKIP"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("String() output missing %q:\n%s", want, out)
+		}
 	}
 }

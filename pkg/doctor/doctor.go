@@ -11,6 +11,7 @@
 package doctor
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"net/http"
@@ -52,7 +53,9 @@ type Config struct {
 	OpenAIAPIKey string
 	// GeminiAPIKey is the Gemini credential to validate. Empty skips the check.
 	GeminiAPIKey string
-	// OllamaHost is the base URL of the local Ollama instance to probe.
+	// OllamaHost is the base URL of the local Ollama instance to probe. An
+	// empty host skips the Ollama check, so consumers that do not use Ollama
+	// can opt out. DefaultConfig sets a localhost default.
 	OllamaHost string
 	// OllamaModel, when set, asserts a specific model is loaded and runs the
 	// Ollama context-window preflight against it.
@@ -112,13 +115,36 @@ type Runner struct {
 	fdReader FileLimitReader
 }
 
+// withDefaults returns a copy of c with each zero-value operational field
+// replaced by its DefaultConfig value, so a partially populated Config (for
+// example, one that only sets an API key) still gets sane timeouts, thresholds,
+// and hosted-API base URLs. OllamaHost is deliberately not defaulted: an empty
+// host means "skip the Ollama check", which lets consumers that do not use
+// Ollama opt out cleanly.
+func (c *Config) withDefaults() Config {
+	d := DefaultConfig()
+	return Config{
+		Timeout:       cmp.Or(c.Timeout, d.Timeout),
+		LatencyWarn:   cmp.Or(c.LatencyWarn, d.LatencyWarn),
+		FileLimitMin:  cmp.Or(c.FileLimitMin, d.FileLimitMin),
+		FileLimitWarn: cmp.Or(c.FileLimitWarn, d.FileLimitWarn),
+		OpenAIBaseURL: cmp.Or(c.OpenAIBaseURL, d.OpenAIBaseURL),
+		GeminiBaseURL: cmp.Or(c.GeminiBaseURL, d.GeminiBaseURL),
+		OpenAIAPIKey:  c.OpenAIAPIKey,
+		GeminiAPIKey:  c.GeminiAPIKey,
+		OllamaHost:    c.OllamaHost,
+		OllamaModel:   c.OllamaModel,
+	}
+}
+
 // NewRunner builds a Runner from cfg and logger. A nil cfg uses DefaultConfig
-// and a nil logger discards output. cfg is copied, so later caller mutations
-// do not affect the Runner.
+// and a nil logger discards output. Zero-value operational fields in cfg are
+// filled from DefaultConfig, and cfg is copied, so later caller mutations do
+// not affect the Runner.
 func NewRunner(cfg *Config, logger *slog.Logger, opts ...Option) *Runner {
 	effective := DefaultConfig()
 	if cfg != nil {
-		effective = *cfg
+		effective = cfg.withDefaults()
 	}
 	r := &Runner{
 		cfg:      effective,
