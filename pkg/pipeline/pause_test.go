@@ -297,6 +297,96 @@ func TestPauseGate(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "Draining channel is closed after Stop",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				drain := g.Draining()
+
+				select {
+				case <-drain:
+					t.Fatal("Draining() closed before Stop()")
+				default:
+				}
+
+				g.Stop()
+
+				select {
+				case <-drain:
+				default:
+					t.Fatal("Draining() not closed after Stop()")
+				}
+			},
+		},
+		{
+			name: "Draining called after Stop is already closed",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Stop()
+
+				select {
+				case <-g.Draining():
+				default:
+					t.Fatal("Draining() after Stop() should be already closed")
+				}
+			},
+		},
+		{
+			name: "zero-value gate Draining works and closes on Stop",
+			run: func(t *testing.T) {
+				var g PauseGate
+				drain := g.Draining()
+
+				select {
+				case <-drain:
+					t.Fatal("Draining() closed before Stop() on zero-value gate")
+				default:
+				}
+
+				g.Stop()
+
+				select {
+				case <-drain:
+				default:
+					t.Fatal("Draining() not closed after Stop() on zero-value gate")
+				}
+			},
+		},
+		{
+			name: "repeated Stop does not double close Draining",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Stop()
+				g.Stop() // must not panic on a double close
+
+				select {
+				case <-g.Draining():
+				default:
+					t.Fatal("Draining() not closed after Stop()")
+				}
+			},
+		},
+		{
+			name: "caller selecting on Draining unblocks on Stop",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				unblocked := make(chan struct{})
+
+				go func() {
+					<-g.Draining()
+					close(unblocked)
+				}()
+
+				select {
+				case <-unblocked:
+					t.Fatal("Draining() waiter unblocked before Stop()")
+				default:
+				}
+
+				g.Stop()
+				<-unblocked
+			},
+		},
 	}
 
 	for _, tc := range tests {
