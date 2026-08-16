@@ -56,8 +56,10 @@ type Config struct {
 	// empty host skips the Ollama check, so consumers that do not use Ollama
 	// can opt out. DefaultConfig sets a localhost default.
 	OllamaHost string
-	// OllamaModel, when set, asserts a specific model is loaded and runs the
-	// Ollama context-window preflight against it.
+	// OllamaModel, when set, asserts a specific model is installed (present
+	// in Ollama's local model list) and runs the Ollama context-window
+	// preflight against it. This checks local availability, not whether the
+	// model is currently loaded into memory.
 	OllamaModel string
 }
 

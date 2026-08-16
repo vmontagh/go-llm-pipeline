@@ -83,7 +83,7 @@ func (r *Runner) probe(ctx context.Context, base, path string, header http.Heade
 	}
 
 	start := time.Now()
-	resp, err := r.client.Do(req)
+	resp, err := r.clientFor(header).Do(req)
 	elapsed := time.Since(start)
 	if err != nil {
 		return httpProbe{elapsed: elapsed, err: sanitizeURLError(err)}
@@ -99,6 +99,25 @@ func (r *Runner) probe(ctx context.Context, base, path string, header http.Heade
 	default:
 		return httpProbe{status: resp.StatusCode, elapsed: elapsed, body: body}
 	}
+}
+
+// clientFor returns the *http.Client to use for a probe. Requests that carry
+// credentials (a non-empty header) get a shallow copy of the injected client
+// with redirect following disabled: net/http forwards custom headers such as
+// Authorization and x-goog-api-key across redirects — including cross-origin
+// ones — so following a redirect could disclose the credential to the redirect
+// target, and a redirect landing on an unrelated 200 page could be misread as
+// "key accepted". Disabling redirects returns the original 3xx response so it
+// is classified honestly. The copy leaves the caller's client unmutated.
+func (r *Runner) clientFor(header http.Header) *http.Client {
+	if len(header) == 0 {
+		return r.client
+	}
+	c := *r.client
+	c.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &c
 }
 
 // sanitizeURLError strips the URL from a *url.Error so a credential carried in
@@ -277,6 +296,8 @@ func classifyKey(p httpProbe) (status Status, detail string) {
 		return StatusFail, "key rejected"
 	case p.status == http.StatusTooManyRequests:
 		return StatusWarn, "key reached the provider but is rate-limited"
+	case p.status >= http.StatusMultipleChoices && p.status < http.StatusBadRequest:
+		return StatusFail, fmt.Sprintf("provider redirected the credentialed request (status %d); refusing to forward the key", p.status)
 	case p.status >= http.StatusInternalServerError:
 		return StatusWarn, "provider returned a server error"
 	default:
@@ -397,16 +418,19 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 	return res
 }
 
-// modelInstalled reports whether want matches any installed model. Ollama tags
-// carry a ":tag" suffix (for example, "llama3:latest"); a request without a tag
-// matches the untagged base name, mirroring Ollama's own alias behavior.
+// modelInstalled reports whether want matches an installed model. Ollama
+// resolves a request without a tag to that name's ":latest" tag, so a tagless
+// want matches an installed model only by its exact name or its ":latest" form
+// — not by an arbitrary tag. Requesting "llama3" is therefore satisfied by
+// "llama3" or "llama3:latest", but not by "llama3:70b" (which Ollama would not
+// resolve "llama3" to). A want that already carries a tag matches exactly.
 func modelInstalled(models []string, want string) bool {
+	wantLatest := want
+	if !strings.Contains(want, ":") {
+		wantLatest = want + ":latest"
+	}
 	for _, m := range models {
-		if m == want {
-			return true
-		}
-		base, _, found := strings.Cut(m, ":")
-		if found && base == want {
+		if m == want || m == wantLatest {
 			return true
 		}
 	}

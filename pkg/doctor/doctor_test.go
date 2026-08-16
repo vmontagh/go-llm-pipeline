@@ -166,6 +166,7 @@ func TestRunner_APIKey(t *testing.T) {
 		{name: "invalid_fails", key: "sk-bad", respStatus: http.StatusUnauthorized, want: doctor.StatusFail},
 		{name: "rate_limited_warns", key: "sk-test", respStatus: http.StatusTooManyRequests, want: doctor.StatusWarn},
 		{name: "server_error_warns", key: "sk-test", respStatus: http.StatusBadGateway, want: doctor.StatusWarn},
+		{name: "redirect_fails", key: "sk-test", respStatus: http.StatusFound, want: doctor.StatusFail},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -177,7 +178,13 @@ func TestRunner_APIKey(t *testing.T) {
 					return jsonResp(http.StatusOK, `{"models":[{"name":"llama3"}]}`), nil
 				}
 				if req.Header.Get("Authorization") != "" {
-					return jsonResp(tt.respStatus, `{}`), nil
+					resp := jsonResp(tt.respStatus, `{}`)
+					if tt.respStatus >= http.StatusMultipleChoices && tt.respStatus < http.StatusBadRequest {
+						// A credentialed probe must not follow this cross-origin
+						// redirect; the client is expected to return the 3xx.
+						resp.Header.Set("Location", "https://redirect.example/")
+					}
+					return resp, nil
 				}
 				return jsonResp(http.StatusUnauthorized, `{}`), nil
 			})
@@ -260,6 +267,46 @@ func TestRunner_GeminiKeyNotLeakedOnNetworkError(t *testing.T) {
 	}
 }
 
+// TestRunner_GeminiKeyNotForwardedOnRedirect verifies that a credentialed probe
+// does not follow a cross-origin redirect (which net/http would otherwise use
+// to forward the x-goog-api-key header to the redirect target) and instead
+// classifies the 3xx itself.
+func TestRunner_GeminiKeyNotForwardedOnRedirect(t *testing.T) {
+	t.Parallel()
+	cfg := baseConfig()
+	cfg.GeminiAPIKey = "AIzaSECRET"
+	const redirectTarget = "redirect.example"
+	var keyReachedRedirectTarget bool
+	client := clientFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case strings.Contains(req.URL.Path, "/api/tags"):
+			return jsonResp(http.StatusOK, `{"models":[{"name":"llama3"}]}`), nil
+		case req.URL.Host == redirectTarget:
+			// If the client followed the redirect, the credential would arrive
+			// here — that must never happen.
+			if req.Header.Get("x-goog-api-key") != "" {
+				keyReachedRedirectTarget = true
+			}
+			return jsonResp(http.StatusOK, `{}`), nil
+		default:
+			resp := jsonResp(http.StatusFound, `{}`)
+			resp.Header.Set("Location", "https://"+redirectTarget+"/")
+			return resp, nil
+		}
+	})
+	r := doctor.NewRunner(cfg,
+		doctor.WithHTTPClient(client),
+		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
+	)
+	got := resultByName(t, r.Run(t.Context()), "gemini api key")
+	if keyReachedRedirectTarget {
+		t.Error("credential was forwarded to the redirect target")
+	}
+	if diff := cmp.Diff(doctor.StatusFail, got.Status); diff != "" {
+		t.Errorf("gemini api key status mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestRunner_Ollama(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -277,6 +324,8 @@ func TestRunner_Ollama(t *testing.T) {
 		{name: "models_loaded_passes", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusPass},
 		{name: "requested_model_missing_fails", model: "mistral", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusFail},
 		{name: "requested_model_alias_passes", model: "llama3", status: http.StatusOK, body: `{"models":[{"name":"llama3:latest"}]}`, want: doctor.StatusPass},
+		{name: "requested_model_exact_tag_passes", model: "llama3:70b", status: http.StatusOK, body: `{"models":[{"name":"llama3:70b"}]}`, want: doctor.StatusPass},
+		{name: "tagless_request_non_latest_tag_fails", model: "llama3", status: http.StatusOK, body: `{"models":[{"name":"llama3:70b"}]}`, want: doctor.StatusFail},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
