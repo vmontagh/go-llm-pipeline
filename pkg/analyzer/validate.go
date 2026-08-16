@@ -21,7 +21,14 @@ var ErrSchemaValidation = errors.New("analyzer: schema validation failed")
 
 // FieldError describes a single schema violation at a specific location.
 type FieldError struct {
-	// Path is the dotted/bracketed JSON location, for example "items[0].name".
+	// Path is the JSON location of the violation. For an instance violation it is
+	// the dotted/bracketed path to the offending value, for example
+	// "items[0].name". For a schema-structural error — an unrecognized or
+	// malformed keyword, reported independently of any instance — it is the
+	// location of the offending schema node in the same convention, where the
+	// itemsSchemaPath suffix ("[]") denotes an array's items subschema and the
+	// additionalPropertiesSchemaKey segment (".*") denotes an object's
+	// additionalProperties subschema, for example "tags[]" or "meta.*".
 	Path string
 	// Rule is the JSON-Schema keyword that failed, for example "required".
 	Rule string
@@ -98,10 +105,12 @@ func Validate(schema map[string]any, data []byte) error {
 		return dup
 	}
 	var errs []error
-	// Reject unrecognized keywords across the whole schema structure first, so an
-	// unknown keyword on a property or items schema fails closed even when the
-	// instance omits that property or leaves an array empty.
-	reportUnknownKeywordsTree(canonical, "", &errs)
+	// Validate the schema structure once, independent of the instance, so an
+	// unrecognized or malformed keyword on any subschema fails closed even when no
+	// instance value reaches it (an absent property, an empty array, or no
+	// additional properties). validateValue then enforces only instance
+	// constraints and never re-reports a schema-structural error.
+	checkSchema(canonical, "", &errs)
 	validateValue(canonical, value, "", &errs)
 	if len(errs) == 0 {
 		return nil
@@ -225,33 +234,24 @@ func kindOf(value any) instanceKind {
 }
 
 // keywordRule binds a schema keyword to the single instance kind it constrains
-// and the check that enforces it. validateValue applies a rule only when its
-// keyword is present in the schema and the instance is of the rule's kind, so a
-// present keyword is either enforced (matching kind) or inapplicable to the
-// instance's kind — it is never silently dropped. This registry is also the
-// source of truth for which keywords are recognized: reportUnknownKeywords fails
-// closed on any keyword absent from it (plus the specially handled type, enum,
-// and description).
+// and the check that enforces it against an instance. applyKeywordRules applies a
+// rule only when its keyword is present in the schema and the instance is of the
+// rule's kind, so a present keyword is either enforced (matching kind) or
+// inapplicable to the instance's kind — it is never silently dropped. Keyword
+// value shape is validated separately and up front by checkSchema, so an apply
+// func may assume a present value is well-formed (and skips it otherwise).
 type keywordRule struct {
 	keyword string
 	kind    instanceKind
 	apply   func(schema map[string]any, value any, path string, errs *[]error)
 }
 
-// keywordRules is populated by init. It is not a package-level initializer
-// expression because its apply functions transitively reference the registry
-// (validateValue recurses through applyKeywordRules), which the compiler would
-// otherwise reject as an initialization cycle.
+// keywordRules is populated by init rather than a package-level initializer
+// expression: its apply functions transitively reference the registry
+// (applyProperties -> validateValue -> applyKeywordRules -> keywordRules), which
+// the compiler rejects as an initialization cycle. Building a keyword lookup
+// table in init is the idiomatic exception. It is written once and never mutated.
 var keywordRules []keywordRule
-
-// recognizedKeywords is every schema keyword this validator understands: each
-// keyword-driven rule plus type (handled by enforceType), enum (handled by
-// validateEnum), and the description annotation (metadata, not validated). Any
-// other keyword is rejected by reportUnknownKeywords, so the set of accepted
-// keywords stays closed and a misspelled or unsupported keyword cannot be
-// silently ignored. It is derived from keywordRules so a new rule is recognized
-// automatically.
-var recognizedKeywords map[string]struct{}
 
 func init() {
 	keywordRules = []keywordRule{
@@ -268,22 +268,47 @@ func init() {
 		{PropMinimum, kindNumber, applyMinimum},
 		{PropMaximum, kindNumber, applyMaximum},
 	}
-	recognizedKeywords = map[string]struct{}{
-		PropType:        {},
-		PropEnum:        {},
-		PropDescription: {},
-	}
-	for _, rule := range keywordRules {
-		recognizedKeywords[rule.keyword] = struct{}{}
-	}
 }
 
+// keywordRecognized reports whether key is a schema keyword this validator
+// understands: a keyword-driven rule, or one of the keywords handled outside the
+// registry — type (enforceType), enum (validateEnum), and the description
+// annotation (metadata, not validated). checkSchema fails closed on any other
+// keyword, so the accepted set stays closed and a misspelled or unsupported
+// keyword cannot be silently ignored. Recognition derives from keywordRules, so a
+// new rule is recognized automatically with no second source to keep in sync.
+func keywordRecognized(key string) bool {
+	switch key {
+	case PropType, PropEnum, PropDescription:
+		return true
+	}
+	for _, rule := range keywordRules {
+		if rule.keyword == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Schema-structural path segments locate a subschema (rather than an instance
+// value) in a FieldError.Path. They keep the dotted/bracketed convention distinct
+// from real instance indices and keys.
+const (
+	// itemsSchemaPath is appended to a schema path to locate an array's items
+	// subschema, for example "tags[]".
+	itemsSchemaPath = "[]"
+	// additionalPropertiesSchemaKey is joined under childPath to locate an
+	// object's additionalProperties subschema, for example "meta.*".
+	additionalPropertiesSchemaKey = "*"
+)
+
 // validateValue checks value against schema, appending a *FieldError for every
-// violation. It enforces the type keyword, applies each present keyword rule whose
-// instance kind matches value, and always checks enum — which constrains every
-// instance kind, so it runs even after a type mismatch. Unrecognized keywords are
-// not reported here: reportUnknownKeywordsTree already rejects them once across the
-// whole schema structure before validateValue runs, independent of the instance.
+// instance violation. It enforces the type keyword, applies each present keyword
+// rule whose instance kind matches value, and always checks enum — which
+// constrains every instance kind, so it runs even after a type mismatch. It does
+// not report schema-structural errors: checkSchema validates the schema (unknown
+// and malformed keywords) once up front, independent of the instance, so an apply
+// func assumes a present keyword value is well-formed and skips it otherwise.
 func validateValue(schema map[string]any, value any, path string, errs *[]error) {
 	if ok, integerRequired := enforceType(schema, value, path, errs); ok {
 		applyKeywordRules(schema, value, integerRequired, path, errs)
@@ -293,50 +318,214 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 	validateEnum(schema, value, path, errs)
 }
 
-// reportUnknownKeywordsTree walks the schema and every nested schema object it can
-// reach — each declared property schema, the items schema, and a schema-valued
-// additionalProperties — reporting unrecognized keywords at every node. It runs
-// once over the schema structure, independent of the instance, so an unknown
-// keyword on a property or items schema is rejected even when the instance omits
-// that property or the array is empty. A property or items value that is not a
-// schema object is skipped here; validateValue reports that malformation as an
-// instance constraint.
-func reportUnknownKeywordsTree(schema map[string]any, path string, errs *[]error) {
+// checkSchema validates the schema itself, independent of any instance. At every
+// node of the schema structure — the schema, each declared property schema, the
+// items schema, and a schema-valued additionalProperties — it reports
+// unrecognized keywords and malformed recognized-keyword values. Running it once
+// up front makes the fail-closed guarantee structural: a malformed or unknown
+// keyword is reported even when no instance value reaches that subschema (an
+// absent property, an empty array, or no additional properties), and never twice,
+// since validateValue reports only instance violations.
+func checkSchema(schema map[string]any, path string, errs *[]error) {
 	reportUnknownKeywords(schema, path, errs)
+	checkKeywordShapes(schema, path, errs)
 	if props, ok := propertiesMap(schema); ok {
-		names := make([]string, 0, len(props))
-		for name := range props {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
+		for _, name := range sortedKeys(props) {
 			if child, ok := props[name].(map[string]any); ok {
-				reportUnknownKeywordsTree(child, childPath(path, name), errs)
+				checkSchema(child, childPath(path, name), errs)
 			}
 		}
 	}
 	if items, ok := schema[PropItems].(map[string]any); ok {
-		reportUnknownKeywordsTree(items, path+"[]", errs)
+		checkSchema(items, path+itemsSchemaPath, errs)
 	}
 	if additional, ok := schema[PropAdditional].(map[string]any); ok {
-		reportUnknownKeywordsTree(additional, childPath(path, "*"), errs)
+		checkSchema(additional, childPath(path, additionalPropertiesSchemaKey), errs)
 	}
 }
 
 // reportUnknownKeywords appends a FieldError for every schema keyword this
 // validator does not recognize, so a caller schema carrying an unsupported or
 // misspelled keyword fails closed instead of having the keyword silently ignored.
-// reportUnknownKeywordsTree calls it at every node of the schema structure.
+// checkSchema calls it at every node of the schema structure.
 func reportUnknownKeywords(schema map[string]any, path string, errs *[]error) {
 	var unknown []string
 	for key := range schema {
-		if _, ok := recognizedKeywords[key]; !ok {
+		if !keywordRecognized(key) {
 			unknown = append(unknown, key)
 		}
 	}
 	sort.Strings(unknown)
 	for _, key := range unknown {
 		*errs = append(*errs, &FieldError{Path: path, Rule: key, Detail: "unrecognized schema keyword"})
+	}
+}
+
+// checkKeywordShapes reports every present recognized keyword whose value is not a
+// usable shape (a non-array required, a non-integer minItems, an uncompilable
+// pattern, and so on). It is the single owner of these "schema X is malformed"
+// errors; the matching apply func consults the same helper and skips a malformed
+// value silently, so a malformed keyword is reported exactly once regardless of
+// whether an instance reaches it.
+func checkKeywordShapes(schema map[string]any, path string, errs *[]error) {
+	checkTypeShape(schema, path, errs)
+	checkEnumShape(schema, path, errs)
+	checkRequiredShape(schema, path, errs)
+	checkPropertiesShape(schema, path, errs)
+	checkAdditionalShape(schema, path, errs)
+	checkIntKeywordShape(schema, PropMinItems, path, errs)
+	checkIntKeywordShape(schema, PropMaxItems, path, errs)
+	checkItemsShape(schema, path, errs)
+	checkIntKeywordShape(schema, PropMinLength, path, errs)
+	checkIntKeywordShape(schema, PropMaxLength, path, errs)
+	checkPatternShape(schema, path, errs)
+	checkStringEncodedShape(schema, path, errs)
+	checkBoundShape(schema, PropMinimum, path, errs)
+	checkBoundShape(schema, PropMaximum, path, errs)
+}
+
+// checkTypeShape reports a type keyword that is malformed or names an unsupported
+// primitive, matching the schema errors enforceType previously emitted inline.
+func checkTypeShape(schema map[string]any, path string, errs *[]error) {
+	types, present, malformed := schemaTypes(schema)
+	switch {
+	case malformed:
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("invalid schema type: %v", schema[PropType])})
+	case present:
+		for _, typ := range types {
+			if !isKnownType(typ) {
+				*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("unsupported schema type %q", typ)})
+				return
+			}
+		}
+	}
+}
+
+// checkEnumShape reports an enum keyword that is not a non-empty array. JSON
+// Schema requires at least one member, so an empty enum permits nothing.
+func checkEnumShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropEnum]
+	if !present {
+		return
+	}
+	members, ok := raw.([]any)
+	switch {
+	case !ok:
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum must be an array"})
+	case len(members) == 0:
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum is empty; no value is permitted"})
+	}
+}
+
+// checkRequiredShape reports a required keyword that is not an array of strings.
+func checkRequiredShape(schema map[string]any, path string, errs *[]error) {
+	if _, present := schema[PropRequired]; !present {
+		return
+	}
+	if _, malformed := requiredNames(schema); malformed {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropRequired, Detail: "schema required must be an array of strings"})
+	}
+}
+
+// checkPropertiesShape reports a properties keyword that is not a schema object
+// map, and each child that is not a schema object.
+func checkPropertiesShape(schema map[string]any, path string, errs *[]error) {
+	if _, present := schema[PropProperties]; !present {
+		return
+	}
+	props, ok := propertiesMap(schema)
+	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropProperties, Detail: "schema properties must be a schema object map"})
+		return
+	}
+	for _, name := range sortedKeys(props) {
+		if _, ok := props[name].(map[string]any); !ok {
+			*errs = append(*errs, &FieldError{Path: childPath(path, name), Rule: PropProperties, Detail: "property schema must be a schema object"})
+		}
+	}
+}
+
+// checkAdditionalShape reports an additionalProperties keyword that is neither a
+// boolean nor a schema object.
+func checkAdditionalShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropAdditional]
+	if !present {
+		return
+	}
+	switch raw.(type) {
+	case bool, map[string]any:
+		// Well-formed; a schema-valued additionalProperties is recursed by checkSchema.
+	default:
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropAdditional, Detail: "schema additionalProperties must be a boolean or schema object"})
+	}
+}
+
+// checkItemsShape reports an items keyword that is not a schema object.
+func checkItemsShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropItems]
+	if !present {
+		return
+	}
+	if _, ok := raw.(map[string]any); !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropItems, Detail: "schema items must be a schema object"})
+	}
+}
+
+// checkIntKeywordShape reports a length/count keyword that is present but not a
+// usable non-negative integer.
+func checkIntKeywordShape(schema map[string]any, key, path string, errs *[]error) {
+	if _, present := schema[key]; !present {
+		return
+	}
+	if _, valid := intKeyword(schema, key); !valid {
+		*errs = append(*errs, &FieldError{Path: path, Rule: key, Detail: fmt.Sprintf("schema %s is not a usable non-negative integer", key)})
+	}
+}
+
+// checkBoundShape reports a minimum/maximum keyword that is present but not a
+// usable number.
+func checkBoundShape(schema map[string]any, key, path string, errs *[]error) {
+	if _, present := schema[key]; !present {
+		return
+	}
+	if _, valid := boundKeyword(schema, key); !valid {
+		*errs = append(*errs, &FieldError{Path: path, Rule: key, Detail: fmt.Sprintf("schema %s is not a usable number", key)})
+	}
+}
+
+// checkPatternShape reports a pattern keyword that is not a string or is not a
+// compilable regular expression. An empty pattern imposes no constraint.
+func checkPatternShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropPattern]
+	if !present {
+		return
+	}
+	pattern, ok := raw.(string)
+	switch {
+	case !ok:
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: "schema pattern must be a string"})
+	case pattern == "":
+	default:
+		if _, err := regexp.Compile(pattern); err != nil {
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
+		}
+	}
+}
+
+// checkStringEncodedShape reports an x-goStringKind keyword that is not a string
+// or names an unsupported Go kind.
+func checkStringEncodedShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropStringEncodedKind]
+	if !present {
+		return
+	}
+	name, ok := raw.(string)
+	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: "schema x-goStringKind must be a string"})
+		return
+	}
+	if _, ok := stringEncodedKindType(name); !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("schema x-goStringKind %q is not a supported kind", name)})
 	}
 }
 
@@ -373,16 +562,16 @@ func applyKeywordRules(schema map[string]any, value any, integerRequired bool, p
 // rules are still applied by instance kind.
 func enforceType(schema map[string]any, value any, path string, errs *[]error) (ok, integerRequired bool) {
 	types, present, malformed := schemaTypes(schema)
-	switch {
-	case malformed:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("invalid schema type: %v", schema[PropType])})
-		return false, false
-	case !present:
-		return true, false
+	if malformed || !present {
+		// A malformed type is reported by checkSchema; skip instance type
+		// enforcement here so the schema error is not duplicated. A typeless schema
+		// leaves the instance unconstrained by type.
+		return !malformed, false
 	}
 	for _, typ := range types {
 		if !isKnownType(typ) {
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("unsupported schema type %q", typ)})
+			// An unsupported type token is reported by checkSchema; do not enforce
+			// or re-report it against the instance.
 			return false, false
 		}
 	}
@@ -584,7 +773,7 @@ func applyRequired(schema map[string]any, value any, path string, errs *[]error)
 	}
 	names, malformed := requiredNames(schema)
 	if malformed {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropRequired, Detail: "schema required must be an array of strings"})
+		// A malformed required is reported by checkSchema; skip enforcement.
 		return
 	}
 	for _, name := range names {
@@ -598,8 +787,9 @@ func applyRequired(schema map[string]any, value any, path string, errs *[]error)
 	}
 }
 
-// applyProperties validates each declared property against its child schema and
-// fails closed when properties, or any child schema, is not a schema object map.
+// applyProperties validates each declared property against its child schema. A
+// malformed properties map, or a child that is not a schema object, is reported by
+// checkSchema; this pass skips it silently and validates the well-formed children.
 func applyProperties(schema map[string]any, value any, path string, errs *[]error) {
 	obj, ok := value.(map[string]any)
 	if !ok {
@@ -607,22 +797,11 @@ func applyProperties(schema map[string]any, value any, path string, errs *[]erro
 	}
 	props, ok := propertiesMap(schema)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropProperties, Detail: "schema properties must be a schema object map"})
 		return
 	}
-	childNames := make([]string, 0, len(props))
-	for name := range props {
-		childNames = append(childNames, name)
-	}
-	sort.Strings(childNames)
-	for _, name := range childNames {
+	for _, name := range sortedKeys(props) {
 		child, ok := props[name].(map[string]any)
 		if !ok {
-			*errs = append(*errs, &FieldError{
-				Path:   childPath(path, name),
-				Rule:   PropProperties,
-				Detail: "property schema must be a schema object",
-			})
 			continue
 		}
 		if v, present := obj[name]; present {
@@ -686,11 +865,7 @@ func validateAdditional(schema, obj, props map[string]any, path string, errs *[]
 			validateValue(additional, obj[name], childPath(path, name), errs)
 		}
 	default:
-		*errs = append(*errs, &FieldError{
-			Path:   path,
-			Rule:   PropAdditional,
-			Detail: "schema additionalProperties must be a boolean or schema object",
-		})
+		// A malformed additionalProperties is reported by checkSchema; skip it.
 	}
 }
 
@@ -715,7 +890,7 @@ func applyMinItems(schema map[string]any, value any, path string, errs *[]error)
 	minItems, valid := intKeyword(schema, PropMinItems)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinItems, Detail: "schema minItems is not a usable non-negative integer"})
+		// A malformed minItems is reported by checkSchema; skip enforcement.
 	case int64(len(arr)) < minItems:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinItems, Detail: fmt.Sprintf("array length %d is below minimum %d", len(arr), minItems)})
 	}
@@ -730,14 +905,14 @@ func applyMaxItems(schema map[string]any, value any, path string, errs *[]error)
 	maxItems, valid := intKeyword(schema, PropMaxItems)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: "schema maxItems is not a usable non-negative integer"})
+		// A malformed maxItems is reported by checkSchema; skip enforcement.
 	case int64(len(arr)) > maxItems:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxItems)})
 	}
 }
 
-// applyItems validates every array element against the items schema, failing
-// closed when items is present but not a schema object.
+// applyItems validates every array element against the items schema. A malformed
+// items (not a schema object) is reported by checkSchema; this pass skips it.
 func applyItems(schema map[string]any, value any, path string, errs *[]error) {
 	arr, ok := value.([]any)
 	if !ok {
@@ -745,7 +920,6 @@ func applyItems(schema map[string]any, value any, path string, errs *[]error) {
 	}
 	items, ok := schema[PropItems].(map[string]any)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropItems, Detail: "schema items must be a schema object"})
 		return
 	}
 	for i, elem := range arr {
@@ -764,7 +938,7 @@ func applyMinLength(schema map[string]any, value any, path string, errs *[]error
 	minLen, valid := intKeyword(schema, PropMinLength)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: "schema minLength is not a usable non-negative integer"})
+		// A malformed minLength is reported by checkSchema; skip enforcement.
 	case runes < minLen:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, minLen)})
 	}
@@ -780,42 +954,38 @@ func applyMaxLength(schema map[string]any, value any, path string, errs *[]error
 	maxLen, valid := intKeyword(schema, PropMaxLength)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: "schema maxLength is not a usable non-negative integer"})
+		// A malformed maxLength is reported by checkSchema; skip enforcement.
 	case runes > maxLen:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, maxLen)})
 	}
 }
 
 // applyPattern enforces the pattern keyword. An empty pattern matches every string
-// and is treated as no constraint; a non-string or uncompilable pattern fails
-// closed with a schema error.
+// and is treated as no constraint; a non-string or uncompilable pattern is
+// reported by checkSchema and skipped here.
 func applyPattern(schema map[string]any, value any, path string, errs *[]error) {
 	s, ok := value.(string)
 	if !ok {
 		return
 	}
 	pattern, ok := schema[PropPattern].(string)
-	switch {
-	case !ok:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: "schema pattern must be a string"})
-	case pattern == "":
-		// An empty pattern matches every string; treat it as no constraint.
-	default:
-		re, err := regexp.Compile(pattern)
-		switch {
-		case err != nil:
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
-		case !re.MatchString(s):
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
-		}
+	if !ok || pattern == "" {
+		return
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return
+	}
+	if !re.MatchString(s) {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
 	}
 }
 
 // applyStringEncoded enforces the internal x-goStringKind keyword emitted for
 // json:",string" fields: the quoted string must decode into the recorded Go kind
 // exactly as encoding/json would, so a schema-valid string is always decodable. A
-// present-but-unusable keyword (non-string, or an unknown kind name) fails closed
-// with a FieldError rather than silently skipping the check.
+// present-but-unusable keyword (non-string, or an unknown kind name) is reported
+// by checkSchema and skipped here.
 func applyStringEncoded(schema map[string]any, value any, path string, errs *[]error) {
 	s, ok := value.(string)
 	if !ok {
@@ -827,12 +997,10 @@ func applyStringEncoded(schema map[string]any, value any, path string, errs *[]e
 	}
 	name, ok := raw.(string)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: "schema x-goStringKind must be a string"})
 		return
 	}
 	elem, ok := stringEncodedKindType(name)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("schema x-goStringKind %q is not a supported kind", name)})
 		return
 	}
 	if !stringDecodesInto(elem, s) {
@@ -902,7 +1070,7 @@ func applyMinimum(schema map[string]any, value any, path string, errs *[]error) 
 	lo, valid := boundKeyword(schema, PropMinimum)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: "schema minimum is not a usable number"})
+		// A malformed minimum is reported by checkSchema; skip enforcement.
 	case val.Cmp(lo) < 0:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", num.String(), boundString(schema, PropMinimum))})
 	}
@@ -918,28 +1086,23 @@ func applyMaximum(schema map[string]any, value any, path string, errs *[]error) 
 	hi, valid := boundKeyword(schema, PropMaximum)
 	switch {
 	case !valid:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: "schema maximum is not a usable number"})
+		// A malformed maximum is reported by checkSchema; skip enforcement.
 	case val.Cmp(hi) > 0:
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: fmt.Sprintf("value %s exceeds maximum %s", num.String(), boundString(schema, PropMaximum))})
 	}
 }
 
-// validateEnum enforces the enum keyword. An absent enum permits every value; a
-// present enum that is not an array, or is an empty array (JSON Schema requires
-// at least one member), is an invalid schema that permits nothing and yields a
-// FieldError. Otherwise the value must deep-equal one member.
+// validateEnum enforces the enum keyword: the value must deep-equal one member. An
+// absent enum permits every value. A malformed enum (not an array, or empty) is
+// reported by checkSchema and skipped here, so nothing matches and no duplicate
+// schema error is emitted.
 func validateEnum(schema map[string]any, value any, path string, errs *[]error) {
 	raw, present := schema[PropEnum]
 	if !present {
 		return
 	}
 	members, ok := raw.([]any)
-	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum must be an array"})
-		return
-	}
-	if len(members) == 0 {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum is empty; no value is permitted"})
+	if !ok || len(members) == 0 {
 		return
 	}
 	for _, m := range members {
@@ -1066,6 +1229,17 @@ func childPath(parent, name string) string {
 		return name
 	}
 	return parent + "." + name
+}
+
+// sortedKeys returns the keys of m in ascending order, so a schema walk and its
+// error reports are deterministic regardless of Go's randomized map iteration.
+func sortedKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func stringField(schema map[string]any, key string) (string, bool) {

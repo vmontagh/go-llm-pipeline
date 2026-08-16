@@ -257,3 +257,17 @@ func (s *scriptedAnalyzer) Analyze(_ context.Context, prompt string, _ []byte, _
 	}
 	return s.responses[i], nil
 }
+
+// lessFieldError is a total ordering over FieldError (Path, then Rule, then
+// Detail) for cmpopts.SortSlices, so tests can compare error sets regardless of
+// the order the validator appends them. Ordering on all three fields keeps the
+// sort stable even when two errors share a Path and Rule.
+func lessFieldError(a, b analyzer.FieldError) bool {
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	if a.Rule != b.Rule {
+		return a.Rule < b.Rule
+	}
+	return a.Detail < b.Detail
+}

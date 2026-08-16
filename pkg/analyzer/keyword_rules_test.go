@@ -3,7 +3,6 @@ package analyzer_test
 import (
 	"encoding/json"
 	"errors"
-	"sort"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -94,9 +93,7 @@ func TestValidateUnknownKeyword(t *testing.T) {
 				t.Fatalf("Validate(%s) error = %v, want ErrSchemaValidation", tc.name, err)
 			}
 			got := collectFieldErrors(err)
-			less := func(a, b analyzer.FieldError) bool { return a.Rule < b.Rule }
-			sort.Slice(got, func(i, j int) bool { return got[i].Rule < got[j].Rule })
-			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(less)); diff != "" {
+			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(lessFieldError)); diff != "" {
 				t.Errorf("Validate(%s) FieldErrors mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
@@ -193,8 +190,91 @@ func TestValidateUnknownKeywordCoexistsWithConstraint(t *testing.T) {
 		{Path: "", Rule: "format", Detail: "unrecognized schema keyword"},
 		{Path: "", Rule: analyzer.PropMaxLength, Detail: "length 7 exceeds maximum 2"},
 	}
-	less := func(a, b analyzer.FieldError) bool { return a.Rule < b.Rule }
+	less := lessFieldError
 	if diff := cmp.Diff(want, got, cmpopts.SortSlices(less)); diff != "" {
 		t.Errorf("Validate FieldErrors mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestValidateMalformedKeywordFailsClosedRegardlessOfInstance is the regression
+// guard for the fail-open bug: a recognized keyword with a malformed value must be
+// reported by validating the schema structure itself, so it fails closed even when
+// no instance value reaches the offending subschema — an absent property, an empty
+// array, or an object with no additional properties. Previously these were caught
+// only when an instance happened to traverse into the subschema.
+func TestValidateMalformedKeywordFailsClosedRegardlessOfInstance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		schema   map[string]any
+		instance string
+		want     []analyzer.FieldError
+	}{
+		{
+			name: "malformed_minLength_on_absent_property",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"age": map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: "bad"},
+				},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "age", Rule: analyzer.PropMinLength, Detail: "schema minLength is not a usable non-negative integer"}},
+		},
+		{
+			name: "malformed_items_child_on_empty_array",
+			schema: map[string]any{
+				analyzer.PropType:  analyzer.TypeArray,
+				analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: "bad"},
+			},
+			instance: `[]`,
+			want:     []analyzer.FieldError{{Path: "[]", Rule: analyzer.PropMinLength, Detail: "schema minLength is not a usable non-negative integer"}},
+		},
+		{
+			name: "malformed_additionalProperties_value_with_no_extras",
+			schema: map[string]any{
+				analyzer.PropType:       analyzer.TypeObject,
+				analyzer.PropAdditional: map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: "bad"},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "*", Rule: analyzer.PropMinLength, Detail: "schema minLength is not a usable non-negative integer"}},
+		},
+		{
+			name: "malformed_enum_on_absent_property",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"age": map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropEnum: "nope"},
+				},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "age", Rule: analyzer.PropEnum, Detail: "schema enum must be an array"}},
+		},
+		{
+			name: "malformed_minimum_on_absent_property",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"age": map[string]any{analyzer.PropType: analyzer.TypeNumber, analyzer.PropMinimum: "bad"},
+				},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "age", Rule: analyzer.PropMinimum, Detail: "schema minimum is not a usable number"}},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := analyzer.Validate(tc.schema, []byte(tc.instance))
+			if !errors.Is(err, analyzer.ErrSchemaValidation) {
+				t.Fatalf("Validate(%s) error = %v, want ErrSchemaValidation", tc.name, err)
+			}
+			got := collectFieldErrors(err)
+			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(lessFieldError)); diff != "" {
+				t.Errorf("Validate(%s) FieldErrors mismatch (-want +got):\n%s", tc.name, diff)
+			}
+		})
 	}
 }
