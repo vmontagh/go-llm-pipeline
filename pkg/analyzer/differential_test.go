@@ -49,7 +49,9 @@ import (
 // therefore `make test`) exercises the invariants deterministically without a
 // separate step; `go test -fuzz` then explores far beyond the seeds. A failing
 // input the engine discovers is written under testdata/fuzz and replays as a
-// permanent regression seed.
+// permanent regression seed. Each target's input is keyed by the catalog type's
+// name (not its position), so reordering the catalog cannot silently retarget a
+// committed regression onto a different schema.
 
 // --- catalog of representative types -----------------------------------------
 
@@ -399,45 +401,80 @@ func mutateJSON(r *rand.Rand, data []byte) []byte {
 
 // --- fuzz targets -------------------------------------------------------------
 
+// foldName hashes a catalog name to a stable value (FNV-1a). It decorrelates the
+// per-type seed streams and resolves an unknown, engine-mutated name onto a real
+// entry so exploration keeps exercising a schema.
+func foldName(name string) uint64 {
+	const (
+		offset = 1469598103934665603
+		prime  = 1099511628211
+	)
+	h := uint64(offset)
+	for i := 0; i < len(name); i++ {
+		h = (h ^ uint64(name[i])) * prime
+	}
+	return h
+}
+
+// resolveEntry maps a fuzz input's catalog name to its entry. A known name — which
+// every committed seed uses — resolves to exactly that entry, so inserting or
+// reordering catalog types can never silently retarget a regression onto a
+// different schema (where it might pass vacuously). An unknown name, produced only
+// by the fuzzing engine mutating the field, folds deterministically onto a real
+// entry instead of no-op'ing.
+func resolveEntry(entries []catalogEntry, byName map[string]catalogEntry, name string) catalogEntry {
+	if e, ok := byName[name]; ok {
+		return e
+	}
+	return entries[foldName(name)%uint64(len(entries))]
+}
+
 // FuzzSchemaAcceptsCanonical checks Property A: the schema never rejects a
-// canonical encoding. sel selects a catalog type and seed drives the random
+// canonical encoding. name selects a catalog type and seed drives the random
 // value, so the engine can reach any value of any type.
 func FuzzSchemaAcceptsCanonical(f *testing.F) {
 	catalog := buildCatalog(f)
-	for idx := range catalog {
+	byName := make(map[string]catalogEntry, len(catalog))
+	for _, entry := range catalog {
+		byName[entry.name] = entry
+	}
+	for _, entry := range catalog {
 		for k := 0; k < seedsPerType; k++ {
-			f.Add(uint(idx), uint64(k)+1)
+			f.Add(entry.name, uint64(k)+1)
 		}
 	}
-	f.Fuzz(func(t *testing.T, sel uint, seed uint64) {
-		entry := catalog[int(sel%uint(len(catalog)))]
-		checkCanonicalAccepted(t, entry, newRand(seed, uint64(sel)+1))
+	f.Fuzz(func(t *testing.T, name string, seed uint64) {
+		entry := resolveEntry(catalog, byName, name)
+		checkCanonicalAccepted(t, entry, newRand(seed, foldName(entry.name)))
 	})
 }
 
 // FuzzValidateImpliesDecode checks Property B: any document Validate accepts also
-// decodes into the target type. sel selects a (Property-B-eligible) catalog type
+// decodes into the target type. name selects a (Property-B-eligible) catalog type
 // and doc is the candidate document; the seeds are canonical encodings perturbed
 // toward the acceptance boundary.
 func FuzzValidateImpliesDecode(f *testing.F) {
 	catalog := buildCatalog(f)
 	strict := make([]catalogEntry, 0, len(catalog))
+	byName := make(map[string]catalogEntry, len(catalog))
 	for _, entry := range catalog {
-		if !entry.stringSuperset {
-			strict = append(strict, entry) // exclude type:string supersets (time.Time)
+		if entry.stringSuperset {
+			continue // exclude type:string supersets (time.Time)
 		}
+		strict = append(strict, entry)
+		byName[entry.name] = entry
 	}
-	for idx, entry := range strict {
+	for _, entry := range strict {
 		for k := 0; k < seedsPerType; k++ {
-			r := newRand(uint64(k)+1, uint64(idx)+1)
+			r := newRand(uint64(k)+1, foldName(entry.name))
 			data, err := json.Marshal(randValue(r, entry.typ).Interface())
 			if err != nil {
 				f.Fatalf("seed marshal %s: %v", entry.name, err)
 			}
-			f.Add(uint(idx), mutateJSON(r, data))
+			f.Add(entry.name, mutateJSON(r, data))
 		}
 	}
-	f.Fuzz(func(t *testing.T, sel uint, doc []byte) {
-		assertValidateImpliesDecode(t, strict[int(sel%uint(len(strict)))], doc)
+	f.Fuzz(func(t *testing.T, name string, doc []byte) {
+		assertValidateImpliesDecode(t, resolveEntry(strict, byName, name), doc)
 	})
 }
