@@ -94,7 +94,8 @@ func WithMaxAttempts(n int) ExtractOption {
 }
 
 // WithSchema overrides the schema derived from T with a caller-supplied JSON
-// Schema map.
+// Schema map. The map must be non-nil; Extract rejects a nil override with
+// ErrSchemaDerivation before contacting the provider.
 func WithSchema(schema map[string]any) ExtractOption {
 	return extractOptionFunc(func(c *extractConfig) {
 		c.schema = schema
@@ -142,7 +143,11 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 	}
 
 	schema := cfg.schema
-	if !cfg.schemaSet {
+	if cfg.schemaSet {
+		if schema == nil {
+			return zero, fmt.Errorf("%w: WithSchema requires a non-nil schema", ErrSchemaDerivation)
+		}
+	} else {
 		derived, err := SchemaOf(zero)
 		if err != nil {
 			return zero, fmt.Errorf("deriving schema: %w", err)

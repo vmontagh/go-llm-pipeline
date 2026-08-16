@@ -31,7 +31,10 @@ var (
 // SchemaOf reflects a JSON Schema (as a provider-agnostic map) from v, which
 // must be a struct or a pointer to one. Field names are taken from json tags; a
 // field is required unless it is a pointer or its json tag carries ",omitempty".
-// Fields tagged json:",string" are derived as strings. Because Extract decodes a
+// Fields tagged json:",string" are derived as strings, but only for the kinds
+// encoding/json actually quotes (bool, integer, float, and string); for any
+// other kind the option is ignored and the field's real shape is derived, so the
+// response still decodes. Because Extract decodes a
 // response into T, string handling follows the decode contract: types that
 // implement encoding.TextUnmarshaler (such as time.Time) are derived as strings,
 // while a type that only marshals to text — or a struct with custom
@@ -45,8 +48,11 @@ var (
 // jsonschema struct tag adds description, enum, minimum/maximum, minLength/
 // maxLength, pattern, and can force required/optional; enum members are
 // string-valued for string fields and coerced to numbers or booleans for
-// numeric/boolean fields. Objects emit additionalProperties:false so Validate
-// rejects unexpected keys.
+// numeric/boolean fields. A constraint that cannot be enforced against the
+// field's type is rejected with ErrSchemaDerivation (min/max require a numeric
+// field; minLength/maxLength/pattern require a string field) so a requested
+// constraint is never silently dropped. Objects emit additionalProperties:false
+// so Validate rejects unexpected keys.
 func SchemaOf(v any) (map[string]any, error) {
 	if v == nil {
 		return nil, fmt.Errorf("%w: nil value", ErrSchemaDerivation)
@@ -309,7 +315,7 @@ func jsonFieldInfo(field *reflect.StructField) fieldInfo {
 // option and any jsonschema tag constraints.
 func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.Type]bool) (map[string]any, error) {
 	var child map[string]any
-	if info.asString {
+	if info.asString && stringOptionApplies(baseKind(field.Type)) {
 		child = map[string]any{PropType: TypeString}
 	} else {
 		derived, err := schemaForType(field.Type, seen)
@@ -322,6 +328,31 @@ func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.T
 		return nil, err
 	}
 	return child, nil
+}
+
+// baseKind returns t's kind after dereferencing any pointer indirection.
+func baseKind(t reflect.Type) reflect.Kind {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind()
+}
+
+// stringOptionApplies reports whether encoding/json honors the json:",string"
+// option for a field of the given kind. json only quotes bool, integer, float,
+// and string fields; for any other kind the option is silently ignored, so the
+// schema must describe the field's real shape or no response could decode.
+func stringOptionApplies(kind reflect.Kind) bool {
+	switch kind {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		return true
+	default:
+		return false
+	}
 }
 
 // isRequired reports whether a field is required in the derived schema.
@@ -393,6 +424,9 @@ func applySchemaDirective(schema map[string]any, key, val string) error {
 	case "description":
 		schema[PropDescription] = val
 	case "pattern":
+		if err := requireType(schema, key, TypeString); err != nil {
+			return err
+		}
 		if _, err := regexp.Compile(val); err != nil {
 			return fmt.Errorf("%w: invalid pattern %q: %w", ErrSchemaDerivation, val, err)
 		}
@@ -400,17 +434,41 @@ func applySchemaDirective(schema map[string]any, key, val string) error {
 	case "enum":
 		schema[PropEnum] = parseEnum(val)
 	case "min":
+		if err := requireType(schema, key, TypeInteger, TypeNumber); err != nil {
+			return err
+		}
 		return setBound(schema, PropMinimum, key, val)
 	case "max":
+		if err := requireType(schema, key, TypeInteger, TypeNumber); err != nil {
+			return err
+		}
 		return setBound(schema, PropMaximum, key, val)
 	case "minLength":
+		if err := requireType(schema, key, TypeString); err != nil {
+			return err
+		}
 		return setLength(schema, PropMinLength, key, val)
 	case "maxLength":
+		if err := requireType(schema, key, TypeString); err != nil {
+			return err
+		}
 		return setLength(schema, PropMaxLength, key, val)
 	default:
 		return fmt.Errorf("%w: unknown jsonschema directive %q", ErrSchemaDerivation, key)
 	}
 	return nil
+}
+
+// requireType rejects a directive whose keyword cannot be enforced against the
+// field's derived type, so a constraint is never silently dropped by Validate.
+func requireType(schema map[string]any, directive string, want ...string) error {
+	typ, _ := stringField(schema, PropType)
+	for _, w := range want {
+		if typ == w {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s is only valid for %s fields, not %s", ErrSchemaDerivation, directive, strings.Join(want, "/"), typ)
 }
 
 // setBound stores a numeric minimum/maximum as the exact JSON-number literal
@@ -428,25 +486,39 @@ func setBound(schema map[string]any, key, directive, val string) error {
 }
 
 // setLength stores a string-length keyword (minLength/maxLength) as a
-// non-negative integer json.Number, rejecting negative, fractional, and
-// non-finite values.
+// non-negative integer json.Number. It rejects non-JSON-number forms (for
+// example "01" or "+1"), fractional, negative, and non-finite values, which
+// would otherwise fail later when the schema is marshaled for the model.
 func setLength(schema map[string]any, key, directive, val string) error {
-	if _, err := strconv.ParseUint(val, 10, 64); err != nil {
+	n, err := parseJSONNumber(val)
+	if err != nil {
 		return fmt.Errorf("%w: %s expects a non-negative integer, got %q", ErrSchemaDerivation, directive, val)
 	}
-	schema[key] = json.Number(val)
+	r, ok := new(big.Rat).SetString(n.String())
+	if !ok || !r.IsInt() || r.Sign() < 0 {
+		return fmt.Errorf("%w: %s expects a non-negative integer, got %q", ErrSchemaDerivation, directive, val)
+	}
+	schema[key] = n
 	return nil
 }
 
 // parseJSONNumber returns val as a json.Number only when it is valid JSON-number
-// syntax, so bounds and enum members always marshal cleanly.
+// syntax, so bounds and enum members always marshal cleanly. JSON null decodes
+// into an empty json.Number without error, so an empty result is rejected.
 func parseJSONNumber(val string) (json.Number, error) {
 	var n json.Number
 	if err := json.Unmarshal([]byte(val), &n); err != nil {
 		return "", err
 	}
+	if n == "" {
+		return "", errNotJSONNumber
+	}
 	return n, nil
 }
+
+// errNotJSONNumber flags a value (such as JSON null) that unmarshals into an
+// empty json.Number; callers wrap it with ErrSchemaDerivation.
+var errNotJSONNumber = errors.New("not a JSON number")
 
 // parseEnum splits a pipe-separated enum list into string members;
 // coerceEnumTypes converts them to numbers or booleans as the field type
