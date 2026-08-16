@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestConsume(t *testing.T) {
@@ -43,8 +45,8 @@ func TestConsume(t *testing.T) {
 				Consume(t.Context(), input, 2, &wg, process)
 				wg.Wait()
 
-				if len(processed) != 3 {
-					t.Errorf("len(processed) = %d, want 3", len(processed))
+				if diff := cmp.Diff(3, len(processed)); diff != "" {
+					t.Errorf("len(processed) diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -65,8 +67,8 @@ func TestConsume(t *testing.T) {
 
 				wg.Wait()
 
-				if got := count.Load(); got != 2 {
-					t.Fatalf("count = %d, want 2", got)
+				if diff := cmp.Diff(int64(2), count.Load()); diff != "" {
+					t.Fatalf("count diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -101,15 +103,15 @@ func TestConsume(t *testing.T) {
 				default:
 				}
 
-				if got := count.Load(); got != 0 {
-					t.Fatalf("count before resume = %d, want 0", got)
+				if diff := cmp.Diff(int64(0), count.Load()); diff != "" {
+					t.Fatalf("count before resume diff (-want +got):\n%s", diff)
 				}
 
 				gate.Resume()
 				wg.Wait()
 
-				if got := count.Load(); got != 2 {
-					t.Fatalf("count after resume = %d, want 2", got)
+				if diff := cmp.Diff(int64(2), count.Load()); diff != "" {
+					t.Fatalf("count after resume diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -161,8 +163,8 @@ func TestConsume(t *testing.T) {
 				default:
 				}
 
-				if got := count.Load(); got != 1 {
-					t.Fatalf("count while paused = %d, want 1", got)
+				if diff := cmp.Diff(int64(1), count.Load()); diff != "" {
+					t.Fatalf("count while paused diff (-want +got):\n%s", diff)
 				}
 
 				// Resume gate -> item 2 starts and completes
@@ -170,8 +172,8 @@ func TestConsume(t *testing.T) {
 				<-item2Started
 				wg.Wait()
 
-				if got := count.Load(); got != 2 {
-					t.Fatalf("count after resume = %d, want 2", got)
+				if diff := cmp.Diff(int64(2), count.Load()); diff != "" {
+					t.Fatalf("count after resume diff (-want +got):\n%s", diff)
 				}
 			},
 		},
