@@ -27,6 +27,7 @@ type mockProvider struct {
 	keys         *provider.KeyPool[string]
 	callResult   provider.CallResult
 	classifyTier provider.ErrorTier
+	onCall       func(prompt string, imageData []byte)
 }
 
 func newMockProvider(callResult *provider.CallResult) *mockProvider {
@@ -51,6 +52,9 @@ func (m *mockProvider) ClassifyError(provider.ClassifyInput, provider.RetryConte
 func (m *mockProvider) EnrichError(_ provider.ErrorTier, rawErr error, _ []byte) error {
 	return rawErr
 }
-func (m *mockProvider) Call(_ context.Context, _ *provider.Lease[string], _ string, _ []byte) provider.CallResult {
+func (m *mockProvider) Call(_ context.Context, _ *provider.Lease[string], prompt string, imageData []byte) provider.CallResult {
+	if m.onCall != nil {
+		m.onCall(prompt, imageData)
+	}
 	return m.callResult
 }
