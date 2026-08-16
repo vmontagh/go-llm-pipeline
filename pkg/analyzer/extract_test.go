@@ -76,6 +76,13 @@ func TestExtract(t *testing.T) {
 			wantCalls: 2,
 		},
 		{
+			name:          "type mismatch recovers via field feedback",
+			responses:     []string{`{"number":"A-4","total":"lots"}`, `{"number":"A-4","total":7}`},
+			want:          invoice{Number: "A-4", Total: 7},
+			wantCalls:     2,
+			wantPromptHas: "expected number",
+		},
+		{
 			name:      "persistent malformed json",
 			responses: []string{"not json"},
 			opts:      []analyzer.ExtractOption{analyzer.WithMaxAttempts(3)},
@@ -144,12 +151,47 @@ func TestExtractNilAnalyzer(t *testing.T) {
 	}
 }
 
+// TestExtractStrictDecoding proves the validate-before-decode ordering. Under
+// the default schema (additionalProperties:false) an unknown field is a schema
+// violation caught before decoding; with a permissive schema the same field
+// reaches DisallowUnknownFields and surfaces ErrDecode.
 func TestExtractStrictDecoding(t *testing.T) {
 	t.Parallel()
-	a := &scriptedAnalyzer{responses: []string{`{"number":"A-1","total":1,"extra":true}`}}
-	_, err := analyzer.Extract[invoice](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"},
-		analyzer.WithStrictDecoding(true), analyzer.WithMaxAttempts(1))
-	if !errors.Is(err, analyzer.ErrJSONMalformed) {
-		t.Errorf("Extract() strict error = %v, want ErrJSONMalformed", err)
+
+	const response = `{"number":"A-1","total":1,"extra":true}`
+	permissive := map[string]any{
+		analyzer.PropType: analyzer.TypeObject,
+		analyzer.PropProperties: map[string]any{
+			"number": map[string]any{analyzer.PropType: analyzer.TypeString},
+			"total":  map[string]any{analyzer.PropType: analyzer.TypeNumber},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		opts    []analyzer.ExtractOption
+		wantErr error
+	}{
+		{
+			name:    "default schema rejects unknown field as validation error",
+			opts:    []analyzer.ExtractOption{analyzer.WithStrictDecoding(true), analyzer.WithMaxAttempts(1)},
+			wantErr: analyzer.ErrSchemaValidation,
+		},
+		{
+			name:    "permissive schema surfaces decode error",
+			opts:    []analyzer.ExtractOption{analyzer.WithSchema(permissive), analyzer.WithStrictDecoding(true), analyzer.WithMaxAttempts(1)},
+			wantErr: analyzer.ErrDecode,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &scriptedAnalyzer{responses: []string{response}}
+			_, err := analyzer.Extract[invoice](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"}, tc.opts...)
+			if !errors.Is(err, tc.wantErr) {
+				t.Errorf("Extract() strict error = %v, want %v", err, tc.wantErr)
+			}
+		})
 	}
 }

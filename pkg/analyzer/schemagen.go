@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -314,9 +315,9 @@ func applySchemaDirective(schema map[string]any, key, val string) error {
 	case "enum":
 		schema[PropEnum] = parseEnum(val)
 	case "min":
-		return setFloat(schema, PropMinimum, key, val)
+		return setBound(schema, PropMinimum, key, val)
 	case "max":
-		return setFloat(schema, PropMaximum, key, val)
+		return setBound(schema, PropMaximum, key, val)
 	case "minLength":
 		return setFloat(schema, PropMinLength, key, val)
 	case "maxLength":
@@ -327,6 +328,20 @@ func applySchemaDirective(schema map[string]any, key, val string) error {
 	return nil
 }
 
+// setBound stores a numeric minimum/maximum as the exact decimal literal
+// (json.Number) so validation compares against the value the caller wrote, with
+// no float64 rounding. It validates the literal parses as an exact rational.
+func setBound(schema map[string]any, key, directive, val string) error {
+	if _, ok := new(big.Rat).SetString(val); !ok {
+		return fmt.Errorf("%w: %s expects a number, got %q", ErrSchemaDerivation, directive, val)
+	}
+	schema[key] = json.Number(val)
+	return nil
+}
+
+// setFloat stores a numeric length keyword (minLength/maxLength) as a float64.
+// Lengths are bounded by practical string sizes, so exact rationals are
+// unnecessary here.
 func setFloat(schema map[string]any, key, directive, val string) error {
 	f, err := strconv.ParseFloat(val, 64)
 	if err != nil {
@@ -367,11 +382,10 @@ func coerceEnumTypes(schema map[string]any) error {
 			if !ok {
 				continue
 			}
-			f, err := strconv.ParseFloat(s, 64)
-			if err != nil {
+			if _, ok := new(big.Rat).SetString(s); !ok {
 				return fmt.Errorf("%w: enum member %q is not a number", ErrSchemaDerivation, s)
 			}
-			members[i] = f
+			members[i] = json.Number(s)
 		}
 		return nil
 	case TypeBoolean:

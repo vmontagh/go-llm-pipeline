@@ -44,10 +44,11 @@ func (e *FieldError) Unwrap() error { return ErrSchemaValidation }
 // produced by SchemaOf or supplied via WithSchema. It returns nil when data
 // conforms, or an errors.Join of *FieldError values (each wrapping
 // ErrSchemaValidation) describing every violation. Numbers are decoded with
-// json.Number so integer bounds are compared exactly beyond 2^53. Numeric
-// keywords accept any JSON-compatible Go numeric type and enums accept both
-// []any and []string, so caller-supplied schemas are enforced consistently with
-// the schema shown to the model.
+// json.Number and compared as exact rationals (math/big.Rat), so integer bounds
+// and enum members hold beyond float64's 2^53 precision. Numeric keywords accept
+// any JSON-compatible Go numeric type and enums accept both []any and []string,
+// so caller-supplied schemas are enforced consistently with the schema shown to
+// the model.
 func Validate(schema map[string]any, data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -177,7 +178,7 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 		return
 	}
 	s := num.String()
-	val, ok := new(big.Float).SetString(s)
+	val, ok := toBigRat(num)
 	if !ok {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not a number", s)})
 		return
@@ -220,8 +221,8 @@ func enumEqual(member, value any) bool {
 		v, ok := value.(bool)
 		return ok && v == mv
 	default:
-		mb, ok1 := toBigFloat(member)
-		vb, ok2 := toBigFloat(value)
+		mb, ok1 := toBigRat(member)
+		vb, ok2 := toBigRat(value)
 		return ok1 && ok2 && mb.Cmp(vb) == 0
 	}
 }
@@ -355,26 +356,52 @@ func toFloat(v any) (float64, bool) {
 	}
 }
 
-// toBigFloat converts a numeric value to an arbitrary-precision float, using the
-// exact decimal string for json.Number so large integers keep full precision.
-func toBigFloat(v any) (*big.Float, bool) {
-	if n, ok := v.(json.Number); ok {
-		f, ok := new(big.Float).SetString(n.String())
-		return f, ok
-	}
-	f, ok := toFloat(v)
-	if !ok {
+// toBigRat converts a numeric value to an exact rational. json.Number keeps its
+// full decimal literal; integers are converted without passing through float64
+// so values beyond 2^53 stay exact. Only float32/float64 inputs (which are
+// already inexact) go through SetFloat64.
+func toBigRat(v any) (*big.Rat, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		r, ok := new(big.Rat).SetString(n.String())
+		return r, ok
+	case int:
+		return new(big.Rat).SetInt64(int64(n)), true
+	case int8:
+		return new(big.Rat).SetInt64(int64(n)), true
+	case int16:
+		return new(big.Rat).SetInt64(int64(n)), true
+	case int32:
+		return new(big.Rat).SetInt64(int64(n)), true
+	case int64:
+		return new(big.Rat).SetInt64(n), true
+	case uint:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(uint64(n))), true
+	case uint8:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(uint64(n))), true
+	case uint16:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(uint64(n))), true
+	case uint32:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(uint64(n))), true
+	case uint64:
+		return new(big.Rat).SetInt(new(big.Int).SetUint64(n)), true
+	case float32:
+		r := new(big.Rat).SetFloat64(float64(n))
+		return r, r != nil
+	case float64:
+		r := new(big.Rat).SetFloat64(n)
+		return r, r != nil
+	default:
 		return nil, false
 	}
-	return big.NewFloat(f), true
 }
 
-func bigBound(schema map[string]any, key string) (*big.Float, bool) {
+func bigBound(schema map[string]any, key string) (*big.Rat, bool) {
 	raw, present := schema[key]
 	if !present {
 		return nil, false
 	}
-	return toBigFloat(raw)
+	return toBigRat(raw)
 }
 
 func boundString(schema map[string]any, key string) string {
