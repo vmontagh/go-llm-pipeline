@@ -2,7 +2,9 @@ package pipeline_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"sync"
 
@@ -41,8 +43,9 @@ func ExampleConsume() {
 	// [1 4 9 16 25]
 }
 
-// ExamplePauseGate shows the pause/resume state transitions of a PauseGate.
-// When the gate is not paused, WaitIfPaused returns immediately.
+// ExamplePauseGate shows the three observable states of a PauseGate: running,
+// paused, and draining. Once Stop is called the gate is terminally draining and
+// Pause/Resume become no-ops.
 func ExamplePauseGate() {
 	gate := pipeline.NewPauseGate()
 	fmt.Println("initial paused:", gate.IsPaused())
@@ -56,32 +59,51 @@ func ExamplePauseGate() {
 	gate.Resume()
 	fmt.Println("after Resume:", gate.IsPaused())
 
+	// Stop requests a graceful drain. WaitIfPaused now returns ErrDraining,
+	// which is deliberately distinct from context.Canceled so in-flight work
+	// finishes normally instead of being aborted.
+	gate.Stop()
+	err := gate.WaitIfPaused(context.Background())
+	fmt.Println("stopping:", gate.IsStopping())
+	fmt.Println("drain err is ErrDraining:", errors.Is(err, pipeline.ErrDraining))
+	fmt.Println("drain err is context.Canceled:", errors.Is(err, context.Canceled))
+
 	// Output:
 	// initial paused: false
 	// wait while running: <nil>
 	// after Pause: true
 	// after Resume: false
+	// stopping: true
+	// drain err is ErrDraining: true
+	// drain err is context.Canceled: false
 }
 
-// ExamplePauseGate_blocking shows that a paused gate blocks a worker in
-// WaitIfPaused. Because the gate is never resumed, the only way the worker
-// returns is when its context is cancelled, which makes the outcome
-// deterministic regardless of goroutine scheduling.
-func ExamplePauseGate_blocking() {
+// ExamplePauseGate_drain shows a worker blocked on a paused gate being released
+// by a graceful Stop. Waiters reports when the worker is parked, so the example
+// is deterministic without relying on goroutine scheduling: Stop is called only
+// after the worker is blocked, and it releases the worker with ErrDraining.
+func ExamplePauseGate_drain() {
 	gate := pipeline.NewPauseGate()
 	gate.Pause()
 
-	ctx, cancel := context.WithCancel(context.Background())
 	released := make(chan error, 1)
 	go func() {
-		released <- gate.WaitIfPaused(ctx)
+		released <- gate.WaitIfPaused(context.Background())
 	}()
 
-	// The worker cannot proceed while the gate is paused; cancelling the
-	// context is the only thing that releases it here.
-	cancel()
-	fmt.Println("blocked worker returned:", <-released)
+	// Wait until the worker is parked on the paused gate (no sleeps).
+	for gate.Waiters() == 0 {
+		runtime.Gosched()
+	}
+	fmt.Println("worker parked:", gate.Waiters())
+
+	// Graceful shutdown releases the blocked worker with ErrDraining rather
+	// than cancelling its context.
+	gate.Stop()
+	err := <-released
+	fmt.Println("released with ErrDraining:", errors.Is(err, pipeline.ErrDraining))
 
 	// Output:
-	// blocked worker returned: context canceled
+	// worker parked: 1
+	// released with ErrDraining: true
 }
