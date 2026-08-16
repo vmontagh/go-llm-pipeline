@@ -156,56 +156,156 @@ func TestSchemaOfInvalidTag(t *testing.T) {
 func TestValidateExactAndUnicode(t *testing.T) {
 	t.Parallel()
 
-	t.Run("large integer maximum is exact", func(t *testing.T) {
-		t.Parallel()
-		schema := map[string]any{
-			analyzer.PropType: analyzer.TypeInteger,
+	tests := []struct {
+		name          string
+		schema        map[string]any
+		doc           string
+		wantErr       error  // nil means the document must validate
+		wantDetailHas string // substring required in the error message
+	}{
+		{
+			name: "large integer maximum is exact",
 			// 2^53, where float64 can no longer distinguish n and n+1.
-			analyzer.PropMaximum: json.Number("9007199254740992"),
-		}
-		if err := analyzer.Validate(schema, []byte(`9007199254740993`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
-			t.Errorf("Validate(2^53+1) = %v, want ErrSchemaValidation", err)
-		}
-	})
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMaximum: json.Number("9007199254740992")},
+			doc:     `9007199254740993`,
+			wantErr: analyzer.ErrSchemaValidation,
+		},
+		{
+			name:    "unicode length counts runes",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMaxLength: 1},
+			doc:     `"é"`,
+			wantErr: nil,
+		},
+		{
+			name:    "int keyword from caller schema enforced",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMinimum: 5},
+			doc:     `3`,
+			wantErr: analyzer.ErrSchemaValidation,
+		},
+		{
+			name:    "string slice enum rejects non-member",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropEnum: []string{"new", "active"}},
+			doc:     `"paused"`,
+			wantErr: analyzer.ErrSchemaValidation,
+		},
+		{
+			name:    "string slice enum accepts member",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropEnum: []string{"new", "active"}},
+			doc:     `"new"`,
+			wantErr: nil,
+		},
+		{
+			name:          "invalid pattern surfaced not skipped",
+			schema:        map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropPattern: "("},
+			doc:           `"anything"`,
+			wantErr:       analyzer.ErrSchemaValidation,
+			wantDetailHas: "invalid",
+		},
+	}
 
-	t.Run("unicode length counts runes", func(t *testing.T) {
-		t.Parallel()
-		schema := map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMaxLength: 1}
-		if err := analyzer.Validate(schema, []byte(`"é"`)); err != nil {
-			t.Errorf(`Validate("é", maxLength 1) = %v, want nil`, err)
-		}
-	})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := analyzer.Validate(tc.schema, []byte(tc.doc))
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Validate(%s) error = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
+			}
+			if tc.wantDetailHas != "" && !strings.Contains(err.Error(), tc.wantDetailHas) {
+				t.Errorf("Validate(%s) error %q should contain %q", tc.doc, err, tc.wantDetailHas)
+			}
+		})
+	}
+}
 
-	t.Run("int keyword from caller schema enforced", func(t *testing.T) {
-		t.Parallel()
-		schema := map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMinimum: 5}
-		if err := analyzer.Validate(schema, []byte(`3`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
-			t.Errorf("Validate(3, min int 5) = %v, want ErrSchemaValidation", err)
-		}
-	})
+func TestExactNumericPrecision(t *testing.T) {
+	t.Parallel()
 
-	t.Run("string slice enum enforced", func(t *testing.T) {
-		t.Parallel()
-		schema := map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropEnum: []string{"new", "active"}}
-		if err := analyzer.Validate(schema, []byte(`"paused"`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
-			t.Errorf("Validate(paused, []string enum) = %v, want ErrSchemaValidation", err)
-		}
-		if err := analyzer.Validate(schema, []byte(`"new"`)); err != nil {
-			t.Errorf("Validate(new, []string enum) = %v, want nil", err)
-		}
-	})
+	type tagMin struct {
+		N int64 `json:"n" jsonschema:"min=9007199254740993"`
+	}
+	type tagEnum struct {
+		N int64 `json:"n" jsonschema:"enum=9007199254740993"`
+	}
 
-	t.Run("invalid pattern surfaced not skipped", func(t *testing.T) {
-		t.Parallel()
-		schema := map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropPattern: "("}
-		err := analyzer.Validate(schema, []byte(`"anything"`))
-		if !errors.Is(err, analyzer.ErrSchemaValidation) {
-			t.Fatalf("Validate(invalid pattern) = %v, want ErrSchemaValidation", err)
+	schemaOf := func(t *testing.T, v any) map[string]any {
+		t.Helper()
+		s, err := analyzer.SchemaOf(v)
+		if err != nil {
+			t.Fatalf("SchemaOf(%T) error: %v", v, err)
 		}
-		if !strings.Contains(err.Error(), "invalid") {
-			t.Errorf("error %q should explain the invalid pattern", err)
-		}
-	})
+		return s
+	}
+
+	tests := []struct {
+		name string
+		// schema builds the schema under test; t is available for SchemaOf setup.
+		schema func(t *testing.T) map[string]any
+		// wantLiteral, when set, must appear in the marshaled schema so the exact
+		// literal is preserved for the model.
+		wantLiteral string
+		accept      string // JSON document expected to validate
+		reject      string // JSON document expected to fail validation
+	}{
+		{
+			name:        "tag bound stores and validates exact literal",
+			schema:      func(t *testing.T) map[string]any { return schemaOf(t, tagMin{}) },
+			wantLiteral: "9007199254740993",
+			accept:      `{"n":9007199254740993}`,
+			reject:      `{"n":9007199254740992}`,
+		},
+		{
+			name:   "numeric enum matches exact member only",
+			schema: func(t *testing.T) map[string]any { return schemaOf(t, tagEnum{}) },
+			accept: `{"n":9007199254740993}`,
+			reject: `{"n":9007199254740992}`,
+		},
+		{
+			name: "caller schema uint64 minimum enforced exactly",
+			schema: func(*testing.T) map[string]any {
+				return map[string]any{
+					analyzer.PropType:    analyzer.TypeInteger,
+					analyzer.PropMinimum: uint64(9007199254740993),
+				}
+			},
+			accept: `9007199254740993`,
+			reject: `9007199254740992`,
+		},
+		{
+			// 2^100 and 2^100+1 round to the same big.Float at 64-bit precision but
+			// are distinct big.Rat values.
+			name: "bound beyond big.Float precision is exact",
+			schema: func(*testing.T) map[string]any {
+				return map[string]any{
+					analyzer.PropType:    analyzer.TypeInteger,
+					analyzer.PropMaximum: json.Number("1267650600228229401496703205376"),
+				}
+			},
+			accept: `1267650600228229401496703205376`,
+			reject: `1267650600228229401496703205377`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema := tc.schema(t)
+			if tc.wantLiteral != "" {
+				marshaled, err := json.Marshal(schema)
+				if err != nil {
+					t.Fatalf("Marshal(schema) error: %v", err)
+				}
+				if !strings.Contains(string(marshaled), tc.wantLiteral) {
+					t.Errorf("schema %s should keep the exact literal %s", marshaled, tc.wantLiteral)
+				}
+			}
+			if err := analyzer.Validate(schema, []byte(tc.accept)); err != nil {
+				t.Errorf("Validate(%s) = %v, want nil", tc.accept, err)
+			}
+			if err := analyzer.Validate(schema, []byte(tc.reject)); !errors.Is(err, analyzer.ErrSchemaValidation) {
+				t.Errorf("Validate(%s) = %v, want ErrSchemaValidation", tc.reject, err)
+			}
+		})
+	}
 }
 
 func prop(schema map[string]any, name string) map[string]any {

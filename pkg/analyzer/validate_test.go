@@ -1,6 +1,7 @@
 package analyzer_test
 
 import (
+	"encoding/json"
 	"errors"
 	"sort"
 	"testing"
@@ -27,7 +28,7 @@ func TestSchemaOfNumericEnum(t *testing.T) {
 		analyzer.PropProperties: map[string]any{
 			"face": map[string]any{
 				analyzer.PropType: analyzer.TypeInteger,
-				analyzer.PropEnum: []any{float64(1), float64(2), float64(3)},
+				analyzer.PropEnum: []any{json.Number("1"), json.Number("2"), json.Number("3")},
 			},
 		},
 	}

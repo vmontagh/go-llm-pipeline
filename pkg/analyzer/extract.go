@@ -17,8 +17,12 @@ const defaultMaxAttempts = 3
 // Extraction sentinels, matchable with errors.Is.
 var (
 	// ErrJSONMalformed is returned (and fed back to the model) when a response
-	// contains no decodable JSON object for the target type.
+	// contains no syntactically valid JSON object for the target type.
 	ErrJSONMalformed = errors.New("analyzer: response is not valid JSON")
+	// ErrDecode is returned when a response is valid, schema-conforming JSON that
+	// nonetheless cannot be decoded into the target type T (for example an
+	// unknown field under strict decoding).
+	ErrDecode = errors.New("analyzer: response did not map to target type")
 	// ErrMaxAttemptsExceeded is returned when the bounded retry budget is
 	// exhausted without a valid, schema-conforming result.
 	ErrMaxAttemptsExceeded = errors.New("analyzer: extraction exceeded max attempts")
@@ -172,10 +176,14 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 	return zero, fmt.Errorf("%w: %d attempts: %w", ErrMaxAttemptsExceeded, cfg.maxAttempts, lastErr)
 }
 
-// decodeAndValidate finds the first JSON object in raw, decodes it into T, and
-// validates it against schema. On failure it returns the FeedbackInput to feed
-// back to the model plus an error wrapping ErrJSONMalformed or the joined
-// ErrSchemaValidation field errors.
+// decodeAndValidate finds the first JSON object in raw, validates it against
+// schema, and only then decodes it into T. Validating before decoding means a
+// schema-conforming-shaped but type-wrong response (for example a string where T
+// expects an int) yields field-level feedback wrapping ErrSchemaValidation
+// rather than being mislabeled malformed JSON. On failure it returns the
+// FeedbackInput to feed back to the model plus an error wrapping ErrJSONMalformed
+// (no/invalid JSON), the joined ErrSchemaValidation field errors, or ErrDecode
+// (valid, schema-conforming JSON that cannot map to T).
 func decodeAndValidate[T any](schema map[string]any, raw string, strict bool) (T, FeedbackInput, error) {
 	var zero T
 	objects := ExtractAllJSON(raw)
@@ -185,18 +193,23 @@ func decodeAndValidate[T any](schema map[string]any, raw string, strict bool) (T
 	}
 
 	objBytes := []byte(objects[0])
+	if !json.Valid(objBytes) {
+		err := fmt.Errorf("%w: response is not syntactically valid JSON", ErrJSONMalformed)
+		return zero, FeedbackInput{Schema: schema, Raw: raw, ParseError: err}, err
+	}
+
+	if err := Validate(schema, objBytes); err != nil {
+		return zero, FeedbackInput{Schema: schema, Raw: raw, Fields: fieldErrors(err)}, err
+	}
+
 	dec := json.NewDecoder(bytes.NewReader(objBytes))
 	if strict {
 		dec.DisallowUnknownFields()
 	}
 	var value T
 	if err := dec.Decode(&value); err != nil {
-		wrapped := fmt.Errorf("%w: %w", ErrJSONMalformed, err)
+		wrapped := fmt.Errorf("%w: %w", ErrDecode, err)
 		return zero, FeedbackInput{Schema: schema, Raw: raw, ParseError: wrapped}, wrapped
-	}
-
-	if err := Validate(schema, objBytes); err != nil {
-		return zero, FeedbackInput{Schema: schema, Raw: raw, Fields: fieldErrors(err)}, err
 	}
 	return value, FeedbackInput{}, nil
 }

@@ -1,6 +1,7 @@
 package analyzer_test
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestSchemaOf(t *testing.T) {
 				analyzer.PropRequired:     []string{"name", "age", "rating", "active", "home", "status"},
 				analyzer.PropProperties: map[string]any{
 					"name":   map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: float64(1)},
-					"age":    map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMinimum: float64(0), analyzer.PropMaximum: float64(130)},
+					"age":    map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMinimum: json.Number("0"), analyzer.PropMaximum: json.Number("130")},
 					"rating": map[string]any{analyzer.PropType: analyzer.TypeNumber},
 					"active": map[string]any{analyzer.PropType: analyzer.TypeBoolean},
 					"tags":   map[string]any{analyzer.PropType: analyzer.TypeArray, analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeString}},
