@@ -109,6 +109,7 @@ deps:
       - httputil
       - provider
       - policy
+      - analyzer
 
   strategy:
     anyProjectDeps: false
