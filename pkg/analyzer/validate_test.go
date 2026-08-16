@@ -3,6 +3,7 @@ package analyzer_test
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -897,6 +898,96 @@ func TestValidate(t *testing.T) {
 			sort.Slice(tc.want, func(i, j int) bool { return tc.want[i].Path < tc.want[j].Path })
 			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(less)); diff != "" {
 				t.Errorf("Validate(%s) mismatch (-want +got):\n%s", tc.data, diff)
+			}
+		})
+	}
+}
+
+// TestValidateByteSliceBase64 covers W11: a byte-slice schema accepts a valid
+// base64 string, and rejects both an invalid-base64 string and a JSON array with
+// ErrSchemaValidation, so schema-validity tracks encoding/json decodability.
+func TestValidateByteSliceBase64(t *testing.T) {
+	t.Parallel()
+
+	schema, err := schemaOfField(t, reflect.TypeOf([]byte(nil)), "field", "")
+	if err != nil {
+		t.Fatalf("schemaOfField([]byte) error: %v", err)
+	}
+	field := prop(schema, "field")
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr error
+	}{
+		{name: "valid_base64", doc: `"aGk="`, wantErr: nil},
+		{name: "empty_string", doc: `""`, wantErr: nil},
+		{name: "invalid_base64", doc: `"!!!"`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "json_array", doc: `[104,105]`, wantErr: analyzer.ErrSchemaValidation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := analyzer.Validate(field, []byte(tc.doc)); !errors.Is(err, tc.wantErr) {
+				t.Errorf("Validate(%s) = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateByteSliceDecodeEquivalence covers W11: for a matrix of candidate
+// strings, byte-slice schema acceptance matches whether encoding/json decodes the
+// quoted string into a []byte, so validation can never diverge from decoding.
+func TestValidateByteSliceDecodeEquivalence(t *testing.T) {
+	t.Parallel()
+
+	byteType := reflect.TypeOf([]byte(nil))
+	schema, err := schemaOfField(t, byteType, "field", "")
+	if err != nil {
+		t.Fatalf("schemaOfField([]byte) error: %v", err)
+	}
+	field := prop(schema, "field")
+	samples := []string{"aGk=", "", "AA==", "Zm9vYmFy", "!!!", "aGk", "====", "not base64!"}
+	for _, s := range samples {
+		t.Run(s, func(t *testing.T) {
+			t.Parallel()
+			quoted, err := json.Marshal(s)
+			if err != nil {
+				t.Fatalf("json.Marshal(%q): %v", s, err)
+			}
+			gotAccept := analyzer.Validate(field, quoted) == nil
+			wantAccept := stringOptionDecodes(t, byteType, s)
+			if gotAccept != wantAccept {
+				t.Errorf("Validate(%q) accepted = %t, want %t (encoding/json decodability)", s, gotAccept, wantAccept)
+			}
+		})
+	}
+}
+
+// TestValidateJSONNumber covers W12: a type:number schema accepts integer and
+// fractional numbers and rejects a non-numeric string with ErrSchemaValidation.
+func TestValidateJSONNumber(t *testing.T) {
+	t.Parallel()
+
+	schema, err := schemaOfField(t, reflect.TypeOf(json.Number("")), "field", "")
+	if err != nil {
+		t.Fatalf("schemaOfField(json.Number) error: %v", err)
+	}
+	field := prop(schema, "field")
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr error
+	}{
+		{name: "integer", doc: `12`, wantErr: nil},
+		{name: "fractional", doc: `1.5`, wantErr: nil},
+		{name: "quoted_number_rejected", doc: `"12"`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "non_numeric_rejected", doc: `"x"`, wantErr: analyzer.ErrSchemaValidation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := analyzer.Validate(field, []byte(tc.doc)); !errors.Is(err, tc.wantErr) {
+				t.Errorf("Validate(%s) = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
 			}
 		})
 	}
