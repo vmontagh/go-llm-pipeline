@@ -11,6 +11,39 @@ import (
 	"github.com/vmontagh/go-llm-pipeline/pkg/analyzer"
 )
 
+func TestSchemaOfNumericEnum(t *testing.T) {
+	t.Parallel()
+	type roll struct {
+		Face int `json:"face" jsonschema:"enum=1|2|3"`
+	}
+	got, err := analyzer.SchemaOf(roll{})
+	if err != nil {
+		t.Fatalf("SchemaOf(roll{}) unexpected error: %v", err)
+	}
+	want := map[string]any{
+		analyzer.PropType:       analyzer.TypeObject,
+		analyzer.PropAdditional: false,
+		analyzer.PropRequired:   []string{"face"},
+		analyzer.PropProperties: map[string]any{
+			"face": map[string]any{
+				analyzer.PropType: analyzer.TypeInteger,
+				analyzer.PropEnum: []any{float64(1), float64(2), float64(3)},
+			},
+		},
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("SchemaOf(roll{}) mismatch (-want +got):\n%s", diff)
+	}
+
+	// A numeric value permitted by the enum validates; one outside it fails.
+	if err := analyzer.Validate(got, []byte(`{"face":2}`)); err != nil {
+		t.Errorf("Validate(face=2) = %v, want nil", err)
+	}
+	if err := analyzer.Validate(got, []byte(`{"face":9}`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
+		t.Errorf("Validate(face=9) = %v, want ErrSchemaValidation", err)
+	}
+}
+
 func TestValidate(t *testing.T) {
 	t.Parallel()
 
