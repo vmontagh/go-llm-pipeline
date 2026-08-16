@@ -304,6 +304,83 @@ func TestRecordThenReplay_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestDefaultMatcher(t *testing.T) {
+	t.Parallel()
+	const recordedHost = "https://api.example.com"
+	tests := []struct {
+		name        string
+		method      string
+		recordedURL string
+		liveURL     string
+		want        bool
+	}{
+		{
+			name:        "identical method path and query matches",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     recordedHost + "/v1/chat?version=v1",
+			want:        true,
+		},
+		{
+			name:        "differing query value does not match",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     recordedHost + "/v1/chat?version=v2",
+			want:        false,
+		},
+		{
+			name:        "redacted query value is a wildcard",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?key=REDACTED&version=v1",
+			liveURL:     recordedHost + "/v1/chat?key=" + fakeGoogleKey + "&version=v1",
+			want:        true,
+		},
+		{
+			name:        "different host same path and query matches",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     "https://127.0.0.1:8080/v1/chat?version=v1",
+			want:        true,
+		},
+		{
+			name:        "extra live query param does not match",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     recordedHost + "/v1/chat?version=v1&extra=1",
+			want:        false,
+		},
+		{
+			name:        "different method does not match",
+			method:      http.MethodGet,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     recordedHost + "/v1/chat?version=v1",
+			want:        false,
+		},
+		{
+			name:        "different path does not match",
+			method:      http.MethodPost,
+			recordedURL: recordedHost + "/v1/chat?version=v1",
+			liveURL:     recordedHost + "/v1/other?version=v1",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			req, err := http.NewRequestWithContext(t.Context(), tt.method, tt.liveURL, http.NoBody)
+			if err != nil {
+				t.Fatalf("NewRequestWithContext() = %v", err)
+			}
+			recorded := llmvcr.RecordedRequest{Method: http.MethodPost, URL: tt.recordedURL}
+			got := llmvcr.DefaultMatcher(req, recorded)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("DefaultMatcher(%s %s, %q) mismatch (-want +got):\n%s", tt.method, tt.liveURL, tt.recordedURL, diff)
+			}
+		})
+	}
+}
+
 func TestWithAdditionalScrubRules(t *testing.T) {
 	t.Parallel()
 	srv := newJSONServer(t, `{"a":"topsecret-value","b":"classified-value"}`)

@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 
 	"gopkg.in/dnaeon/go-vcr.v3/cassette"
 	"gopkg.in/dnaeon/go-vcr.v3/recorder"
@@ -108,9 +109,9 @@ func WithRedactQueryParams(params ...string) Option {
 
 // WithScrubber replaces the default body/header scrubber. It takes precedence
 // over WithAdditionalScrubRules: when an explicit scrubber is provided, any
-// additional rules are ignored. Pass a scrubber built from DefaultScrubber
-// (plus extra rules) to extend rather than replace the defaults, or use
-// WithAdditionalScrubRules.
+// additional rules are ignored. To extend rather than replace the defaults,
+// use WithAdditionalScrubRules — the default scrubber's rules cannot be read
+// back out of a *scrub.Scrubber.
 func WithScrubber(s *scrub.Scrubber) Option {
 	return func(c *config) {
 		if s != nil {
@@ -286,21 +287,43 @@ func (r *Recorder) Stop() error {
 	return nil
 }
 
-// DefaultMatcher matches requests by HTTP method and URL path, tolerating a
-// changed host/port (e.g. an ephemeral httptest server) on replay.
+// DefaultMatcher matches requests by HTTP method, URL path and query,
+// tolerating a changed host/port (e.g. an ephemeral httptest server) on
+// replay. A query parameter redacted on save (recorded value "REDACTED")
+// acts as a wildcard, so a scrubbed secret still matches while non-secret
+// parameters must match exactly.
 func DefaultMatcher(r *http.Request, i RecordedRequest) bool {
 	if r.Method != i.Method {
-		return false
-	}
-	if r.URL.String() == i.URL {
-		return true
-	}
-	if r.URL.Path == "" {
 		return false
 	}
 	recorded, err := url.Parse(i.URL)
 	if err != nil {
 		return false
 	}
-	return recorded.Path == r.URL.Path
+	if recorded.Path != r.URL.Path {
+		return false
+	}
+	return queryMatches(recorded.Query(), r.URL.Query())
+}
+
+// queryMatches reports whether the live query matches the recorded one. A
+// recorded parameter whose sole value is redactedValue matches any live
+// value, since the real secret was scrubbed before the cassette was written.
+func queryMatches(recorded, live url.Values) bool {
+	if len(recorded) != len(live) {
+		return false
+	}
+	for key, recVals := range recorded {
+		liveVals, ok := live[key]
+		if !ok {
+			return false
+		}
+		if len(recVals) == 1 && recVals[0] == redactedValue {
+			continue
+		}
+		if !slices.Equal(recVals, liveVals) {
+			return false
+		}
+	}
+	return true
 }
