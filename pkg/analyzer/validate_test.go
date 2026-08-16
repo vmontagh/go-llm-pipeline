@@ -13,9 +13,11 @@ import (
 	"github.com/vmontagh/go-llm-pipeline/pkg/analyzer"
 )
 
-// TestValidateIntegerByValue covers F4: integer validation is by mathematical
-// value, so 1e0 and 1.0 are schema-valid integers while 1.5 is not.
-func TestValidateIntegerByValue(t *testing.T) {
+// TestValidateIntegerLiteralForm covers F4: integer validation mirrors
+// encoding/json, which decodes a number into a Go integer only when it is written
+// in integer form. So 1e0 and 1.0 are not schema-valid integers even though they
+// are mathematically integral, keeping schema-validity and decodability identical.
+func TestValidateIntegerLiteralForm(t *testing.T) {
 	t.Parallel()
 
 	schema := map[string]any{analyzer.PropType: analyzer.TypeInteger}
@@ -25,8 +27,11 @@ func TestValidateIntegerByValue(t *testing.T) {
 		wantErr error
 	}{
 		{name: "plain integer", doc: `1`, wantErr: nil},
-		{name: "exponent form", doc: `1e0`, wantErr: nil},
-		{name: "trailing zero fraction", doc: `1.0`, wantErr: nil},
+		{name: "negative integer", doc: `-42`, wantErr: nil},
+		{name: "large integer", doc: `9007199254740993`, wantErr: nil},
+		{name: "exponent form rejected", doc: `1e0`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "uppercase exponent rejected", doc: `1000E0`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "trailing zero fraction rejected", doc: `1.0`, wantErr: analyzer.ErrSchemaValidation},
 		{name: "fractional rejected", doc: `1.5`, wantErr: analyzer.ErrSchemaValidation},
 	}
 	for _, tc := range tests {
@@ -34,6 +39,42 @@ func TestValidateIntegerByValue(t *testing.T) {
 			t.Parallel()
 			if err := analyzer.Validate(schema, []byte(tc.doc)); !errors.Is(err, tc.wantErr) {
 				t.Errorf("Validate(%s) = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateDuplicateKeys covers the duplicate-object-key guard: a repeated key
+// is ambiguous because decoding keeps only the last value, so Validate rejects it
+// up front to stay consistent with a strict decode into the target type.
+func TestValidateDuplicateKeys(t *testing.T) {
+	t.Parallel()
+
+	objectSchema := map[string]any{analyzer.PropType: analyzer.TypeObject}
+	nestedSchema := map[string]any{
+		analyzer.PropType: analyzer.TypeObject,
+		analyzer.PropProperties: map[string]any{
+			"inner": map[string]any{analyzer.PropType: analyzer.TypeObject},
+			"list":  map[string]any{analyzer.PropType: analyzer.TypeArray},
+		},
+	}
+	tests := []struct {
+		name    string
+		schema  map[string]any
+		doc     string
+		wantErr error
+	}{
+		{name: "unique keys accepted", schema: objectSchema, doc: `{"a":1,"b":2}`, wantErr: nil},
+		{name: "repeated key label reused as value accepted", schema: objectSchema, doc: `{"a":"a","b":"a"}`, wantErr: nil},
+		{name: "top-level duplicate rejected", schema: objectSchema, doc: `{"a":1,"a":2}`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "nested object duplicate rejected", schema: nestedSchema, doc: `{"inner":{"x":1,"x":2}}`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "duplicate inside array element rejected", schema: nestedSchema, doc: `{"list":[{"x":1,"x":2}]}`, wantErr: analyzer.ErrSchemaValidation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := analyzer.Validate(tc.schema, []byte(tc.doc)); !errors.Is(err, tc.wantErr) {
+				t.Errorf("Validate(%q) = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
 			}
 		})
 	}
@@ -77,6 +118,14 @@ func TestValidateCompositeEnum(t *testing.T) {
 		analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeInteger},
 		analyzer.PropEnum:  []any{[]any{1, 2}},
 	}
+	// A number-typed variant exercises numeric-aware enum matching (the member 1
+	// matching the value 1.0) without asking an integer field to accept 1.0, which
+	// encoding/json would refuse to decode.
+	arrayNumberSchema := map[string]any{
+		analyzer.PropType:  analyzer.TypeArray,
+		analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeNumber},
+		analyzer.PropEnum:  []any{[]any{1, 2}},
+	}
 	objectSchema := map[string]any{
 		analyzer.PropType: analyzer.TypeObject,
 		analyzer.PropProperties: map[string]any{
@@ -93,7 +142,7 @@ func TestValidateCompositeEnum(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "array enum match", schema: arraySchema, data: `[1,2]`, wantErr: false},
-		{name: "array enum numeric-aware", schema: arraySchema, data: `[1.0,2]`, wantErr: false},
+		{name: "array enum numeric-aware", schema: arrayNumberSchema, data: `[1.0,2]`, wantErr: false},
 		{name: "array enum mismatch", schema: arraySchema, data: `[1,3]`, wantErr: true},
 		{name: "object enum match", schema: objectSchema, data: `{"a":1}`, wantErr: false},
 		{name: "object enum mismatch", schema: objectSchema, data: `{"a":2}`, wantErr: true},
