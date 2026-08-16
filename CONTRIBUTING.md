@@ -32,6 +32,21 @@ All common tasks are wired to `make` targets:
 lint are required for merge.** Fix all failures and lint findings first. If your
 change touches Markdown docs, also run `gomarklint .` and resolve any issues.
 
+### Fuzzing the analyzer schema layer
+
+`pkg/analyzer/differential_test.go` uses Go's native fuzzing framework to pin that
+`SchemaOf`, `Validate`, and `encoding/json` agree. Their seed corpora run as part of
+`make test`, so no extra step is required for CI. When you change schema derivation or
+validation, run a target under coverage-guided exploration to look for new drift:
+
+```sh
+go test ./pkg/analyzer -run '^$' -fuzz 'FuzzValidateImpliesDecode$' -fuzztime 2m
+go test ./pkg/analyzer -run '^$' -fuzz 'FuzzSchemaAcceptsCanonical$' -fuzztime 2m
+```
+
+A failing input is saved under `pkg/analyzer/testdata/fuzz/`; commit it so it replays as
+a regression seed. Only one target can be fuzzed at a time.
+
 ### Branch and pull request conventions
 
 - Branch off `main` and use a short, descriptive kebab-case branch name.

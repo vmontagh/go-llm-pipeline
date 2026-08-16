@@ -105,6 +105,29 @@ defer func() {
 provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 ```
 
+#### Differential fuzzing of the schema layer
+
+`pkg/analyzer` derives a JSON schema from a Go type (`SchemaOf`), then later validates a
+model's response against it (`Validate`). Those two paths and `encoding/json` are three
+independent sources of truth that must agree, and past regressions were subtle drifts
+between them. `differential_test.go` pins two invariants with Go's native fuzzing framework:
+
+- **Property A** — `Validate(SchemaOf(T), json.Marshal(v))` never rejects a value the model
+  could legitimately produce.
+- **Property B** — anything `Validate` accepts also decodes into `T` (the validator is never
+  more permissive than the decoder).
+
+Both targets seed a generated corpus covering a catalog of tricky types, so `make test`
+exercises the properties deterministically with no extra step. For deeper, coverage-guided
+exploration, run a target directly:
+
+```sh
+go test ./pkg/analyzer -run '^$' -fuzz 'FuzzValidateImpliesDecode$' -fuzztime 2m
+```
+
+Any failing input the engine finds is written under `pkg/analyzer/testdata/fuzz/` and
+replays as a permanent regression seed on the next `go test`.
+
 ### Development
 
 Common `make` targets:
