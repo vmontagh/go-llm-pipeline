@@ -36,9 +36,13 @@ import (
 // time.Time, which parses RFC 3339). For those the schema string is a superset by
 // design, so they are excluded from Property B via catalogEntry.stringSuperset.
 //
-// The Test* functions run a deterministic, seeded sweep so the invariants are
-// exercised on every `make test`; the Fuzz* functions expose the same properties
-// to `go test -fuzz` for deeper exploration.
+// Both properties are expressed with Go's native fuzzing framework
+// (FuzzSchemaAcceptsCanonical and FuzzValidateImpliesDecode). Each target seeds a
+// generated corpus covering every catalog type, so a plain `go test` (and
+// therefore `make test`) exercises the invariants deterministically without a
+// separate step; `go test -fuzz` then explores far beyond the seeds. A failing
+// input the engine discovers is written under testdata/fuzz and replays as a
+// permanent regression seed.
 
 // --- catalog of representative types -----------------------------------------
 
@@ -301,29 +305,12 @@ func newRand(a, b uint64) *rand.Rand {
 	return rand.New(rand.NewPCG(a|1, b|1))
 }
 
-func iterations() int {
-	if testing.Short() {
-		return 50
-	}
-	return 400
-}
+// seedsPerType is how many generated inputs each fuzz target seeds per catalog
+// type. Under a plain `go test` these seeds are the deterministic coverage; under
+// `go test -fuzz` they are the starting corpus the engine mutates from.
+const seedsPerType = 32
 
 // --- Property A: canonical encodings are always schema-valid -------------------
-
-func TestSchemaAcceptsCanonicalEncoding(t *testing.T) {
-	t.Parallel()
-	catalog := buildCatalog(t)
-	n := iterations()
-	for _, entry := range catalog {
-		t.Run(entry.name, func(t *testing.T) {
-			t.Parallel()
-			for i := 0; i < n; i++ {
-				r := newRand(uint64(i), 0x9E3779B97F4A7C15)
-				checkCanonicalAccepted(t, entry, r)
-			}
-		})
-	}
-}
 
 // checkCanonicalAccepted asserts Property A for one random value of entry's type.
 func checkCanonicalAccepted(t *testing.T, entry catalogEntry, r *rand.Rand) {
@@ -341,35 +328,10 @@ func checkCanonicalAccepted(t *testing.T, entry catalogEntry, r *rand.Rand) {
 
 // --- Property B: schema-valid documents always decode --------------------------
 
-func TestValidateImpliesDecodable(t *testing.T) {
-	t.Parallel()
-	catalog := buildCatalog(t)
-	n := iterations()
-	for _, entry := range catalog {
-		if entry.stringSuperset {
-			continue // documented exception: schema string is a superset of decodable strings
-		}
-		t.Run(entry.name, func(t *testing.T) {
-			t.Parallel()
-			for i := 0; i < n; i++ {
-				r := newRand(uint64(i), 0xD1B54A32D192ED03)
-				checkValidateImpliesDecode(t, entry, r)
-			}
-		})
-	}
-}
-
-// checkValidateImpliesDecode generates a canonical encoding, applies a random
-// mutation, and asserts that whenever Validate accepts the result the decoder
-// (configured to match additionalProperties:false) accepts it too.
-func checkValidateImpliesDecode(t *testing.T, entry catalogEntry, r *rand.Rand) {
+// assertValidateImpliesDecode asserts Property B for one document: whenever
+// Validate accepts it, a strict decode into entry's type must also succeed.
+func assertValidateImpliesDecode(t *testing.T, entry catalogEntry, doc []byte) {
 	t.Helper()
-	v := randValue(r, entry.typ)
-	data, err := json.Marshal(v.Interface())
-	if err != nil {
-		t.Fatalf("marshal %s value: %v", entry.name, err)
-	}
-	doc := mutateJSON(r, data)
 	if err := analyzer.Validate(entry.schema, doc); err != nil {
 		return // Validate rejected: the implication is vacuously satisfied
 	}
@@ -427,12 +389,15 @@ func mutateJSON(r *rand.Rand, data []byte) []byte {
 
 // --- fuzz targets -------------------------------------------------------------
 
-// FuzzSchemaAcceptsCanonical exposes Property A to the native fuzz engine. sel
-// selects a catalog type and seed drives the random value.
+// FuzzSchemaAcceptsCanonical checks Property A: the schema never rejects a
+// canonical encoding. sel selects a catalog type and seed drives the random
+// value, so the engine can reach any value of any type.
 func FuzzSchemaAcceptsCanonical(f *testing.F) {
 	catalog := buildCatalog(f)
-	for i := range catalog {
-		f.Add(uint(i), uint64(i)+1)
+	for idx := range catalog {
+		for k := 0; k < seedsPerType; k++ {
+			f.Add(uint(idx), uint64(k)+1)
+		}
 	}
 	f.Fuzz(func(t *testing.T, sel uint, seed uint64) {
 		entry := catalog[int(sel%uint(len(catalog)))]
@@ -440,31 +405,29 @@ func FuzzSchemaAcceptsCanonical(f *testing.F) {
 	})
 }
 
-// FuzzValidateImpliesDecode exposes Property B to the native fuzz engine, feeding
-// arbitrary documents straight to Validate and, on acceptance, to the decoder.
+// FuzzValidateImpliesDecode checks Property B: any document Validate accepts also
+// decodes into the target type. sel selects a (Property-B-eligible) catalog type
+// and doc is the candidate document; the seeds are canonical encodings perturbed
+// toward the acceptance boundary.
 func FuzzValidateImpliesDecode(f *testing.F) {
 	catalog := buildCatalog(f)
 	strict := make([]catalogEntry, 0, len(catalog))
 	for _, entry := range catalog {
 		if !entry.stringSuperset {
-			strict = append(strict, entry)
+			strict = append(strict, entry) // exclude type:string supersets (time.Time)
 		}
 	}
-	for i, entry := range strict {
-		data, err := json.Marshal(randValue(newRand(uint64(i)+1, 1), entry.typ).Interface())
-		if err != nil {
-			f.Fatalf("seed marshal %s: %v", entry.name, err)
+	for idx, entry := range strict {
+		for k := 0; k < seedsPerType; k++ {
+			r := newRand(uint64(k)+1, uint64(idx)+1)
+			data, err := json.Marshal(randValue(r, entry.typ).Interface())
+			if err != nil {
+				f.Fatalf("seed marshal %s: %v", entry.name, err)
+			}
+			f.Add(uint(idx), mutateJSON(r, data))
 		}
-		f.Add(uint(i), data)
 	}
 	f.Fuzz(func(t *testing.T, sel uint, doc []byte) {
-		entry := strict[int(sel%uint(len(strict)))]
-		if err := analyzer.Validate(entry.schema, doc); err != nil {
-			return
-		}
-		if derr := decodeStrict(doc, entry.typ); derr != nil {
-			t.Fatalf("Validate accepted a document that does not decode into %s\njson: %s\ndecode error: %v",
-				entry.name, doc, derr)
-		}
+		assertValidateImpliesDecode(t, strict[int(sel%uint(len(strict)))], doc)
 	})
 }
