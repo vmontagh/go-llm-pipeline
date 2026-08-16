@@ -116,7 +116,7 @@ func (r Report) Summary() Summary {
 			s.Fail++
 		case StatusSkip:
 			s.Skip++
-		case StatusUnknown:
+		default:
 			s.Unknown++
 		}
 	}

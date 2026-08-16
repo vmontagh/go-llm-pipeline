@@ -88,13 +88,17 @@ func (r *Runner) probe(ctx context.Context, base, path string, header http.Heade
 	if err != nil {
 		return httpProbe{elapsed: elapsed, err: sanitizeURLError(err)}
 	}
-	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
-	if err != nil {
-		return httpProbe{status: resp.StatusCode, elapsed: elapsed, err: fmt.Errorf("reading response: %w", err)}
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxProbeBodyBytes))
+	closeErr := resp.Body.Close()
+	switch {
+	case readErr != nil:
+		return httpProbe{status: resp.StatusCode, elapsed: elapsed, err: fmt.Errorf("reading response: %w", readErr)}
+	case closeErr != nil:
+		return httpProbe{status: resp.StatusCode, elapsed: elapsed, err: fmt.Errorf("closing response body: %w", closeErr)}
+	default:
+		return httpProbe{status: resp.StatusCode, elapsed: elapsed, body: body}
 	}
-	return httpProbe{status: resp.StatusCode, elapsed: elapsed, body: body}
 }
 
 // sanitizeURLError strips the URL from a *url.Error so a credential carried in
@@ -378,11 +382,17 @@ func (r *Runner) checkOllama(ctx context.Context) Result {
 		}
 	}
 
-	if err := r.ollamaPreflight(ctx); err != nil {
+	verified, err := r.ollamaPreflight(ctx)
+	switch {
+	case err != nil:
 		res.Status = StatusWarn
-		res.Detail = fmt.Sprintf("model %q is installed but preflight reported an issue", r.cfg.OllamaModel)
+		res.Detail = fmt.Sprintf("model %q is installed but its context-window preflight failed", r.cfg.OllamaModel)
 		res.Remediation = "review the model's context window or set ollama.num_ctx"
 		res.Attrs = append(res.Attrs, slog.String("err", err.Error()))
+	case !verified:
+		res.Status = StatusWarn
+		res.Detail = fmt.Sprintf("model %q is installed but its context window could not be verified", r.cfg.OllamaModel)
+		res.Remediation = "ensure Ollama's /api/show endpoint is reachable so the context window can be verified"
 	}
 	return res
 }
@@ -404,26 +414,62 @@ func modelInstalled(models []string, want string) bool {
 }
 
 // ollamaPreflight reuses the Ollama provider's context-window preflight for the
-// configured model. It is best-effort: providers without a Preflight method are
-// treated as a pass. The provider is given a discard logger so a diagnostic Run
-// stays quiet — callers surface findings via the returned Report.
-func (r *Runner) ollamaPreflight(ctx context.Context) error {
+// configured model. The provider's Preflight is best-effort: it returns nil not
+// only on success but also when it cannot complete the check (for example
+// /api/show is unreachable, returns non-200, or omits the context length), in
+// which case it logs a warning. ollamaPreflight injects a recording logger so
+// it can distinguish a verified context window (verified=true) from a check it
+// had to skip (verified=false), letting the caller warn instead of silently
+// passing. A non-nil error means the preflight ran and found a real problem
+// (for example a context window too small for the prompt budget).
+func (r *Runner) ollamaPreflight(ctx context.Context) (verified bool, err error) {
 	if r.cfg.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.cfg.Timeout)
 		defer cancel()
 	}
+	var skipped bool
 	p := ollama.NewProvider(
 		r.cfg.OllamaHost,
 		r.cfg.OllamaModel,
 		ollama.WithHTTPClient(r.client),
-		ollama.WithLogger(slog.New(slog.DiscardHandler)),
+		ollama.WithLogger(slog.New(&warnRecorder{skipped: &skipped})),
 	)
 	pf, ok := p.(interface {
 		Preflight(context.Context) error
 	})
 	if !ok {
-		return nil
+		return true, nil
 	}
-	return pf.Preflight(ctx)
+	if err := pf.Preflight(ctx); err != nil {
+		return false, err
+	}
+	return !skipped, nil
 }
+
+// warnRecorder is a slog.Handler that records whether the Ollama provider
+// emitted a warning while running Preflight. The provider logs at WARN on every
+// path where it abandons the context-window check but still returns nil, so a
+// recorded warning marks the check as skipped rather than verified.
+type warnRecorder struct {
+	skipped *bool
+}
+
+func (h *warnRecorder) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= slog.LevelWarn
+}
+
+// Handle records a warning; the slog.Handler contract fixes the by-value
+// slog.Record parameter, so the hugeParam hint does not apply.
+//
+//nolint:gocritic // slog.Handler.Handle requires slog.Record by value.
+func (h *warnRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if rec.Level >= slog.LevelWarn {
+		*h.skipped = true
+	}
+	return nil
+}
+
+func (h *warnRecorder) WithAttrs(_ []slog.Attr) slog.Handler { return h }
+
+func (h *warnRecorder) WithGroup(_ string) slog.Handler { return h }

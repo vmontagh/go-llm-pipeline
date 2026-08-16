@@ -78,7 +78,7 @@ cfg.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
 cfg.GeminiAPIKey = cmp.Or(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
 cfg.OllamaHost = cmp.Or(os.Getenv("OLLAMA_HOST"), cfg.OllamaHost)
 
-report := doctor.NewRunner(&cfg, logger).Run(ctx)
+report := doctor.NewRunner(&cfg).Run(ctx)
 report.Log(ctx, logger)   // pass/skip at INFO, warn at WARN, fail at ERROR
 fmt.Print(report.String()) // or render a plain-text summary for a CLI
 

@@ -13,7 +13,6 @@ package doctor
 import (
 	"cmp"
 	"context"
-	"log/slog"
 	"net/http"
 	"time"
 
@@ -110,7 +109,6 @@ func WithFileLimitReader(reader FileLimitReader) Option {
 // Runner executes the diagnostic checks described by its Config.
 type Runner struct {
 	cfg      Config
-	logger   *slog.Logger
 	client   *http.Client
 	fdReader FileLimitReader
 }
@@ -137,23 +135,20 @@ func (c *Config) withDefaults() Config {
 	}
 }
 
-// NewRunner builds a Runner from cfg and logger. A nil cfg uses DefaultConfig
-// and a nil logger discards output. Zero-value operational fields in cfg are
-// filled from DefaultConfig, and cfg is copied, so later caller mutations do
-// not affect the Runner.
-func NewRunner(cfg *Config, logger *slog.Logger, opts ...Option) *Runner {
+// NewRunner builds a Runner from cfg. A nil cfg uses DefaultConfig. Zero-value
+// operational fields in cfg are filled from DefaultConfig, and cfg is copied,
+// so later caller mutations do not affect the Runner. The Runner itself does no
+// logging: Run returns a Report and callers surface it via Report.Log or
+// Report.String with their own logger.
+func NewRunner(cfg *Config, opts ...Option) *Runner {
 	effective := DefaultConfig()
 	if cfg != nil {
 		effective = cfg.withDefaults()
 	}
 	r := &Runner{
 		cfg:      effective,
-		logger:   logger,
 		client:   &http.Client{},
 		fdReader: defaultFileLimitReader{},
-	}
-	if r.logger == nil {
-		r.logger = slog.New(slog.DiscardHandler)
 	}
 	for _, opt := range opts {
 		if opt != nil {

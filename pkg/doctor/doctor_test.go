@@ -42,13 +42,18 @@ func clientFunc(fn func(*http.Request) (*http.Response, error)) *http.Client {
 }
 
 // healthyClient answers every endpoint with a passing response so a test can
-// isolate the one check it cares about.
+// isolate the one check it cares about. The Ollama /api/show response carries a
+// context length so the context-window preflight verifies rather than skips.
 func healthyClient() *http.Client {
 	return clientFunc(func(req *http.Request) (*http.Response, error) {
-		if strings.Contains(req.URL.Path, "/api/tags") {
+		switch {
+		case strings.Contains(req.URL.Path, "/api/tags"):
 			return jsonResp(http.StatusOK, `{"models":[{"name":"llama3:latest"}]}`), nil
+		case strings.Contains(req.URL.Path, "/api/show"):
+			return jsonResp(http.StatusOK, `{"model_info":{"llama.context_length":8192}}`), nil
+		default:
+			return jsonResp(http.StatusOK, `{}`), nil
 		}
-		return jsonResp(http.StatusOK, `{}`), nil
 	})
 }
 
@@ -96,7 +101,7 @@ func TestRunner_FileDescriptors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := doctor.NewRunner(baseConfig(), nil,
+			r := doctor.NewRunner(baseConfig(),
 				doctor.WithHTTPClient(healthyClient()),
 				doctor.WithFileLimitReader(tt.reader),
 			)
@@ -136,7 +141,7 @@ func TestRunner_Latency(t *testing.T) {
 				}
 				return jsonResp(http.StatusUnauthorized, `{}`), nil
 			})
-			r := doctor.NewRunner(cfg, nil,
+			r := doctor.NewRunner(cfg,
 				doctor.WithHTTPClient(client),
 				doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 			)
@@ -176,7 +181,7 @@ func TestRunner_APIKey(t *testing.T) {
 				}
 				return jsonResp(http.StatusUnauthorized, `{}`), nil
 			})
-			r := doctor.NewRunner(cfg, nil,
+			r := doctor.NewRunner(cfg,
 				doctor.WithHTTPClient(client),
 				doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 			)
@@ -204,7 +209,7 @@ func TestRunner_GeminiKeyNotLeaked(t *testing.T) {
 	})
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r := doctor.NewRunner(cfg, logger,
+	r := doctor.NewRunner(cfg,
 		doctor.WithHTTPClient(client),
 		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 	)
@@ -239,7 +244,7 @@ func TestRunner_GeminiKeyNotLeakedOnNetworkError(t *testing.T) {
 	})
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r := doctor.NewRunner(cfg, logger,
+	r := doctor.NewRunner(cfg,
 		doctor.WithHTTPClient(client),
 		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 	)
@@ -285,15 +290,88 @@ func TestRunner_Ollama(t *testing.T) {
 					}
 					return jsonResp(tt.status, tt.body), nil
 				}
+				if strings.Contains(req.URL.Path, "/api/show") {
+					return jsonResp(http.StatusOK, `{"model_info":{"llama.context_length":8192}}`), nil
+				}
 				return jsonResp(http.StatusOK, `{}`), nil
 			})
-			r := doctor.NewRunner(cfg, nil,
+			r := doctor.NewRunner(cfg,
 				doctor.WithHTTPClient(client),
 				doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 			)
 			got := resultByName(t, r.Run(t.Context()), "ollama")
 			if diff := cmp.Diff(tt.want, got.Status); diff != "" {
 				t.Errorf("ollama status mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestRunner_OllamaPreflight(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name         string
+		showStatus   int
+		showBody     string
+		showErr      bool
+		wantStatus   doctor.Status
+		wantDetailIn string
+	}{
+		{
+			name:       "verified_passes",
+			showStatus: http.StatusOK,
+			showBody:   `{"model_info":{"llama.context_length":8192}}`,
+			wantStatus: doctor.StatusPass,
+		},
+		{
+			name:         "context_length_missing_warns",
+			showStatus:   http.StatusOK,
+			showBody:     `{"model_info":{}}`,
+			wantStatus:   doctor.StatusWarn,
+			wantDetailIn: "could not be verified",
+		},
+		{
+			name:         "show_unreachable_warns",
+			showErr:      true,
+			wantStatus:   doctor.StatusWarn,
+			wantDetailIn: "could not be verified",
+		},
+		{
+			name:         "context_window_too_small_warns",
+			showStatus:   http.StatusOK,
+			showBody:     `{"model_info":{"llama.context_length":8}}`,
+			wantStatus:   doctor.StatusWarn,
+			wantDetailIn: "preflight failed",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := baseConfig()
+			cfg.OllamaModel = "llama3"
+			client := clientFunc(func(req *http.Request) (*http.Response, error) {
+				switch {
+				case strings.Contains(req.URL.Path, "/api/tags"):
+					return jsonResp(http.StatusOK, `{"models":[{"name":"llama3:latest"}]}`), nil
+				case strings.Contains(req.URL.Path, "/api/show"):
+					if tt.showErr {
+						return nil, errConnRefused
+					}
+					return jsonResp(tt.showStatus, tt.showBody), nil
+				default:
+					return jsonResp(http.StatusOK, `{}`), nil
+				}
+			})
+			r := doctor.NewRunner(cfg,
+				doctor.WithHTTPClient(client),
+				doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
+			)
+			got := resultByName(t, r.Run(t.Context()), "ollama")
+			if diff := cmp.Diff(tt.wantStatus, got.Status); diff != "" {
+				t.Errorf("ollama preflight status mismatch (-want +got):\n%s", diff)
+			}
+			if tt.wantDetailIn != "" && !strings.Contains(got.Detail, tt.wantDetailIn) {
+				t.Errorf("ollama preflight detail = %q, want it to contain %q", got.Detail, tt.wantDetailIn)
 			}
 		})
 	}
@@ -347,7 +425,7 @@ func TestRunner_LogEmitsSummary(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
-	r := doctor.NewRunner(baseConfig(), logger,
+	r := doctor.NewRunner(baseConfig(),
 		doctor.WithHTTPClient(healthyClient()),
 		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 	)
@@ -364,7 +442,7 @@ func TestRunner_EmptyOllamaHostSkips(t *testing.T) {
 	t.Parallel()
 	cfg := baseConfig()
 	cfg.OllamaHost = ""
-	r := doctor.NewRunner(cfg, nil,
+	r := doctor.NewRunner(cfg,
 		doctor.WithHTTPClient(healthyClient()),
 		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 	)
@@ -386,7 +464,7 @@ func TestNewRunner_PartialConfigFillsDefaults(t *testing.T) {
 		}
 		return jsonResp(http.StatusOK, `{}`), nil
 	})
-	r := doctor.NewRunner(&doctor.Config{OpenAIAPIKey: "sk-test"}, nil,
+	r := doctor.NewRunner(&doctor.Config{OpenAIAPIKey: "sk-test"},
 		doctor.WithHTTPClient(client),
 		doctor.WithFileLimitReader(fakeFDReader{soft: 65536, hard: 65536}),
 	)
@@ -405,8 +483,9 @@ func TestReport_SummaryCountsUnknown(t *testing.T) {
 	report := doctor.Report{Results: []doctor.Result{
 		{Name: "a", Status: doctor.StatusPass},
 		{Name: "b", Status: doctor.StatusUnknown},
+		{Name: "c", Status: doctor.Status(99)},
 	}}
-	want := doctor.Summary{Pass: 1, Unknown: 1}
+	want := doctor.Summary{Pass: 1, Unknown: 2}
 	if diff := cmp.Diff(want, report.Summary()); diff != "" {
 		t.Errorf("Summary() mismatch (-want +got):\n%s", diff)
 	}
