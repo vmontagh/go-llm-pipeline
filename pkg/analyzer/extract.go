@@ -27,7 +27,7 @@ var (
 	// exhausted without a valid, schema-conforming result.
 	ErrMaxAttemptsExceeded = errors.New("analyzer: extraction exceeded max attempts")
 	// ErrNilAnalyzer is returned when Extract is called with a nil TextAnalyzer.
-	ErrNilAnalyzer = errors.New("analyzer: Extract called with nil TextAnalyzer")
+	ErrNilAnalyzer = errors.New("analyzer: nil TextAnalyzer passed to Extract")
 )
 
 // PublishFn is the event callback shape shared by Analyze and ExtractRequest.
@@ -98,8 +98,10 @@ func WithMaxAttempts(n int) ExtractOption {
 }
 
 // WithSchema overrides the schema derived from T with a caller-supplied JSON
-// Schema map. The map must be non-nil; Extract rejects a nil override with
-// ErrSchemaDerivation before contacting the provider.
+// Schema map. The map must be non-nil and must describe an object root: a single
+// "object" type, a union that includes "object", or a typeless object-shaped
+// schema. A nil override or a non-object root returns ErrSchemaDerivation before
+// any provider call, matching Extract's object-only extraction contract.
 func WithSchema(schema map[string]any) ExtractOption {
 	return extractOptionFunc(func(c *extractConfig) {
 		c.schema = schema
@@ -130,6 +132,11 @@ func WithFeedbackFormatter(fn func(FeedbackInput) string) ExtractOption {
 // or the zero T wrapped with ErrMaxAttemptsExceeded once the budget is spent.
 // The final error also wraps the last underlying cause (ErrJSONMalformed,
 // ErrSchemaValidation, or ErrDecode) for errors.Is matching.
+//
+// Extract populates an object root only. A WithSchema override whose root is not
+// an object (a non-object type, an object-excluding union, or a typeless schema
+// carrying non-object constraints) returns ErrSchemaDerivation before any
+// provider call.
 func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opts ...ExtractOption) (T, error) {
 	var zero T
 	if a == nil {
@@ -159,13 +166,13 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 		schema = derived
 	}
 
-	// Extract targets an object root (SchemaOf is struct-only and the response
-	// parser finds JSON objects), so reject a WithSchema whose root type is
-	// present and not "object" before any provider call rather than mislabeling
-	// every valid non-object response as malformed JSON. A typeless root is
-	// treated as an object, matching prior behavior.
-	if display, objectRoot, present := rootObjectType(schema); present && !objectRoot {
-		return zero, fmt.Errorf("%w: Extract requires an object root schema, got type %q", ErrSchemaDerivation, display)
+	// Extract can only populate an object root (SchemaOf is struct-only and the
+	// response parser finds JSON objects), so reject any WithSchema whose root is
+	// not an object before contacting the provider, rather than surfacing the
+	// limitation later as a misleading ErrJSONMalformed. A typeless object-shaped
+	// or empty schema is treated as an object, matching SchemaOf's contract.
+	if reason, objectRoot := rootObjectContract(schema); !objectRoot {
+		return zero, fmt.Errorf("%w: Extract requires an object root schema, got %s", ErrSchemaDerivation, reason)
 	}
 
 	// Marshal the schema once, before any provider call, so a schema that cannot
@@ -202,19 +209,55 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 	return zero, fmt.Errorf("%w: %d attempts: %w", ErrMaxAttemptsExceeded, cfg.maxAttempts, lastErr)
 }
 
-// rootObjectType reports whether a schema's root type keyword permits an object
-// root. A typeless root is treated as an object (SchemaOf's struct-only
-// contract); a root type present as any value other than the single string
-// "object" is not an object root, and display names it for the error message.
-func rootObjectType(schema map[string]any) (display string, objectRoot, present bool) {
-	raw, ok := schema[PropType]
-	if !ok {
-		return "", true, false
+// rootObjectContract reports whether schema describes an object root, the only
+// shape Extract can populate. A type keyword that includes "object" (single or
+// union) is an object root; a malformed type keyword or a type that excludes
+// object is not. A typeless schema is an object root when it carries object
+// keywords (properties/required/additionalProperties) or no structural keywords
+// at all, but a typeless schema carrying clearly non-object keywords (array,
+// string, or number constraints) is rejected so the object-only limitation fails
+// fast instead of surfacing later as ErrJSONMalformed. reason names the
+// offending shape for the error message.
+func rootObjectContract(schema map[string]any) (reason string, objectRoot bool) {
+	types, present, malformed := schemaTypes(schema)
+	if present {
+		if malformed {
+			return fmt.Sprintf("malformed type %v", schema[PropType]), false
+		}
+		for _, t := range types {
+			if t == TypeObject {
+				return "", true
+			}
+		}
+		return fmt.Sprintf("type %q", strings.Join(types, ",")), false
 	}
-	if s, isString := raw.(string); isString {
-		return s, s == TypeObject, true
+	if hasAnyKey(schema, PropProperties, PropRequired, PropAdditional) {
+		return "", true
 	}
-	return fmt.Sprintf("%v", raw), false, true
+	if key, ok := firstPresentKey(schema, PropItems, PropMinItems, PropMaxItems, PropMinLength, PropMaxLength, PropPattern, PropMinimum, PropMaximum); ok {
+		return fmt.Sprintf("typeless %s constraint", key), false
+	}
+	return "", true
+}
+
+// hasAnyKey reports whether schema contains any of the named keys.
+func hasAnyKey(schema map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := schema[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// firstPresentKey returns the first of keys present in schema, in the given order.
+func firstPresentKey(schema map[string]any, keys ...string) (string, bool) {
+	for _, k := range keys {
+		if _, ok := schema[k]; ok {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // decodeAndValidate finds the first JSON object in raw, validates it against

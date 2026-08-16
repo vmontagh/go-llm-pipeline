@@ -24,4 +24,11 @@ const (
 	PropMinLength   = "minLength"
 	PropMaxLength   = "maxLength"
 	PropPattern     = "pattern"
+	// PropStringEncodedKind is an internal, non-standard keyword recording the Go
+	// scalar kind a json:",string" field decodes into (for example "int8" or
+	// "float64"). Validate uses it to confirm a quoted payload actually decodes
+	// into that kind rather than approximating the numeric/bool grammar with a
+	// regular expression, so schema-validity and decodability stay identical by
+	// construction. The wire contract to the model remains type:string.
+	PropStringEncodedKind = "x-goStringKind"
 )
