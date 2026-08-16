@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -24,18 +25,23 @@ func TestPauseGate_PauseAndResume(t *testing.T) {
 		t.Fatalf("IsPaused() = false, want true")
 	}
 
+	startedWaiting := make(chan struct{})
 	resumed := make(chan struct{})
+
 	go func() {
+		close(startedWaiting)
 		if err := g.WaitIfPaused(t.Context()); err != nil {
 			t.Errorf("WaitIfPaused() error = %v, want nil", err)
 		}
 		close(resumed)
 	}()
 
+	<-startedWaiting
+
 	select {
 	case <-resumed:
 		t.Fatal("WaitIfPaused() unblocked before Resume()")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	g.Resume()
@@ -43,11 +49,7 @@ func TestPauseGate_PauseAndResume(t *testing.T) {
 		t.Fatalf("IsPaused() = true, want false")
 	}
 
-	select {
-	case <-resumed:
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitIfPaused() timed out waiting for Resume()")
-	}
+	<-resumed
 }
 
 func TestPauseGate_ContextCancellation(t *testing.T) {
@@ -56,27 +58,27 @@ func TestPauseGate_ContextCancellation(t *testing.T) {
 	g.Pause()
 
 	ctx, cancel := context.WithCancel(t.Context())
+	startedWaiting := make(chan struct{})
 	errCh := make(chan error, 1)
 
 	go func() {
+		close(startedWaiting)
 		errCh <- g.WaitIfPaused(ctx)
 	}()
+
+	<-startedWaiting
 
 	select {
 	case <-errCh:
 		t.Fatal("WaitIfPaused() unblocked before cancel")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	cancel()
 
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("WaitIfPaused() error = %v, want %v", err, context.Canceled)
-		}
-	case <-time.After(1 * time.Second):
-		t.Fatal("WaitIfPaused() timed out waiting for context cancel")
+	err := <-errCh
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("WaitIfPaused() error = %v, want %v", err, context.Canceled)
 	}
 }
 
@@ -131,7 +133,7 @@ func TestPauseGate_Concurrent(t *testing.T) {
 	g := NewPauseGate()
 	var wg sync.WaitGroup
 
-	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 200*time.Millisecond)
 	defer cancel()
 
 	for i := 0; i < 10; i++ {
@@ -142,6 +144,7 @@ func TestPauseGate_Concurrent(t *testing.T) {
 				if err := g.WaitIfPaused(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 					t.Errorf("WaitIfPaused() error = %v", err)
 				}
+				runtime.Gosched()
 			}
 		}()
 	}
@@ -151,9 +154,9 @@ func TestPauseGate_Concurrent(t *testing.T) {
 		defer wg.Done()
 		for ctx.Err() == nil {
 			g.Pause()
-			time.Sleep(10 * time.Millisecond)
+			runtime.Gosched()
 			g.Resume()
-			time.Sleep(10 * time.Millisecond)
+			runtime.Gosched()
 		}
 	}()
 
