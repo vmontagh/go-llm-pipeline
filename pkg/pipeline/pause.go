@@ -12,6 +12,11 @@ type PauseGate struct {
 	mu       sync.Mutex
 	paused   bool
 	resumeCh chan struct{}
+
+	// waitHook, if non-nil, is invoked just before WaitIfPaused blocks on a
+	// paused gate. It lets tests synchronize on a caller actually reaching the
+	// blocked path; it is never set in production code.
+	waitHook func()
 }
 
 // NewPauseGate creates a new PauseGate in the unpaused state.
@@ -57,7 +62,12 @@ func (g *PauseGate) WaitIfPaused(ctx context.Context) error {
 		return nil
 	}
 	ch := g.resumeCh
+	hook := g.waitHook
 	g.mu.Unlock()
+
+	if hook != nil {
+		hook()
+	}
 
 	select {
 	case <-ch:
