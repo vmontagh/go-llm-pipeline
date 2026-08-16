@@ -49,7 +49,7 @@ func TestSchemaOf(t *testing.T) {
 				analyzer.PropAdditional:   false,
 				analyzer.PropRequired:     []string{"name", "age", "rating", "active", "home", "status"},
 				analyzer.PropProperties: map[string]any{
-					"name":   map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: float64(1)},
+					"name":   map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropMinLength: json.Number("1")},
 					"age":    map[string]any{analyzer.PropType: analyzer.TypeInteger, analyzer.PropMinimum: json.Number("0"), analyzer.PropMaximum: json.Number("130")},
 					"rating": map[string]any{analyzer.PropType: analyzer.TypeNumber},
 					"active": map[string]any{analyzer.PropType: analyzer.TypeBoolean},
