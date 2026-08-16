@@ -34,6 +34,7 @@ type PauseGate struct {
 	paused   bool
 	stopping bool
 	resumeCh chan struct{}
+	drainCh  chan struct{}
 	waiters  int
 
 	// waitHook, if non-nil, is invoked just before WaitIfPaused blocks on a
@@ -86,11 +87,30 @@ func (g *PauseGate) Stop() {
 		return
 	}
 	g.stopping = true
+	close(g.drainChLocked())
 	if g.paused {
 		g.paused = false
 		close(g.resumeCh)
 		g.resumeCh = nil
 	}
+}
+
+// drainChLocked lazily initializes and returns the drain broadcast channel. It
+// must be called with g.mu held so the zero-value gate works without
+// NewPauseGate.
+func (g *PauseGate) drainChLocked() chan struct{} {
+	if g.drainCh == nil {
+		g.drainCh = make(chan struct{})
+	}
+	return g.drainCh
+}
+
+// Draining returns a channel that is closed when Stop is called. It lets
+// callers select on a graceful drain instead of polling IsStopping.
+func (g *PauseGate) Draining() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.drainChLocked()
 }
 
 // IsPaused reports whether the gate is currently paused.
