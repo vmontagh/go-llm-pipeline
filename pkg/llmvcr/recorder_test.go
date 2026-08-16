@@ -216,7 +216,7 @@ func TestReplayOnly_FailFastOnMiss(t *testing.T) {
 			t.Cleanup(func() { stopRec(t, rec) })
 
 			// Request a path not present in the cassette -> miss.
-			missURL := "https://example.invalid/v1/unknown"
+			missURL := "https://example.invalid/v1/unknown?key=" + fakeGoogleKey
 			if tt.wantLiveCall {
 				missURL = live.URL + "/v1/unknown"
 			}
@@ -232,6 +232,11 @@ func TestReplayOnly_FailFastOnMiss(t *testing.T) {
 				}
 				if !errors.Is(err, tt.wantErrIs) {
 					t.Errorf("Do() error = %v, want errors.Is(_, %v)", err, tt.wantErrIs)
+				}
+				// The full error from client.Do (a *url.Error) must not leak the
+				// secret query parameter.
+				if err != nil && strings.Contains(err.Error(), fakeGoogleKey) {
+					t.Errorf("Do() error leaks secret query param: %v", err)
 				}
 				if hits.Load() != 0 {
 					t.Errorf("live server was reached %d time(s) despite fail-fast", hits.Load())
