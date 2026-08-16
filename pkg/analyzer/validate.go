@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"regexp"
 	"sort"
@@ -44,6 +45,15 @@ func (e *FieldError) Unwrap() error { return ErrSchemaValidation }
 // before any schema keyword is applied.
 const ruleJSON = "json"
 
+// Numeric-magnitude caps bound how large a JSON number literal may be before it
+// is rejected. big.Rat.SetString expands decimal exponents, so an unbounded
+// value like 1e100000000 could exhaust memory; these limits keep conversion cheap
+// while still admitting any realistic value.
+const (
+	maxNumberMantissaDigits = 4096
+	maxNumberExponent       = 4096
+)
+
 // Validate checks data (a JSON document) against schema, a JSON Schema map as
 // produced by SchemaOf or supplied via WithSchema. It returns nil when data
 // conforms, or an errors.Join of *FieldError values (each wrapping
@@ -60,7 +70,11 @@ func Validate(schema map[string]any, data []byte) error {
 	if err := dec.Decode(&value); err != nil {
 		return &FieldError{Rule: ruleJSON, Detail: fmt.Sprintf("invalid JSON: %v", err)}
 	}
-	if dec.More() {
+	// Decoder.More is only meaningful inside an array or object; at the top level
+	// it reports false for a stray "]" or "}". Require the stream to be exhausted
+	// so "{} }" and "{} {}" are both rejected.
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return &FieldError{Rule: ruleJSON, Detail: "unexpected trailing content after JSON value"}
 	}
 	var errs []error
@@ -85,11 +99,12 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 	case TypeBoolean:
 		if _, ok := value.(bool); !ok {
 			addTypeError(errs, path, typ, value)
-			return
 		}
-		if !enumAllows(schema, value) {
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
-		}
+	}
+	// enum applies to every instance type, including arrays and objects, so it is
+	// checked once here rather than inside each structural branch.
+	if !enumAllows(schema, value) {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
 	}
 }
 
@@ -184,9 +199,6 @@ func validateString(schema map[string]any, value any, path string, errs *[]error
 		addTypeError(errs, path, TypeString, value)
 		return
 	}
-	if !enumAllows(schema, s) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, s)})
-	}
 	runes := utf8.RuneCountInString(s)
 	if minLen, ok := floatField(schema, PropMinLength); ok && float64(runes) < minLen {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, int(minLen))})
@@ -212,6 +224,12 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 		return
 	}
 	s := num.String()
+	// Guard before any big.Rat conversion: big.Rat.SetString expands decimal
+	// exponents, so an untrusted literal like 1e100000000 could exhaust memory.
+	if numberMagnitudeExceeded(s) {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: "number magnitude exceeds supported range"})
+		return
+	}
 	val, ok := toBigRat(num)
 	if !ok {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not a number", s)})
@@ -219,9 +237,6 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 	}
 	if typ == TypeInteger && !val.IsInt() {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not an integer", s)})
-	}
-	if !enumAllows(schema, num) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, num)})
 	}
 	if lo, ok := bigBound(schema, PropMinimum); ok && val.Cmp(lo) < 0 {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", s, boundString(schema, PropMinimum))})
@@ -247,17 +262,52 @@ func enumAllows(schema map[string]any, value any) bool {
 }
 
 func enumEqual(member, value any) bool {
-	switch mv := member.(type) {
+	return jsonDeepEqual(member, value)
+}
+
+// jsonDeepEqual reports whether two decoded JSON trees are equal, comparing
+// numbers by exact rational value (so json.Number("1") equals the integer 1),
+// strings and bools by ==, and arrays/objects structurally. It lets enum members
+// match composite instances regardless of numeric spelling.
+func jsonDeepEqual(a, b any) bool {
+	if ar, aok := toBigRat(a); aok {
+		br, bok := toBigRat(b)
+		return bok && ar.Cmp(br) == 0
+	}
+	switch av := a.(type) {
 	case string:
-		v, ok := value.(string)
-		return ok && v == mv
+		bv, ok := b.(string)
+		return ok && av == bv
 	case bool:
-		v, ok := value.(bool)
-		return ok && v == mv
+		bv, ok := b.(bool)
+		return ok && av == bv
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !jsonDeepEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			bw, present := bv[k]
+			if !present || !jsonDeepEqual(v, bw) {
+				return false
+			}
+		}
+		return true
+	case nil:
+		return b == nil
 	default:
-		mb, ok1 := toBigRat(member)
-		vb, ok2 := toBigRat(value)
-		return ok1 && ok2 && mb.Cmp(vb) == 0
+		return false
 	}
 }
 
@@ -390,6 +440,31 @@ func toFloat(v any) (float64, bool) {
 	}
 }
 
+// numberMagnitudeExceeded reports whether a JSON number literal is large enough
+// that converting it to an exact rational could exhaust memory: big.Rat.SetString
+// expands decimal exponents, so a bounded mantissa-digit count and absolute
+// exponent keep conversion cheap for untrusted input.
+func numberMagnitudeExceeded(lit string) bool {
+	mantissa := lit
+	if i := strings.IndexAny(lit, "eE"); i >= 0 {
+		mantissa = lit[:i]
+		exp, err := strconv.Atoi(strings.TrimPrefix(lit[i+1:], "+"))
+		if err != nil {
+			return true // exponent too large to even parse
+		}
+		if exp > maxNumberExponent || exp < -maxNumberExponent {
+			return true
+		}
+	}
+	digits := 0
+	for _, c := range mantissa {
+		if c >= '0' && c <= '9' {
+			digits++
+		}
+	}
+	return digits > maxNumberMantissaDigits
+}
+
 // toBigRat converts a numeric value to an exact rational. json.Number keeps its
 // full decimal literal; integers are converted without passing through float64
 // so values beyond 2^53 stay exact. Only float32/float64 inputs (which are
@@ -397,6 +472,9 @@ func toFloat(v any) (float64, bool) {
 func toBigRat(v any) (*big.Rat, bool) {
 	switch n := v.(type) {
 	case json.Number:
+		if numberMagnitudeExceeded(n.String()) {
+			return nil, false
+		}
 		r, ok := new(big.Rat).SetString(n.String())
 		return r, ok
 	case int:
