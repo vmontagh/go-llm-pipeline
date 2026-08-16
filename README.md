@@ -97,7 +97,11 @@ rec, err := llmvcr.New("testdata/openai_success", llmvcr.ModeReplayOnly)
 if err != nil {
     // handle error
 }
-defer rec.Stop()
+defer func() {
+    if err := rec.Stop(); err != nil {
+        log.Printf("stopping recorder: %v", err)
+    }
+}()
 provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 ```
 
