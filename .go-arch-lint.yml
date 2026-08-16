@@ -37,6 +37,8 @@ components:
     in: pkg/scrub/**
   llmvcr:
     in: pkg/llmvcr/**
+  vectorstore:
+    in: pkg/vectorstore/**
 
 deps:
   logger:
@@ -162,3 +164,9 @@ deps:
       - provider
       - openai
       - gemini
+
+  vectorstore:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vectorstore
