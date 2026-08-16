@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"sort"
 	"strings"
 	"testing"
 
@@ -984,10 +983,7 @@ func TestValidate(t *testing.T) {
 				t.Errorf("Validate(%s) not errors.Is ErrSchemaValidation", tc.data)
 			}
 			got := collectFieldErrors(err)
-			less := func(a, b analyzer.FieldError) bool { return a.Path < b.Path }
-			sort.Slice(got, func(i, j int) bool { return got[i].Path < got[j].Path })
-			sort.Slice(tc.want, func(i, j int) bool { return tc.want[i].Path < tc.want[j].Path })
-			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(less)); diff != "" {
+			if diff := cmp.Diff(tc.want, got, cmpopts.SortSlices(lessFieldError)); diff != "" {
 				t.Errorf("Validate(%s) mismatch (-want +got):\n%s", tc.data, diff)
 			}
 		})
