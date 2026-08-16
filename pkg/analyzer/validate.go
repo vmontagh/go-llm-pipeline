@@ -98,6 +98,10 @@ func Validate(schema map[string]any, data []byte) error {
 		return dup
 	}
 	var errs []error
+	// Reject unrecognized keywords across the whole schema structure first, so an
+	// unknown keyword on a property or items schema fails closed even when the
+	// instance omits that property or leaves an array empty.
+	reportUnknownKeywordsTree(canonical, "", &errs)
 	validateValue(canonical, value, "", &errs)
 	if len(errs) == 0 {
 		return nil
@@ -275,12 +279,12 @@ func init() {
 }
 
 // validateValue checks value against schema, appending a *FieldError for every
-// violation. It rejects any unrecognized schema keyword, enforces the type
-// keyword, applies each present keyword rule whose instance kind matches value,
-// and always checks enum — which constrains every instance kind, so it runs even
-// after a type mismatch.
+// violation. It enforces the type keyword, applies each present keyword rule whose
+// instance kind matches value, and always checks enum — which constrains every
+// instance kind, so it runs even after a type mismatch. Unrecognized keywords are
+// not reported here: reportUnknownKeywordsTree already rejects them once across the
+// whole schema structure before validateValue runs, independent of the instance.
 func validateValue(schema map[string]any, value any, path string, errs *[]error) {
-	reportUnknownKeywords(schema, path, errs)
 	if ok, integerRequired := enforceType(schema, value, path, errs); ok {
 		applyKeywordRules(schema, value, integerRequired, path, errs)
 	}
@@ -289,11 +293,40 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 	validateEnum(schema, value, path, errs)
 }
 
+// reportUnknownKeywordsTree walks the schema and every nested schema object it can
+// reach — each declared property schema, the items schema, and a schema-valued
+// additionalProperties — reporting unrecognized keywords at every node. It runs
+// once over the schema structure, independent of the instance, so an unknown
+// keyword on a property or items schema is rejected even when the instance omits
+// that property or the array is empty. A property or items value that is not a
+// schema object is skipped here; validateValue reports that malformation as an
+// instance constraint.
+func reportUnknownKeywordsTree(schema map[string]any, path string, errs *[]error) {
+	reportUnknownKeywords(schema, path, errs)
+	if props, ok := propertiesMap(schema); ok {
+		names := make([]string, 0, len(props))
+		for name := range props {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			if child, ok := props[name].(map[string]any); ok {
+				reportUnknownKeywordsTree(child, childPath(path, name), errs)
+			}
+		}
+	}
+	if items, ok := schema[PropItems].(map[string]any); ok {
+		reportUnknownKeywordsTree(items, path+"[]", errs)
+	}
+	if additional, ok := schema[PropAdditional].(map[string]any); ok {
+		reportUnknownKeywordsTree(additional, childPath(path, "*"), errs)
+	}
+}
+
 // reportUnknownKeywords appends a FieldError for every schema keyword this
 // validator does not recognize, so a caller schema carrying an unsupported or
 // misspelled keyword fails closed instead of having the keyword silently ignored.
-// It runs at every nesting level because validateValue recurses into child
-// schemas, so an unknown keyword on a nested property schema is rejected too.
+// reportUnknownKeywordsTree calls it at every node of the schema structure.
 func reportUnknownKeywords(schema map[string]any, path string, errs *[]error) {
 	var unknown []string
 	for key := range schema {

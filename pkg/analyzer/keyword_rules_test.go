@@ -45,7 +45,7 @@ func TestValidateUnknownKeyword(t *testing.T) {
 			},
 		},
 		{
-			name: "nested_property_unknown_keyword",
+			name: "nested_property_unknown_keyword_present",
 			schema: map[string]any{
 				analyzer.PropType: analyzer.TypeObject,
 				analyzer.PropProperties: map[string]any{
@@ -56,13 +56,33 @@ func TestValidateUnknownKeyword(t *testing.T) {
 			want:     []analyzer.FieldError{{Path: "age", Rule: "format", Detail: "unrecognized schema keyword"}},
 		},
 		{
-			name: "items_schema_unknown_keyword",
+			name: "nested_property_unknown_keyword_absent_instance",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"age": map[string]any{analyzer.PropType: analyzer.TypeInteger, "format": "int32"},
+				},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "age", Rule: "format", Detail: "unrecognized schema keyword"}},
+		},
+		{
+			name: "items_schema_unknown_keyword_present",
 			schema: map[string]any{
 				analyzer.PropType:  analyzer.TypeArray,
 				analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeString, "contentEncoding": "utf-8"},
 			},
 			instance: `["a"]`,
-			want:     []analyzer.FieldError{{Path: "[0]", Rule: "contentEncoding", Detail: "unrecognized schema keyword"}},
+			want:     []analyzer.FieldError{{Path: "[]", Rule: "contentEncoding", Detail: "unrecognized schema keyword"}},
+		},
+		{
+			name: "items_schema_unknown_keyword_empty_array",
+			schema: map[string]any{
+				analyzer.PropType:  analyzer.TypeArray,
+				analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeString, "contentEncoding": "utf-8"},
+			},
+			instance: `[]`,
+			want:     []analyzer.FieldError{{Path: "[]", Rule: "contentEncoding", Detail: "unrecognized schema keyword"}},
 		},
 	}
 
