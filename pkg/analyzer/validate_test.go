@@ -33,12 +33,54 @@ func TestValidateIntegerLiteralForm(t *testing.T) {
 		{name: "uppercase exponent rejected", doc: `1000E0`, wantErr: analyzer.ErrSchemaValidation},
 		{name: "trailing zero fraction rejected", doc: `1.0`, wantErr: analyzer.ErrSchemaValidation},
 		{name: "fractional rejected", doc: `1.5`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "negative zero rejected", doc: `-0`, wantErr: analyzer.ErrSchemaValidation},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			if err := analyzer.Validate(schema, []byte(tc.doc)); !errors.Is(err, tc.wantErr) {
 				t.Errorf("Validate(%s) = %v, want errors.Is %v", tc.doc, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidateNegativeZeroUnsigned covers the negative-zero gap for unsigned
+// fields: "-0" satisfies the minimum:0 that SchemaOf emits for a uint, but
+// encoding/json decodes unsigned fields with strconv.ParseUint, which rejects the
+// leading minus. Validate must reject "-0" so it never accepts a value the decoder
+// cannot decode.
+func TestValidateNegativeZeroUnsigned(t *testing.T) {
+	t.Parallel()
+
+	type unsignedField struct {
+		U uint `json:"u"`
+	}
+	schema, err := analyzer.SchemaOf(unsignedField{})
+	if err != nil {
+		t.Fatalf("SchemaOf(unsignedField{}) error = %v", err)
+	}
+	tests := []struct {
+		name    string
+		doc     string
+		wantErr error
+	}{
+		{name: "plain zero accepted", doc: `{"u":0}`, wantErr: nil},
+		{name: "positive integer accepted", doc: `{"u":7}`, wantErr: nil},
+		{name: "negative zero rejected", doc: `{"u":-0}`, wantErr: analyzer.ErrSchemaValidation},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			gotErr := analyzer.Validate(schema, []byte(tc.doc))
+			if !errors.Is(gotErr, tc.wantErr) {
+				t.Errorf("Validate(%s) = %v, want errors.Is %v", tc.doc, gotErr, tc.wantErr)
+			}
+			// Guard the invariant: when Validate accepts, a strict decode must too.
+			if gotErr == nil {
+				if derr := json.Unmarshal([]byte(tc.doc), &unsignedField{}); derr != nil {
+					t.Errorf("Validate accepted %s but decode failed: %v", tc.doc, derr)
+				}
 			}
 		})
 	}
