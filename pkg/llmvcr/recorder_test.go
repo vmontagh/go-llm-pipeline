@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -79,10 +80,19 @@ func stopRec(t *testing.T, rec *llmvcr.Recorder) {
 	}
 }
 
+// closeBody closes a response body and reports a failure if Close errors.
+func closeBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("resp.Body.Close() = %v", err)
+	}
+}
+
 func TestNew_UnknownMode(t *testing.T) {
 	t.Parallel()
-	if _, err := llmvcr.New("cassette", llmvcr.Mode(99)); err == nil {
-		t.Fatal("New() with unknown mode = nil error, want error")
+	_, err := llmvcr.New("cassette", llmvcr.Mode(99))
+	if !errors.Is(err, llmvcr.ErrUnknownMode) {
+		t.Fatalf("New() with unknown mode error = %v, want errors.Is(_, %v)", err, llmvcr.ErrUnknownMode)
 	}
 }
 
@@ -172,18 +182,33 @@ func recordKnownPath(t *testing.T) string {
 func TestReplayOnly_FailFastOnMiss(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name      string
-		failFast  bool
-		wantErrIs error
+		name         string
+		failFast     bool
+		wantErrIs    error
+		wantLiveCall bool
 	}{
 		{name: "fail-fast returns ErrCassetteMiss", failFast: true, wantErrIs: llmvcr.ErrCassetteMiss},
-		{name: "disabled attempts live call", failFast: false, wantErrIs: nil},
+		{name: "disabled performs live call", failFast: false, wantLiveCall: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cassettePath := recordKnownPath(t)
+
+			// A live server whose handler must be reached only when fail-fast
+			// is disabled and the recorder falls back to a real network call.
+			var hits atomic.Int32
+			const liveBody = `{"live":true}`
+			live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := w.Write([]byte(liveBody)); err != nil {
+					t.Errorf("w.Write() = %v", err)
+				}
+			}))
+			t.Cleanup(live.Close)
+
 			rec, err := llmvcr.New(cassettePath, llmvcr.ModeReplayOnly, llmvcr.WithFailFastOnMiss(tt.failFast))
 			if err != nil {
 				t.Fatalf("New() = %v", err)
@@ -191,23 +216,43 @@ func TestReplayOnly_FailFastOnMiss(t *testing.T) {
 			t.Cleanup(func() { stopRec(t, rec) })
 
 			// Request a path not present in the cassette -> miss.
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.invalid/v1/unknown", http.NoBody)
+			missURL := "https://example.invalid/v1/unknown"
+			if tt.wantLiveCall {
+				missURL = live.URL + "/v1/unknown"
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, missURL, http.NoBody)
 			if err != nil {
 				t.Fatalf("NewRequestWithContext() = %v", err)
 			}
 			resp, err := rec.HTTPClient().Do(req)
-			if err == nil {
-				_ = resp.Body.Close()
-			}
+
 			if tt.wantErrIs != nil {
+				if err == nil {
+					closeBody(t, resp)
+				}
 				if !errors.Is(err, tt.wantErrIs) {
 					t.Errorf("Do() error = %v, want errors.Is(_, %v)", err, tt.wantErrIs)
 				}
+				if hits.Load() != 0 {
+					t.Errorf("live server was reached %d time(s) despite fail-fast", hits.Load())
+				}
 				return
 			}
-			// A real transport is used, so the error must NOT be our sentinel.
-			if errors.Is(err, llmvcr.ErrCassetteMiss) {
-				t.Errorf("Do() returned ErrCassetteMiss despite WithFailFastOnMiss(false)")
+
+			// Fail-fast disabled: the recorder must fall back to a live call.
+			if err != nil {
+				t.Fatalf("Do() = %v, want live response", err)
+			}
+			defer closeBody(t, resp)
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("io.ReadAll() = %v", err)
+			}
+			if hits.Load() != 1 {
+				t.Errorf("live server reached %d time(s), want 1", hits.Load())
+			}
+			if diff := cmp.Diff(liveBody, strings.TrimSpace(string(body))); diff != "" {
+				t.Errorf("live response body mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
@@ -244,7 +289,7 @@ func TestRecordThenReplay_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do(replay) = %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer closeBody(t, resp)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("ReadAll(replay) = %v", err)
@@ -256,11 +301,17 @@ func TestRecordThenReplay_RoundTrip(t *testing.T) {
 
 func TestWithAdditionalScrubRules(t *testing.T) {
 	t.Parallel()
-	srv := newJSONServer(t, `{"note":"topsecret-value"}`)
+	srv := newJSONServer(t, `{"a":"topsecret-value","b":"classified-value"}`)
 	cassettePath := filepath.Join(t.TempDir(), "extra")
 
-	rule := scrub.MustRegexpRule(`topsecret-\w+`, "REDACTED")
-	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce, llmvcr.WithAdditionalScrubRules(rule))
+	// Two separate calls must both take effect (they accumulate rather than the
+	// later call replacing the earlier one).
+	ruleA := scrub.MustRegexpRule(`topsecret-\w+`, "REDACTED")
+	ruleB := scrub.MustRegexpRule(`classified-\w+`, "REDACTED")
+	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce,
+		llmvcr.WithAdditionalScrubRules(ruleA),
+		llmvcr.WithAdditionalScrubRules(ruleB),
+	)
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
@@ -270,7 +321,9 @@ func TestWithAdditionalScrubRules(t *testing.T) {
 	}
 
 	got := readCassette(t, cassettePath+".yaml")
-	if strings.Contains(got, "topsecret-value") {
-		t.Errorf("custom scrub rule not applied:\n%s", got)
+	for _, secret := range []string{"topsecret-value", "classified-value"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("custom scrub rule not applied for %q:\n%s", secret, got)
+		}
 	}
 }
