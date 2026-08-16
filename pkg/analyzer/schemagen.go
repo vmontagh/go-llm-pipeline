@@ -64,17 +64,38 @@ func SchemaOf(v any) (map[string]any, error) {
 	if t.Kind() != reflect.Struct {
 		return nil, fmt.Errorf("%w: want struct, got %s", ErrSchemaDerivation, t.Kind())
 	}
-	return schemaForStruct(t, map[reflect.Type]bool{})
+	return schemaForType(t, map[reflect.Type]bool{})
 }
 
+// schemaForType derives the schema for an arbitrary type, tracking every active
+// named type in seen so cyclic collection/struct types (for example
+// `type Chain []Chain`) are rejected instead of recursing forever.
 func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, error) {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	// Extract decodes a JSON response into T, so the schema must describe the
-	// decode contract. A type that unmarshals from text (such as time.Time) is a
-	// JSON string; a type that only marshals to text cannot be decoded from it.
-	if implementsMarshaler(t, textUnmarshalerType) {
+	// Only named types can form a cycle; anonymous composites such as [][]int
+	// cannot refer to themselves, so guarding them would be a false positive.
+	if isNamedType(t) {
+		if seen[t] {
+			return nil, fmt.Errorf("%w: recursive type %s", ErrSchemaDerivation, t)
+		}
+		seen[t] = true
+		defer delete(seen, t)
+	}
+
+	// encoding/json gives UnmarshalJSON precedence over UnmarshalText, so decide
+	// the wire shape from json.Unmarshaler first. A type that also unmarshals from
+	// text (such as time.Time) round-trips through a JSON string; one with only a
+	// custom UnmarshalJSON has an unknown wire shape and cannot be reflected.
+	jsonU := implementsMarshaler(t, jsonUnmarshalerType)
+	textU := implementsMarshaler(t, textUnmarshalerType)
+	switch {
+	case jsonU && textU:
+		return map[string]any{PropType: TypeString}, nil
+	case jsonU:
+		return nil, fmt.Errorf("%w: type %s uses custom JSON unmarshaling; its wire shape cannot be reflected", ErrSchemaDerivation, t)
+	case textU:
 		return map[string]any{PropType: TypeString}, nil
 	}
 	if implementsMarshaler(t, textMarshalerType) {
@@ -106,22 +127,24 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		}
 		return map[string]any{PropType: TypeObject, PropAdditional: elem}, nil
 	case reflect.Struct:
-		if implementsMarshaler(t, jsonMarshalerType) || implementsMarshaler(t, jsonUnmarshalerType) {
+		if implementsMarshaler(t, jsonMarshalerType) {
 			return nil, fmt.Errorf("%w: type %s uses custom JSON marshaling", ErrSchemaDerivation, t)
 		}
-		return schemaForStruct(t, seen)
+		return structSchema(t, seen)
 	default:
 		return nil, fmt.Errorf("%w: unsupported type %s", ErrSchemaDerivation, t.Kind())
 	}
 }
 
-func schemaForStruct(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, error) {
-	if seen[t] {
-		return nil, fmt.Errorf("%w: recursive type %s", ErrSchemaDerivation, t)
-	}
-	seen[t] = true
-	defer delete(seen, t)
+// isNamedType reports whether t is a defined (named) type, which is a
+// prerequisite for a type to refer to itself.
+func isNamedType(t reflect.Type) bool {
+	return t.Name() != ""
+}
 
+// structSchema builds the object schema for a struct. The caller (schemaForType)
+// has already guarded t against cycles.
+func structSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, error) {
 	fc := &fieldCollector{seen: seen}
 	if err := fc.collect(t, 0, true); err != nil {
 		return nil, err
@@ -511,6 +534,9 @@ func parseJSONNumber(val string) (json.Number, error) {
 		return "", err
 	}
 	if n == "" {
+		return "", errNotJSONNumber
+	}
+	if numberMagnitudeExceeded(n.String()) {
 		return "", errNotJSONNumber
 	}
 	return n, nil

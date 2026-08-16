@@ -362,8 +362,11 @@ func TestValidateTrailingContent(t *testing.T) {
 		wantErr error
 	}{
 		{name: "single object accepted", doc: `{}`, wantErr: nil},
+		{name: "trailing whitespace accepted", doc: "{}\n\t ", wantErr: nil},
 		{name: "trailing object rejected", doc: `{} {}`, wantErr: analyzer.ErrSchemaValidation},
 		{name: "trailing garbage rejected", doc: `{} garbage`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "stray brace rejected", doc: `{} }`, wantErr: analyzer.ErrSchemaValidation},
+		{name: "stray bracket rejected", doc: `{} ]`, wantErr: analyzer.ErrSchemaValidation},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
