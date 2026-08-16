@@ -1,0 +1,56 @@
+## Contributing to go-llm-pipeline
+
+Thanks for your interest in contributing! This document explains how to build,
+test, and lint the project, and the conventions we follow.
+
+### Prerequisites
+
+- Go 1.26 or newer (see [`go.mod`](go.mod)).
+- [`golangci-lint`](https://golangci-lint.run/) for linting.
+- [`gomarklint`](https://github.com/shinagawa-web/gomarklint) for Markdown linting
+  (`go install github.com/shinagawa-web/gomarklint@v1.5.0`).
+
+### Build, test, and lint
+
+All common tasks are wired to `make` targets:
+
+| Target | Description |
+| --- | --- |
+| `make build` | Compile all packages. |
+| `make test` | Run the full test suite with the race detector. |
+| `make test-unit-cover` | Run tests with a coverage profile (`coverage.out`). |
+| `make lint` | Run `golangci-lint`. |
+| `make lint-arch` | Run the architecture linter (`go-arch-lint`). |
+| `make fmt` | Format the code with `gofmt`. |
+| `make vet` | Run `go vet`. |
+| `make tidy` | Run `go mod tidy`. |
+| `make clean` | Remove generated artifacts. |
+
+### Before you submit
+
+**Run `make test` and `make lint` before submitting. Passing tests and a clean
+lint are required for merge.** Fix all failures and lint findings first. If your
+change touches Markdown docs, also run `gomarklint .` and resolve any issues.
+
+### Branch and pull request conventions
+
+- Branch off `main` and use a short, descriptive kebab-case branch name.
+- Keep pull requests focused; prefer small, reviewable changes.
+- Reference the relevant issue number in your commits and PR description
+  (for example, `Closes #123`).
+- Fill out the pull request template so reviewers have the context they need.
+
+### Commit messages
+
+- Use present-tense, imperative subjects (for example, `add retry policy lookup`).
+- Follow the repository's Go idiomatic guidelines; avoid stop words such as
+  "failed to" in error strings and log messages.
+- Ensure `make fmt` has been run so formatting is consistent.
+
+### Code style
+
+This project follows the Go idiomatic guidelines documented in
+[`.github/copilot-instructions.md`](.github/copilot-instructions.md): wrapped
+errors with context, table-driven tests using `want`/`got` and `cmp.Diff`,
+dependency injection over package-level state, and small consumer-side
+interfaces. Please read it before making substantial changes.
