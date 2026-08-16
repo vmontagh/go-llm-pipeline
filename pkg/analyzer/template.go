@@ -165,6 +165,24 @@ func (t *Template[T, R]) Analyze(
 	}, t.parser)
 }
 
+// AnalyzeAsset runs the analysis Template for a single Asset. It reads the
+// asset payload into memory, forwards it to the provider alongside prompt, and
+// uses asset.ID to correlate published events. A nil payload is forwarded as no
+// binary data.
+func (t *Template[T, R]) AnalyzeAsset(
+	ctx context.Context,
+	prompt string,
+	asset Asset,
+	publish func(eventType, itemID, message string, isError bool),
+) (R, error) {
+	payload, err := asset.payloadBytes()
+	if err != nil {
+		var zero R
+		return zero, err
+	}
+	return t.Analyze(ctx, prompt, payload, asset.ID, publish)
+}
+
 type callOnceParams struct {
 	prompt    string
 	imageData []byte

@@ -59,7 +59,7 @@ func main() {
 
 | Package | Description |
 | --- | --- |
-| `pkg/analyzer` | Template Method and Builder contracts for LLM analysis (`Event`/`Analyzer`, sentinel errors). |
+| `pkg/analyzer` | Template Method and Builder contracts for LLM analysis (`Event`/`Analyzer`, domain-agnostic `Asset`, sentinel errors). |
 | `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, and a dead-letter queue. |
 | `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |
