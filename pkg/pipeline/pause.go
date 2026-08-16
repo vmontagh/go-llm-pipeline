@@ -6,16 +6,29 @@ import (
 	"sync"
 )
 
-// ErrDraining is returned by WaitIfPaused once Stop has been called on the gate.
-// It is distinct from context.Canceled so callers can stop enqueuing new work
-// and drain in-flight items while leaving the request context alive.
+// ErrDraining is returned by [PauseGate.WaitIfPaused] once [PauseGate.Stop] has
+// been called on the gate. It signals a graceful shutdown: callers should stop
+// enqueuing new work and let in-flight and already-queued items drain to
+// completion. It is deliberately distinct from context.Canceled so that
+// draining does not abort the request context — errors.Is(err, context.Canceled)
+// is false for a drain — leaving in-flight LLM/HTTP calls to finish normally.
 var ErrDraining = errors.New("pipeline draining")
 
 // PauseGate is a concurrency-safe pause/resume gate with a terminal drain state.
-// When not paused, WaitIfPaused returns nil immediately. When paused,
-// WaitIfPaused blocks until Resume is called or ctx is cancelled. Once Stop has
-// been called the gate is draining: WaitIfPaused returns ErrDraining for all
-// current and future waiters, and Pause/Resume become no-ops.
+//
+// It has three externally observable modes that map onto the pipeline lifecycle
+// described in the package doc:
+//
+//   - Running (default): [PauseGate.WaitIfPaused] returns nil immediately.
+//   - Paused: [PauseGate.WaitIfPaused] blocks until [PauseGate.Resume] is
+//     called or ctx is cancelled.
+//   - Draining: after [PauseGate.Stop], [PauseGate.WaitIfPaused] returns
+//     [ErrDraining] for all current and future waiters, and Pause/Resume become
+//     no-ops.
+//
+// Stop is terminal and takes precedence over pause/resume, so a graceful
+// shutdown can be requested at any time without racing an in-progress pause.
+// The zero value is a usable Running gate.
 type PauseGate struct {
 	mu       sync.Mutex
 	paused   bool
