@@ -39,9 +39,9 @@ func TestPauseGate(t *testing.T) {
 
 				startedWaiting := make(chan struct{})
 				resumed := make(chan struct{})
+				g.waitHook = func() { close(startedWaiting) }
 
 				go func() {
-					close(startedWaiting)
 					err := g.WaitIfPaused(t.Context())
 					if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
 						t.Errorf("WaitIfPaused() diff (-want +got):\n%s", diff)
@@ -49,7 +49,7 @@ func TestPauseGate(t *testing.T) {
 					close(resumed)
 				}()
 
-				<-startedWaiting
+				<-startedWaiting // waiter has reached the blocked path
 
 				select {
 				case <-resumed:
@@ -74,13 +74,13 @@ func TestPauseGate(t *testing.T) {
 				ctx, cancel := context.WithCancel(t.Context())
 				startedWaiting := make(chan struct{})
 				errCh := make(chan error, 1)
+				g.waitHook = func() { close(startedWaiting) }
 
 				go func() {
-					close(startedWaiting)
 					errCh <- g.WaitIfPaused(ctx)
 				}()
 
-				<-startedWaiting
+				<-startedWaiting // waiter has reached the blocked path
 
 				select {
 				case <-errCh:

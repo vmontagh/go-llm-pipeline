@@ -86,6 +86,8 @@ func TestConsume(t *testing.T) {
 				var count atomic.Int64
 				var wg sync.WaitGroup
 				started := make(chan struct{})
+				gateReached := make(chan struct{}, 2)
+				gate.waitHook = func() { gateReached <- struct{}{} }
 
 				process := func(_ context.Context, _ int) {
 					count.Add(1)
@@ -96,6 +98,8 @@ func TestConsume(t *testing.T) {
 				}
 
 				Consume(t.Context(), input, 2, &wg, process, WithPauseGate(gate))
+
+				<-gateReached // a worker reached the paused gate before any processing
 
 				select {
 				case <-started:
@@ -127,6 +131,8 @@ func TestConsume(t *testing.T) {
 				item1Continue := make(chan struct{})
 				item1Finished := make(chan struct{})
 				item2Started := make(chan struct{})
+				gateReached := make(chan struct{}, 1)
+				gate.waitHook = func() { gateReached <- struct{}{} }
 
 				process := func(_ context.Context, item int) {
 					if item == 1 {
@@ -155,6 +161,8 @@ func TestConsume(t *testing.T) {
 				// Finish item 1
 				close(item1Continue)
 				<-item1Finished
+
+				<-gateReached // worker pulled item 2 and blocked on the paused gate
 
 				// Item 2 must not start while gate is paused
 				select {
