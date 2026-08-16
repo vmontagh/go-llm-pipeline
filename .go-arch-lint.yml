@@ -33,6 +33,8 @@ components:
     in: pkg/llmtest/**
   scrub:
     in: pkg/scrub/**
+  llmvcr:
+    in: pkg/llmvcr/**
 
 deps:
   logger:
@@ -139,3 +141,13 @@ deps:
     anyProjectDeps: false
     anyVendorDeps: true
     mayDependOn: []
+
+  llmvcr:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - llmvcr
+      - scrub
+      - provider
+      - openai
+      - gemini
