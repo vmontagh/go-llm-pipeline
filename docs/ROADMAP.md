@@ -104,6 +104,8 @@ This interface should support image raws (for example, `.DNG` and `.ARW`), plain
   - Test network latency to hosted APIs.
   - Validate API keys.
   - Probe local Ollama instances and list loaded models.
+  - Implemented as the `pkg/doctor` library API so consumer applications own the
+    subcommand UX (see the "Doctor diagnostics" section in the README).
 - **Local Embeddings (Optional Add-on):** Introduce a lightweight in-memory vector store (or SQLite extension) for local semantic similarity, deduplication, and clustering without external network calls.
 - **Developer Experience:** Add practical onboarding guidance and templates for teams creating new vertical applications on top of `go-llm-pipeline`.
 

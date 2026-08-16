@@ -21,6 +21,8 @@ components:
     in: pkg/provider/openai/**
   ollama:
     in: pkg/provider/ollama/**
+  doctor:
+    in: pkg/doctor/**
   strategy:
     in: pkg/strategy/**
   pipeline:
@@ -98,6 +100,15 @@ deps:
       - logger
       - trace
       - httputil
+      - provider
+
+  doctor:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - doctor
+      - openai
+      - ollama
       - provider
 
   analyzer:
