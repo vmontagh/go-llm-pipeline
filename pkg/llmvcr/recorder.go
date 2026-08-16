@@ -51,7 +51,7 @@ const (
 	ModeRecordOnly
 )
 
-// vcrMode maps a llmvcr.Mode to the underlying go-vcr recorder mode.
+// vcrMode maps an llmvcr.Mode to the underlying go-vcr recorder mode.
 func (m Mode) vcrMode() (recorder.Mode, error) {
 	switch m {
 	case ModeReplayOnly:
@@ -83,6 +83,7 @@ type config struct {
 	redactHeaders     []string
 	redactQueryParams []string
 	scrubber          *scrub.Scrubber
+	additionalRules   []scrub.Rule
 	prettyJSON        bool
 	failFastOnMiss    bool
 	matcher           MatcherFunc
@@ -105,9 +106,11 @@ func WithRedactQueryParams(params ...string) Option {
 	return func(c *config) { c.redactQueryParams = append(c.redactQueryParams, params...) }
 }
 
-// WithScrubber replaces the default body/header scrubber. Pass a scrubber built
-// from DefaultScrubber (plus extra rules) to extend rather than replace the
-// defaults, or use WithAdditionalScrubRules.
+// WithScrubber replaces the default body/header scrubber. It takes precedence
+// over WithAdditionalScrubRules: when an explicit scrubber is provided, any
+// additional rules are ignored. Pass a scrubber built from DefaultScrubber
+// (plus extra rules) to extend rather than replace the defaults, or use
+// WithAdditionalScrubRules.
 func WithScrubber(s *scrub.Scrubber) Option {
 	return func(c *config) {
 		if s != nil {
@@ -116,11 +119,12 @@ func WithScrubber(s *scrub.Scrubber) Option {
 	}
 }
 
-// WithAdditionalScrubRules appends rules to the default scrubber. It has no
-// effect when combined with WithScrubber (the last applied option wins).
+// WithAdditionalScrubRules appends rules to the default scrubber. Multiple calls
+// accumulate. It has no effect when WithScrubber provides an explicit scrubber,
+// which takes precedence.
 func WithAdditionalScrubRules(rules ...scrub.Rule) Option {
 	return func(c *config) {
-		c.scrubber = scrub.NewScrubber(append(defaultScrubRules(), rules...)...)
+		c.additionalRules = append(c.additionalRules, rules...)
 	}
 }
 
@@ -155,9 +159,40 @@ type failFastTransport struct {
 func (t failFastTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.inner.RoundTrip(req)
 	if err != nil && errors.Is(err, cassette.ErrInteractionNotFound) {
-		return nil, fmt.Errorf("%w: %s %s", ErrCassetteMiss, req.Method, req.URL.String())
+		return nil, fmt.Errorf("%w: %s %s", ErrCassetteMiss, req.Method, safeURL(req.URL))
 	}
 	return resp, err
+}
+
+// liveFallbackTransport wraps the recorder transport and, on a replay miss,
+// performs a live call via a real transport. go-vcr's ModeReplayOnly never
+// reaches its configured RealTransport on a miss (it returns
+// cassette.ErrInteractionNotFound directly), so this restores the expected
+// "attempt a live call when fail-fast is disabled" behaviour.
+type liveFallbackTransport struct {
+	inner http.RoundTripper
+	live  http.RoundTripper
+}
+
+func (t liveFallbackTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.inner.RoundTrip(req)
+	if err != nil && errors.Is(err, cassette.ErrInteractionNotFound) {
+		return t.live.RoundTrip(req)
+	}
+	return resp, err
+}
+
+// safeURL renders a request URL for error messages without leaking sensitive
+// query parameters or userinfo: only scheme://host/path is kept.
+func safeURL(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	sanitized := *u
+	sanitized.RawQuery = ""
+	sanitized.Fragment = ""
+	sanitized.User = nil
+	return sanitized.String()
 }
 
 // Recorder records and replays HTTP interactions through an *http.Client.
@@ -177,7 +212,6 @@ func New(cassettePath string, mode Mode, opts ...Option) (*Recorder, error) {
 	cfg := config{
 		redactHeaders:     []string{"Authorization", "X-Api-Key", "X-Goog-Api-Key"},
 		redactQueryParams: []string{"key", "api_key"},
-		scrubber:          DefaultScrubber(),
 		prettyJSON:        true,
 		failFastOnMiss:    true,
 		matcher:           DefaultMatcher,
@@ -186,6 +220,11 @@ func New(cassettePath string, mode Mode, opts ...Option) (*Recorder, error) {
 		if opt != nil {
 			opt(&cfg)
 		}
+	}
+	// Resolve the scrubber once: an explicit WithScrubber takes precedence,
+	// otherwise build from the defaults plus any accumulated additional rules.
+	if cfg.scrubber == nil {
+		cfg.scrubber = scrub.NewScrubber(append(defaultScrubRules(), cfg.additionalRules...)...)
 	}
 
 	rec, err := recorder.NewWithOptions(&recorder.Options{
@@ -206,8 +245,12 @@ func New(cassettePath string, mode Mode, opts ...Option) (*Recorder, error) {
 	rec.AddHook(cfg.beforeSaveHook(), recorder.BeforeSaveHook)
 
 	var transport http.RoundTripper = rec
-	if vmode == recorder.ModeReplayOnly && cfg.failFastOnMiss {
-		transport = failFastTransport{inner: rec}
+	if vmode == recorder.ModeReplayOnly {
+		if cfg.failFastOnMiss {
+			transport = failFastTransport{inner: rec}
+		} else {
+			transport = liveFallbackTransport{inner: rec, live: http.DefaultTransport}
+		}
 	}
 
 	return &Recorder{rec: rec, transport: transport}, nil
