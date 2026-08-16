@@ -5,6 +5,7 @@ const (
 	TypeArray      = "array"
 	TypeBoolean    = "boolean"
 	TypeInteger    = "integer"
+	TypeNull       = "null"
 	TypeNumber     = "number"
 	TypeObject     = "object"
 	TypeString     = "string"

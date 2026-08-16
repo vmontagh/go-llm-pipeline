@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"reflect"
 	"regexp"
@@ -107,10 +108,10 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 	case reflect.Bool:
 		return map[string]any{PropType: TypeBoolean}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return map[string]any{PropType: TypeInteger}, nil
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return integerSchema(t.Kind()), nil
 	case reflect.Float32, reflect.Float64:
-		return map[string]any{PropType: TypeNumber}, nil
+		return floatSchema(t.Kind()), nil
 	case reflect.Slice, reflect.Array:
 		items, err := schemaForType(t.Elem(), seen)
 		if err != nil {
@@ -140,6 +141,63 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 // prerequisite for a type to refer to itself.
 func isNamedType(t reflect.Type) bool {
 	return t.Name() != ""
+}
+
+// integerSchema derives a type:integer schema whose minimum and maximum bound the
+// concrete Go width, so a schema-conforming number always decodes into the field
+// (a uint8 rejects -1 and 256 as schema violations with field-level feedback
+// rather than a generic decode failure). Bounds are exact json.Number literals.
+func integerSchema(kind reflect.Kind) map[string]any {
+	schema := map[string]any{PropType: TypeInteger}
+	lo, hi := integerBounds(kind)
+	schema[PropMinimum] = lo
+	schema[PropMaximum] = hi
+	return schema
+}
+
+// integerBounds returns the inclusive range representable by an integer kind as
+// exact json.Number literals. int and uint are treated as 64-bit; uintptr is
+// treated as unsigned 64-bit.
+func integerBounds(kind reflect.Kind) (lo, hi json.Number) {
+	bits, signed := 64, true
+	switch kind {
+	case reflect.Int8:
+		bits = 8
+	case reflect.Int16:
+		bits = 16
+	case reflect.Int32:
+		bits = 32
+	case reflect.Int, reflect.Int64:
+		bits = 64
+	case reflect.Uint8:
+		bits, signed = 8, false
+	case reflect.Uint16:
+		bits, signed = 16, false
+	case reflect.Uint32:
+		bits, signed = 32, false
+	case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+		bits, signed = 64, false
+	}
+	one := big.NewInt(1)
+	if signed {
+		half := new(big.Int).Lsh(one, uint(bits-1))
+		return json.Number(new(big.Int).Neg(half).String()),
+			json.Number(new(big.Int).Sub(half, one).String())
+	}
+	return json.Number("0"),
+		json.Number(new(big.Int).Sub(new(big.Int).Lsh(one, uint(bits)), one).String())
+}
+
+// floatSchema derives a type:number schema. float32 carries its representable
+// bounds so out-of-range values are rejected as schema violations; float64 spans
+// every JSON number and is left unconstrained.
+func floatSchema(kind reflect.Kind) map[string]any {
+	schema := map[string]any{PropType: TypeNumber}
+	if kind == reflect.Float32 {
+		schema[PropMinimum] = json.Number(strconv.FormatFloat(-math.MaxFloat32, 'g', -1, 32))
+		schema[PropMaximum] = json.Number(strconv.FormatFloat(math.MaxFloat32, 'g', -1, 32))
+	}
+	return schema
 }
 
 // structSchema builds the object schema for a struct. The caller (schemaForType)
@@ -339,6 +397,9 @@ func jsonFieldInfo(field *reflect.StructField) fieldInfo {
 func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.Type]bool) (map[string]any, error) {
 	var child map[string]any
 	if info.asString && stringOptionApplies(baseKind(field.Type)) {
+		if baseKind(field.Type) == reflect.String {
+			return nil, fmt.Errorf(`%w: json:",string" on a string field requires double-encoded JSON, which cannot be expressed as a plain-string schema; remove the ,string option`, ErrSchemaDerivation)
+		}
 		child = map[string]any{PropType: TypeString}
 	} else {
 		derived, err := schemaForType(field.Type, seen)
@@ -364,7 +425,9 @@ func baseKind(t reflect.Type) reflect.Kind {
 // stringOptionApplies reports whether encoding/json honors the json:",string"
 // option for a field of the given kind. json only quotes bool, integer, float,
 // and string fields; for any other kind the option is silently ignored, so the
-// schema must describe the field's real shape or no response could decode.
+// schema must describe the field's real shape or no response could decode. A
+// string-kind field is reported here but rejected by fieldSchema, because
+// json:",string" double-encodes a string and cannot be a plain-string schema.
 func stringOptionApplies(kind reflect.Kind) bool {
 	switch kind {
 	case reflect.Bool,

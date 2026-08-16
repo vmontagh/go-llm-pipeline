@@ -37,7 +37,9 @@ func TestSchemaOfMap(t *testing.T) {
 		want := map[string]any{
 			analyzer.PropType: analyzer.TypeObject,
 			analyzer.PropAdditional: map[string]any{
-				analyzer.PropType: analyzer.TypeInteger,
+				analyzer.PropType:    analyzer.TypeInteger,
+				analyzer.PropMinimum: json.Number("-9223372036854775808"),
+				analyzer.PropMaximum: json.Number("9223372036854775807"),
 			},
 		}
 		if diff := cmp.Diff(want, prop(got, "scores")); diff != "" {

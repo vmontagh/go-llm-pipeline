@@ -27,8 +27,10 @@ func TestSchemaOfNumericEnum(t *testing.T) {
 		analyzer.PropRequired:   []string{"face"},
 		analyzer.PropProperties: map[string]any{
 			"face": map[string]any{
-				analyzer.PropType: analyzer.TypeInteger,
-				analyzer.PropEnum: []any{json.Number("1"), json.Number("2"), json.Number("3")},
+				analyzer.PropType:    analyzer.TypeInteger,
+				analyzer.PropMinimum: json.Number("-9223372036854775808"),
+				analyzer.PropMaximum: json.Number("9223372036854775807"),
+				analyzer.PropEnum:    []any{json.Number("1"), json.Number("2"), json.Number("3")},
 			},
 		},
 	}

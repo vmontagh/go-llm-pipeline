@@ -59,11 +59,16 @@ const (
 // conforms, or an errors.Join of *FieldError values (each wrapping
 // ErrSchemaValidation) describing every violation. Numbers are decoded with
 // json.Number and compared as exact rationals (math/big.Rat), so integer bounds
-// and enum members hold beyond float64's 2^53 precision. Numeric keywords accept
-// any JSON-compatible Go numeric type and enums accept both []any and []string,
-// so caller-supplied schemas are enforced consistently with the schema shown to
-// the model.
+// and enum members hold beyond float64's 2^53 precision. The schema is first
+// canonicalized through a JSON round-trip, so caller-supplied keyword values of
+// any Go type (for example enum as []int or minimum as int64) are enforced
+// consistently with the schema shown to the model. A schema that cannot be
+// marshaled to JSON yields a wrapped error rather than a panic.
 func Validate(schema map[string]any, data []byte) error {
+	canonical, err := canonicalizeSchema(schema)
+	if err != nil {
+		return fmt.Errorf("canonicalizing schema: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var value any
@@ -71,22 +76,100 @@ func Validate(schema map[string]any, data []byte) error {
 		return &FieldError{Rule: ruleJSON, Detail: fmt.Sprintf("invalid JSON: %v", err)}
 	}
 	// Decoder.More is only meaningful inside an array or object; at the top level
-	// it reports false for a stray "]" or "}". Require the stream to be exhausted
-	// so "{} }" and "{} {}" are both rejected.
+	// it reports false for a stray "]" or "}". Require the stream to reach EOF so
+	// "{} }", "{} ]", and "{} {}" are all rejected.
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return &FieldError{Rule: ruleJSON, Detail: "unexpected trailing content after JSON value"}
 	}
 	var errs []error
-	validateValue(schema, value, "", &errs)
+	validateValue(canonical, value, "", &errs)
 	if len(errs) == 0 {
 		return nil
 	}
 	return errors.Join(errs...)
 }
 
+// canonicalizeSchema round-trips a schema through JSON so every value takes a
+// canonical decoded form (map[string]any, []any, json.Number, string, bool, or
+// nil). Downstream validation then reads uniform shapes instead of special-casing
+// arbitrary Go types such as []int enum members or int64 bounds.
+func canonicalizeSchema(schema map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var canonical map[string]any
+	if err := dec.Decode(&canonical); err != nil {
+		return nil, err
+	}
+	return canonical, nil
+}
+
 func validateValue(schema map[string]any, value any, path string, errs *[]error) {
-	typ, _ := stringField(schema, PropType)
+	if types, ok := schemaTypes(schema); ok {
+		validateTypes(schema, types, value, path, errs)
+	}
+	// enum applies to every instance type, including arrays and objects, so it is
+	// checked once here rather than inside each structural branch.
+	if !enumAllows(schema, value) {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
+	}
+}
+
+// schemaTypes reads the type keyword as either a single string or a JSON Schema
+// union ([]any of strings). It reports false when type is absent, leaving the
+// instance unconstrained by type.
+func schemaTypes(schema map[string]any) ([]string, bool) {
+	switch t := schema[PropType].(type) {
+	case string:
+		return []string{t}, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, v := range t {
+			if s, ok := v.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out, len(out) > 0
+	default:
+		return nil, false
+	}
+}
+
+// validateTypes enforces the type keyword without failing open: an unrecognized
+// token yields a FieldError, a single type dispatches to its keyword checks, and
+// a union accepts the value when it matches any listed type (applying that type's
+// keyword checks) or reports a type error naming every allowed type.
+func validateTypes(schema map[string]any, types []string, value any, path string, errs *[]error) {
+	for _, typ := range types {
+		if !isKnownType(typ) {
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("unsupported schema type %q", typ)})
+			return
+		}
+	}
+	if len(types) == 1 {
+		validateTypedValue(schema, types[0], value, path, errs)
+		return
+	}
+	for _, typ := range types {
+		if valueMatchesType(typ, value) {
+			validateTypedValue(schema, typ, value, path, errs)
+			return
+		}
+	}
+	*errs = append(*errs, &FieldError{
+		Path:   path,
+		Rule:   PropType,
+		Detail: fmt.Sprintf("expected one of [%s], got %s", strings.Join(types, ", "), jsonKind(value)),
+	})
+}
+
+// validateTypedValue applies the keyword constraints for a single JSON Schema
+// type to value.
+func validateTypedValue(schema map[string]any, typ string, value any, path string, errs *[]error) {
 	switch typ {
 	case TypeObject:
 		validateObject(schema, value, path, errs)
@@ -100,11 +183,55 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 		if _, ok := value.(bool); !ok {
 			addTypeError(errs, path, typ, value)
 		}
+	case TypeNull:
+		if value != nil {
+			addTypeError(errs, path, TypeNull, value)
+		}
 	}
-	// enum applies to every instance type, including arrays and objects, so it is
-	// checked once here rather than inside each structural branch.
-	if !enumAllows(schema, value) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
+}
+
+// isKnownType reports whether typ is a JSON Schema primitive this validator
+// enforces.
+func isKnownType(typ string) bool {
+	switch typ {
+	case TypeObject, TypeArray, TypeString, TypeInteger, TypeNumber, TypeBoolean, TypeNull:
+		return true
+	default:
+		return false
+	}
+}
+
+// valueMatchesType reports whether a decoded JSON value is of the given schema
+// type, used to select the matching branch of a union. An integer matches only a
+// json.Number with no fractional part.
+func valueMatchesType(typ string, value any) bool {
+	switch typ {
+	case TypeNull:
+		return value == nil
+	case TypeBoolean:
+		_, ok := value.(bool)
+		return ok
+	case TypeString:
+		_, ok := value.(string)
+		return ok
+	case TypeNumber:
+		_, ok := value.(json.Number)
+		return ok
+	case TypeInteger:
+		n, ok := value.(json.Number)
+		if !ok {
+			return false
+		}
+		r, ok := toBigRat(n)
+		return ok && r.IsInt()
+	case TypeObject:
+		_, ok := value.(map[string]any)
+		return ok
+	case TypeArray:
+		_, ok := value.([]any)
+		return ok
+	default:
+		return false
 	}
 }
 
@@ -320,38 +447,25 @@ func enumDetail(schema map[string]any, value any) string {
 	return fmt.Sprintf("value %v is not one of [%s]", value, strings.Join(parts, ", "))
 }
 
-// enumMembers returns the enum members regardless of whether the schema stores
-// them as []any (derived / JSON-decoded) or []string (caller-supplied).
+// enumMembers returns the enum members from a canonicalized schema, where they
+// are always a []any of canonical values.
 func enumMembers(schema map[string]any) ([]any, bool) {
-	switch e := schema[PropEnum].(type) {
-	case []any:
-		return e, true
-	case []string:
-		out := make([]any, len(e))
-		for i, s := range e {
-			out[i] = s
-		}
-		return out, true
-	default:
-		return nil, false
-	}
+	e, ok := schema[PropEnum].([]any)
+	return e, ok
 }
 
 func requiredNames(schema map[string]any) []string {
-	switch req := schema[PropRequired].(type) {
-	case []string:
-		return req
-	case []any:
-		out := make([]string, 0, len(req))
-		for _, r := range req {
-			if s, ok := r.(string); ok {
-				out = append(out, s)
-			}
-		}
-		return out
-	default:
+	req, ok := schema[PropRequired].([]any)
+	if !ok {
 		return nil
 	}
+	out := make([]string, 0, len(req))
+	for _, r := range req {
+		if s, ok := r.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func addTypeError(errs *[]error, path, want string, value any) {

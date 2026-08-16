@@ -60,7 +60,11 @@ type FeedbackInput struct {
 	Schema map[string]any
 	// Raw is the previous raw model response.
 	Raw string
-	// ParseError is non-nil when the previous response was not decodable JSON.
+	// ParseError is set when the previous response could not be turned into a T:
+	// it wraps ErrJSONMalformed when the response was not decodable JSON, or
+	// ErrDecode when the response was syntactically valid, schema-conforming JSON
+	// that still could not map onto T (for example a strict unknown field).
+	// Formatters can distinguish the two with errors.Is.
 	ParseError error
 	// Fields lists the field-level violations when schema validation failed.
 	Fields []*FieldError
@@ -124,8 +128,8 @@ func WithFeedbackFormatter(fn func(FeedbackInput) string) ExtractOption {
 // field-level validation failure — feeds the specific errors back to the model
 // and retries, bounded by WithMaxAttempts. It returns the decoded T on success,
 // or the zero T wrapped with ErrMaxAttemptsExceeded once the budget is spent.
-// The final error also wraps the last underlying cause (ErrJSONMalformed or
-// ErrSchemaValidation) for errors.Is matching.
+// The final error also wraps the last underlying cause (ErrJSONMalformed,
+// ErrSchemaValidation, or ErrDecode) for errors.Is matching.
 func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opts ...ExtractOption) (T, error) {
 	var zero T
 	if a == nil {
