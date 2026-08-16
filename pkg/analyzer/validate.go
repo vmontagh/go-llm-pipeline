@@ -369,6 +369,7 @@ func reportUnknownKeywords(schema map[string]any, path string, errs *[]error) {
 // whether an instance reaches it.
 func checkKeywordShapes(schema map[string]any, path string, errs *[]error) {
 	checkTypeShape(schema, path, errs)
+	checkDescriptionShape(schema, path, errs)
 	checkEnumShape(schema, path, errs)
 	checkRequiredShape(schema, path, errs)
 	checkPropertiesShape(schema, path, errs)
@@ -398,6 +399,19 @@ func checkTypeShape(schema map[string]any, path string, errs *[]error) {
 				return
 			}
 		}
+	}
+}
+
+// checkDescriptionShape reports a description keyword that is not a string. The
+// annotation is not enforced against the instance, but its value shape is still
+// checked so a malformed recognized keyword fails closed like any other.
+func checkDescriptionShape(schema map[string]any, path string, errs *[]error) {
+	raw, present := schema[PropDescription]
+	if !present {
+		return
+	}
+	if _, ok := raw.(string); !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropDescription, Detail: "schema description must be a string"})
 	}
 }
 

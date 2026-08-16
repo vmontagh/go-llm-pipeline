@@ -262,6 +262,26 @@ func TestValidateMalformedKeywordFailsClosedRegardlessOfInstance(t *testing.T) {
 			instance: `{}`,
 			want:     []analyzer.FieldError{{Path: "age", Rule: analyzer.PropMinimum, Detail: "schema minimum is not a usable number"}},
 		},
+		{
+			name: "malformed_description_on_absent_property",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"age": map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropDescription: float64(123)},
+				},
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "age", Rule: analyzer.PropDescription, Detail: "schema description must be a string"}},
+		},
+		{
+			name: "malformed_description_at_root",
+			schema: map[string]any{
+				analyzer.PropType:        analyzer.TypeObject,
+				analyzer.PropDescription: float64(123),
+			},
+			instance: `{}`,
+			want:     []analyzer.FieldError{{Path: "", Rule: analyzer.PropDescription, Detail: "schema description must be a string"}},
+		},
 	}
 
 	for _, tc := range tests {
