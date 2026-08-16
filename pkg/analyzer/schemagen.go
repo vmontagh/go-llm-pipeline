@@ -20,8 +20,10 @@ const schemaTag = "jsonschema"
 // must be a struct or a pointer to one. Field names are taken from json tags;
 // a field is required unless it is a pointer or its json tag carries
 // ",omitempty". The optional `jsonschema` struct tag adds description, enum,
-// minimum/maximum, minLength/maxLength, pattern, and can force required. Objects
-// emit additionalProperties:false so Validate rejects unexpected keys.
+// minimum/maximum, minLength/maxLength, pattern, and can force required. Enum
+// members are string-valued for string fields and coerced to numbers for
+// integer/number fields (for example, `jsonschema:"enum=1|2|3"`). Objects emit
+// additionalProperties:false so Validate rejects unexpected keys.
 func SchemaOf(v any) (map[string]any, error) {
 	if v == nil {
 		return nil, fmt.Errorf("%w: nil value", ErrSchemaDerivation)
@@ -85,6 +87,7 @@ func schemaForStruct(t reflect.Type) (map[string]any, error) {
 		for k, v := range constraints {
 			child[k] = v
 		}
+		coerceEnumTypes(child)
 		props[name] = child
 		if isRequired(&field, omitempty, forceRequired, forbidRequired) {
 			required = append(required, name)
@@ -184,7 +187,9 @@ func parseSchemaTag(tag string) (constraints map[string]any, forceRequired, forb
 	return constraints, forceRequired, forbidRequired
 }
 
-// parseEnum splits a pipe-separated enum list into its member values.
+// parseEnum splits a pipe-separated enum list into its member values. Members
+// are string-valued here; coerceEnumTypes converts them to numbers for numeric
+// fields.
 func parseEnum(val string) []any {
 	raw := strings.Split(val, "|")
 	out := make([]any, 0, len(raw))
@@ -192,4 +197,33 @@ func parseEnum(val string) []any {
 		out = append(out, strings.TrimSpace(s))
 	}
 	return out
+}
+
+// coerceEnumTypes converts a schema's string enum members to float64 when the
+// schema type is integer or number, so numeric enums declared via struct tags
+// (for example, `jsonschema:"enum=1|2|3"`) match decoded numeric values. Members
+// that do not parse as numbers are left unchanged.
+func coerceEnumTypes(schema map[string]any) {
+	typ, ok := schema[PropType].(string)
+	if !ok || (typ != TypeInteger && typ != TypeNumber) {
+		return
+	}
+	members, ok := schema[PropEnum].([]any)
+	if !ok {
+		return
+	}
+	coerced := make([]any, len(members))
+	for i, m := range members {
+		s, ok := m.(string)
+		if !ok {
+			coerced[i] = m
+			continue
+		}
+		if f, err := strconv.ParseFloat(s, 64); err == nil {
+			coerced[i] = f
+			continue
+		}
+		coerced[i] = m
+	}
+	schema[PropEnum] = coerced
 }
