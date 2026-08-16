@@ -28,6 +28,9 @@ import (
 var (
 	// ErrEmptyID is returned when an Item has no identifier.
 	ErrEmptyID = errors.New("empty id")
+	// ErrDuplicateID is returned when a slice of items contains the same ID
+	// more than once, which would make pair and cluster output ambiguous.
+	ErrDuplicateID = errors.New("duplicate id")
 	// ErrEmptyVector is returned when a vector has no components.
 	ErrEmptyVector = errors.New("empty vector")
 	// ErrInvalidVector is returned when a vector contains a non-finite
@@ -131,21 +134,36 @@ func dot(a, b Vector) float64 {
 	return sum
 }
 
-// cosineSimilarity returns the cosine similarity between two raw vectors,
-// validating that they share a dimension and are individually valid.
-func cosineSimilarity(a, b Vector) (float64, error) {
-	if len(a) != len(b) {
-		return 0, fmt.Errorf("%w: got %d and %d", ErrDimensionMismatch, len(a), len(b))
+// normalizeItems validates every item and returns their unit-length vectors,
+// positionally aligned with items. It enforces non-empty, unique IDs, valid
+// vectors, and a single shared dimension, so batch helpers such as
+// [FindDuplicates] and [ClusterItems] apply the same validation the store does
+// regardless of how many items are supplied. Normalizing once here also avoids
+// re-normalizing the same vector across the pairwise comparison loops.
+func normalizeItems(items []Item) ([]Vector, error) {
+	normalized := make([]Vector, len(items))
+	seen := make(map[string]struct{}, len(items))
+	dim := 0
+	for i, item := range items {
+		if item.ID == "" {
+			return nil, ErrEmptyID
+		}
+		if _, ok := seen[item.ID]; ok {
+			return nil, fmt.Errorf("%w: %q", ErrDuplicateID, item.ID)
+		}
+		seen[item.ID] = struct{}{}
+		nv, err := normalize(item.Vector)
+		if err != nil {
+			return nil, fmt.Errorf("item %q: %w", item.ID, err)
+		}
+		if dim == 0 {
+			dim = len(item.Vector)
+		} else if len(item.Vector) != dim {
+			return nil, fmt.Errorf("item %q: %w: got %d, want %d", item.ID, ErrDimensionMismatch, len(item.Vector), dim)
+		}
+		normalized[i] = nv
 	}
-	na, err := normalize(a)
-	if err != nil {
-		return 0, err
-	}
-	nb, err := normalize(b)
-	if err != nil {
-		return 0, err
-	}
-	return dot(na, nb), nil
+	return normalized, nil
 }
 
 // validateThreshold rejects thresholds that are NaN or outside the cosine

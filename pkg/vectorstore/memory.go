@@ -79,6 +79,9 @@ func (s *MemoryStore) Add(ctx context.Context, item Item) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("vectorstore: add cancelled: %w", err)
+	}
 	if s.dim == 0 {
 		s.dim = len(item.Vector)
 	} else if len(item.Vector) != s.dim {
@@ -92,6 +95,9 @@ func (s *MemoryStore) Add(ctx context.Context, item Item) error {
 // similarity, breaking ties by ascending Item.ID. Returned items are deep
 // copies. It returns ErrInvalidLimit when limit is not positive.
 func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]Neighbor, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("querying nearest: %w", err)
+	}
 	if limit <= 0 {
 		return nil, fmt.Errorf("%w: %d", ErrInvalidLimit, limit)
 	}
@@ -102,6 +108,9 @@ func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("querying nearest: %w", err)
+	}
 	if s.dim != 0 && len(vector) != s.dim {
 		return nil, fmt.Errorf("querying nearest: %w: got %d, want %d", ErrDimensionMismatch, len(vector), s.dim)
 	}

@@ -30,32 +30,30 @@ func TestMemoryStoreAddValidation(t *testing.T) {
 		{
 			name: "valid",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}},
-			want: nil,
 		},
 		{
-			name: "empty id",
+			name: "emptyID",
 			item: vectorstore.Item{Vector: vectorstore.Vector{1, 0}},
 			want: vectorstore.ErrEmptyID,
 		},
 		{
-			name: "empty vector",
+			name: "emptyVector",
 			item: vectorstore.Item{ID: "a"},
 			want: vectorstore.ErrEmptyVector,
 		},
 		{
-			name: "nan component",
+			name: "nanComponent",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{nan(), 0}},
 			want: vectorstore.ErrInvalidVector,
 		},
 		{
-			name: "zero magnitude",
+			name: "zeroMagnitude",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{0, 0}},
 			want: vectorstore.ErrInvalidVector,
 		},
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := vectorstore.NewMemoryStore()
@@ -280,5 +278,21 @@ func TestMemoryStoreNearestCancelled(t *testing.T) {
 	_, err := s.Nearest(ctx, vectorstore.Vector{1, 0}, 1)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Nearest(cancelled ctx) = %v, want context.Canceled", err)
+	}
+}
+
+func TestMemoryStoreNearestCancelledEmptyStore(t *testing.T) {
+	t.Parallel()
+
+	// An empty store scans nothing, so cancellation must be detected before the
+	// scan loop or it would be silently ignored.
+	s := vectorstore.NewMemoryStore()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err := s.Nearest(ctx, vectorstore.Vector{1, 0}, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Nearest(cancelled ctx, empty store) = %v, want context.Canceled", err)
 	}
 }

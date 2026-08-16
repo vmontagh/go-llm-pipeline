@@ -1,7 +1,6 @@
 package vectorstore
 
 import (
-	"fmt"
 	"sort"
 )
 
@@ -19,10 +18,16 @@ type Cluster struct {
 // algorithm.
 //
 // Items within a cluster are sorted by ID, and clusters are sorted by their
-// first member's ID. threshold must be within the cosine range [-1, 1]. An
-// item that is similar to no other item forms a singleton cluster.
+// first member's ID. Every item is validated first: IDs must be non-empty and
+// unique, and vectors must be valid and share one dimension (see the package
+// errors). threshold must be within the cosine range [-1, 1]. An item that is
+// similar to no other item forms a singleton cluster.
 func ClusterItems(items []Item, threshold float64) ([]Cluster, error) {
 	if err := validateThreshold(threshold); err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeItems(items)
+	if err != nil {
 		return nil, err
 	}
 
@@ -32,11 +37,7 @@ func ClusterItems(items []Item, threshold float64) ([]Cluster, error) {
 	}
 	for i := range items {
 		for j := i + 1; j < len(items); j++ {
-			score, err := cosineSimilarity(items[i].Vector, items[j].Vector)
-			if err != nil {
-				return nil, fmt.Errorf("clustering items %q and %q: %w", items[i].ID, items[j].ID, err)
-			}
-			if score >= threshold {
+			if dot(normalized[i], normalized[j]) >= threshold {
 				union(parent, i, j)
 			}
 		}

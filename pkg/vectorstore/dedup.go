@@ -23,10 +23,16 @@ type Duplicate struct {
 // contents to support deduplication.
 //
 // Pairs are deduplicated (each unordered pair appears once, with A.ID < B.ID)
-// and the result is sorted by (A.ID, B.ID) for deterministic output. threshold
-// must be within the cosine range [-1, 1].
+// and the result is sorted by (A.ID, B.ID) for deterministic output. Every item
+// is validated first: IDs must be non-empty and unique, and vectors must be
+// valid and share one dimension (see the package errors). threshold must be
+// within the cosine range [-1, 1].
 func FindDuplicates(ctx context.Context, items []Item, threshold float64) ([]Duplicate, error) {
 	if err := validateThreshold(threshold); err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeItems(items)
+	if err != nil {
 		return nil, err
 	}
 
@@ -36,10 +42,7 @@ func FindDuplicates(ctx context.Context, items []Item, threshold float64) ([]Dup
 			return nil, fmt.Errorf("finding duplicates: %w", err)
 		}
 		for j := i + 1; j < len(items); j++ {
-			score, err := cosineSimilarity(items[i].Vector, items[j].Vector)
-			if err != nil {
-				return nil, fmt.Errorf("comparing items %q and %q: %w", items[i].ID, items[j].ID, err)
-			}
+			score := dot(normalized[i], normalized[j])
 			if score >= threshold {
 				a, b := orderPair(items[i], items[j])
 				dups = append(dups, Duplicate{A: copyItem(a), B: copyItem(b), Score: score})

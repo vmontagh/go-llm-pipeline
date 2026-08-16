@@ -97,3 +97,47 @@ func TestClusterItemsDimensionMismatch(t *testing.T) {
 		t.Fatalf("ClusterItems(mismatched dims) = %v, want ErrDimensionMismatch", err)
 	}
 }
+
+func TestClusterItemsInvalidItem(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		items []vectorstore.Item
+		want  error
+	}{
+		{
+			name:  "emptyIDSingleton",
+			items: []vectorstore.Item{{Vector: vectorstore.Vector{1, 0}}},
+			want:  vectorstore.ErrEmptyID,
+		},
+		{
+			name:  "emptyVectorSingleton",
+			items: []vectorstore.Item{{ID: "a"}},
+			want:  vectorstore.ErrEmptyVector,
+		},
+		{
+			name:  "zeroMagnitudeSingleton",
+			items: []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{0, 0}}},
+			want:  vectorstore.ErrInvalidVector,
+		},
+		{
+			name: "duplicateID",
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "a", Vector: vectorstore.Vector{0, 1}},
+			},
+			want: vectorstore.ErrDuplicateID,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := vectorstore.ClusterItems(tc.items, 0.5)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("ClusterItems(%s) = %v, want %v", tc.name, err, tc.want)
+			}
+		})
+	}
+}
