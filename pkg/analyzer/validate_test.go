@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -21,6 +22,7 @@ func TestSchemaOfNumericEnum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaOf(roll{}) unexpected error: %v", err)
 	}
+	intMin, intMax := signedBounds(strconv.IntSize)
 	want := map[string]any{
 		analyzer.PropType:       analyzer.TypeObject,
 		analyzer.PropAdditional: false,
@@ -28,8 +30,8 @@ func TestSchemaOfNumericEnum(t *testing.T) {
 		analyzer.PropProperties: map[string]any{
 			"face": map[string]any{
 				analyzer.PropType:    analyzer.TypeInteger,
-				analyzer.PropMinimum: json.Number("-9223372036854775808"),
-				analyzer.PropMaximum: json.Number("9223372036854775807"),
+				analyzer.PropMinimum: json.Number(intMin),
+				analyzer.PropMaximum: json.Number(intMax),
 				analyzer.PropEnum:    []any{json.Number("1"), json.Number("2"), json.Number("3")},
 			},
 		},

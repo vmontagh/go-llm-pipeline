@@ -283,3 +283,143 @@ func TestNestedFixedArrayLength(t *testing.T) {
 		t.Errorf("Validate([[1,2],[3,4]]) error = %v, want nil", err)
 	}
 }
+
+// TestTypelessSchemaKeywords covers V1: a schema with no type keyword still
+// enforces the keywords relevant to the instance's own kind rather than failing
+// open, and never reports a type mismatch (absence means any type is allowed).
+func TestTypelessSchemaKeywords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		schema  map[string]any
+		data    string
+		wantErr bool
+	}{
+		{
+			name:    "required without type rejects empty object",
+			schema:  map[string]any{analyzer.PropRequired: []any{"id"}},
+			data:    `{}`,
+			wantErr: true,
+		},
+		{
+			name:   "required without type accepts present property",
+			schema: map[string]any{analyzer.PropRequired: []any{"id"}},
+			data:   `{"id":1}`,
+		},
+		{
+			name:    "minLength without type rejects short string",
+			schema:  map[string]any{analyzer.PropMinLength: json.Number("3")},
+			data:    `"ab"`,
+			wantErr: true,
+		},
+		{
+			name:   "minLength without type accepts long string",
+			schema: map[string]any{analyzer.PropMinLength: json.Number("3")},
+			data:   `"abcd"`,
+		},
+		{
+			name:   "minLength without type ignores non-string",
+			schema: map[string]any{analyzer.PropMinLength: json.Number("3")},
+			data:   `5`,
+		},
+		{
+			name:    "minimum without type rejects below",
+			schema:  map[string]any{analyzer.PropMinimum: json.Number("10")},
+			data:    `5`,
+			wantErr: true,
+		},
+		{
+			name:   "minimum without type accepts above",
+			schema: map[string]any{analyzer.PropMinimum: json.Number("10")},
+			data:   `12`,
+		},
+		{
+			name: "typeless object properties enforced",
+			schema: map[string]any{
+				analyzer.PropProperties: map[string]any{
+					"a": map[string]any{analyzer.PropType: analyzer.TypeInteger},
+				},
+				analyzer.PropAdditional: false,
+			},
+			data:    `{"b":1}`,
+			wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := analyzer.Validate(tc.schema, []byte(tc.data))
+			if tc.wantErr {
+				if !errors.Is(err, analyzer.ErrSchemaValidation) {
+					t.Errorf("Validate() error = %v, want ErrSchemaValidation", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestExtractNonObjectRoot covers V2: Extract rejects a WithSchema whose root
+// type is present and not object, before any provider call, while object-root
+// and typeless-root schemas still work.
+func TestExtractNonObjectRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		schema  map[string]any
+		wantErr bool
+	}{
+		{
+			name:    "array root rejected",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeArray, analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeInteger}},
+			wantErr: true,
+		},
+		{
+			name:    "string root rejected",
+			schema:  map[string]any{analyzer.PropType: analyzer.TypeString},
+			wantErr: true,
+		},
+		{
+			name: "object root accepted",
+			schema: map[string]any{
+				analyzer.PropType: analyzer.TypeObject,
+				analyzer.PropProperties: map[string]any{
+					"number": map[string]any{analyzer.PropType: analyzer.TypeString},
+					"total":  map[string]any{analyzer.PropType: analyzer.TypeNumber},
+				},
+			},
+		},
+		{
+			name: "typeless root accepted",
+			schema: map[string]any{
+				analyzer.PropProperties: map[string]any{
+					"number": map[string]any{analyzer.PropType: analyzer.TypeString},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &scriptedAnalyzer{responses: []string{`{"number":"A-1","total":1}`}}
+			_, err := analyzer.Extract[invoice](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"}, analyzer.WithSchema(tc.schema))
+			if tc.wantErr {
+				if !errors.Is(err, analyzer.ErrSchemaDerivation) {
+					t.Errorf("Extract() error = %v, want ErrSchemaDerivation", err)
+				}
+				if len(a.prompts) != 0 {
+					t.Errorf("Analyze called %d times, want 0", len(a.prompts))
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("Extract() error = %v, want nil", err)
+			}
+		})
+	}
+}

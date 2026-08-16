@@ -159,6 +159,15 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 		schema = derived
 	}
 
+	// Extract targets an object root (SchemaOf is struct-only and the response
+	// parser finds JSON objects), so reject a WithSchema whose root type is
+	// present and not "object" before any provider call rather than mislabeling
+	// every valid non-object response as malformed JSON. A typeless root is
+	// treated as an object, matching prior behavior.
+	if display, objectRoot, present := rootObjectType(schema); present && !objectRoot {
+		return zero, fmt.Errorf("%w: Extract requires an object root schema, got type %q", ErrSchemaDerivation, display)
+	}
+
 	// Marshal the schema once, before any provider call, so a schema that cannot
 	// be rendered (for example a WithSchema map holding a non-finite float) fails
 	// fast instead of silently sending the model no constraints.
@@ -191,6 +200,21 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 	}
 
 	return zero, fmt.Errorf("%w: %d attempts: %w", ErrMaxAttemptsExceeded, cfg.maxAttempts, lastErr)
+}
+
+// rootObjectType reports whether a schema's root type keyword permits an object
+// root. A typeless root is treated as an object (SchemaOf's struct-only
+// contract); a root type present as any value other than the single string
+// "object" is not an object root, and display names it for the error message.
+func rootObjectType(schema map[string]any) (display string, objectRoot, present bool) {
+	raw, ok := schema[PropType]
+	if !ok {
+		return "", true, false
+	}
+	if s, isString := raw.(string); isString {
+		return s, s == TypeObject, true
+	}
+	return fmt.Sprintf("%v", raw), false, true
 }
 
 // decodeAndValidate finds the first JSON object in raw, validates it against
