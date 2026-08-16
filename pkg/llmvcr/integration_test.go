@@ -1,7 +1,6 @@
 package llmvcr_test
 
 import (
-	"context"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -36,7 +35,7 @@ func TestIntegration_OpenAI_RecordReplayScrub(t *testing.T) {
 		openai.WithHTTPClient(recRec.HTTPClient()),
 		openai.WithBaseURL(srv.URL),
 	)
-	got := p.Call(context.Background(), &provpkg.Lease[string]{Value: secretAPIKey}, "prompt", nil)
+	got := p.Call(t.Context(), &provpkg.Lease[string]{Value: secretAPIKey}, "prompt", nil)
 	if got.Outcome != provpkg.OutcomeSuccess {
 		t.Fatalf("record Call outcome = %v (err %v), want OutcomeSuccess", got.Outcome, got.Err)
 	}
@@ -62,7 +61,7 @@ func TestIntegration_OpenAI_RecordReplayScrub(t *testing.T) {
 		openai.WithHTTPClient(replayRec.HTTPClient()),
 		openai.WithBaseURL("https://example.invalid"),
 	)
-	rgot := rp.Call(context.Background(), &provpkg.Lease[string]{Value: "unused"}, "prompt", nil)
+	rgot := rp.Call(t.Context(), &provpkg.Lease[string]{Value: "unused"}, "prompt", nil)
 	if rgot.Outcome != provpkg.OutcomeSuccess {
 		t.Fatalf("replay Call outcome = %v (err %v), want OutcomeSuccess", rgot.Outcome, rgot.Err)
 	}
@@ -73,7 +72,7 @@ func TestIntegration_OpenAI_RecordReplayScrub(t *testing.T) {
 
 func newGeminiClient(t *testing.T, endpoint string, httpClient *http.Client) *genai.Client {
 	t.Helper()
-	client, err := genai.NewClient(context.Background(),
+	client, err := genai.NewClient(t.Context(),
 		option.WithHTTPClient(httpClient),
 		option.WithEndpoint(endpoint),
 		option.WithAPIKey("fake-gemini-key"),
@@ -101,7 +100,7 @@ func TestIntegration_Gemini_RecordReplay(t *testing.T) {
 	}
 	client := newGeminiClient(t, srv.URL, recRec.HTTPClient())
 	p := gemini.NewProvider(gemini.DefaultModel, []*genai.Client{client})
-	got := p.Call(context.Background(), &provpkg.Lease[*genai.Client]{Value: client}, "prompt", nil)
+	got := p.Call(t.Context(), &provpkg.Lease[*genai.Client]{Value: client}, "prompt", nil)
 	if got.Outcome != provpkg.OutcomeSuccess {
 		t.Fatalf("record Call outcome = %v (err %v), want OutcomeSuccess", got.Outcome, got.Err)
 	}
@@ -125,7 +124,7 @@ func TestIntegration_Gemini_RecordReplay(t *testing.T) {
 	t.Cleanup(func() { stopRec(t, replayRec) })
 	rclient := newGeminiClient(t, "https://generativelanguage.googleapis.com", replayRec.HTTPClient())
 	rp := gemini.NewProvider(gemini.DefaultModel, []*genai.Client{rclient})
-	rgot := rp.Call(context.Background(), &provpkg.Lease[*genai.Client]{Value: rclient}, "prompt", nil)
+	rgot := rp.Call(t.Context(), &provpkg.Lease[*genai.Client]{Value: rclient}, "prompt", nil)
 	if rgot.Outcome != provpkg.OutcomeSuccess {
 		t.Fatalf("replay Call outcome = %v (err %v), want OutcomeSuccess", rgot.Outcome, rgot.Err)
 	}

@@ -2,7 +2,6 @@ package llmvcr_test
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/vmontagh/go-llm-pipeline/pkg/llmvcr"
 	"github.com/vmontagh/go-llm-pipeline/pkg/scrub"
 )
@@ -25,7 +25,7 @@ const (
 // doPOST issues a JSON POST through client and drains the response body.
 func doPOST(t *testing.T, client *http.Client, u, body string, header http.Header) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, u, bytes.NewBufferString(body))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, u, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() = %v", err)
 	}
@@ -117,43 +117,38 @@ func TestRecord_RedactsSecretsBeforeWrite(t *testing.T) {
 	}
 }
 
-func TestRecord_PrettyJSONBody(t *testing.T) {
+func TestRecord_PrettyJSON(t *testing.T) {
 	t.Parallel()
-	srv := newJSONServer(t, `{"response":"compact"}`)
-	cassettePath := filepath.Join(t.TempDir(), "pretty")
-
-	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce)
-	if err != nil {
-		t.Fatalf("New() = %v", err)
-	}
-	doPOST(t, rec.HTTPClient(), srv.URL, `{"request":"compact"}`, nil)
-	if err := rec.Stop(); err != nil {
-		t.Fatalf("Stop() = %v", err)
+	const prettyMarker = "\"response\": \"compact\""
+	tests := []struct {
+		name       string
+		prettyJSON bool
+		wantPretty bool
+	}{
+		{name: "enabled by default", prettyJSON: true, wantPretty: true},
+		{name: "disabled", prettyJSON: false, wantPretty: false},
 	}
 
-	got := readCassette(t, cassettePath+".yaml")
-	if !strings.Contains(got, "\"response\": \"compact\"") {
-		t.Errorf("response body not pretty-printed:\n%s", got)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newJSONServer(t, `{"response":"compact"}`)
+			cassettePath := filepath.Join(t.TempDir(), "pretty")
 
-func TestRecord_PrettyJSONDisabled(t *testing.T) {
-	t.Parallel()
-	srv := newJSONServer(t, `{"response":"compact"}`)
-	cassettePath := filepath.Join(t.TempDir(), "compact")
+			rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce, llmvcr.WithPrettyJSON(tt.prettyJSON))
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			doPOST(t, rec.HTTPClient(), srv.URL, `{"request":"compact"}`, nil)
+			if err := rec.Stop(); err != nil {
+				t.Fatalf("Stop() = %v", err)
+			}
 
-	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce, llmvcr.WithPrettyJSON(false))
-	if err != nil {
-		t.Fatalf("New() = %v", err)
-	}
-	doPOST(t, rec.HTTPClient(), srv.URL, `{"request":"compact"}`, nil)
-	if err := rec.Stop(); err != nil {
-		t.Fatalf("Stop() = %v", err)
-	}
-
-	got := readCassette(t, cassettePath+".yaml")
-	if strings.Contains(got, "\"response\": \"compact\"") {
-		t.Errorf("response body pretty-printed despite WithPrettyJSON(false):\n%s", got)
+			gotPretty := strings.Contains(readCassette(t, cassettePath+".yaml"), prettyMarker)
+			if diff := cmp.Diff(tt.wantPretty, gotPretty); diff != "" {
+				t.Errorf("pretty-printed mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -174,27 +169,47 @@ func recordKnownPath(t *testing.T) string {
 	return cassettePath
 }
 
-func TestReplayOnly_FailFastReturnsErrCassetteMiss(t *testing.T) {
+func TestReplayOnly_FailFastOnMiss(t *testing.T) {
 	t.Parallel()
-	cassettePath := recordKnownPath(t)
+	tests := []struct {
+		name      string
+		failFast  bool
+		wantErrIs error
+	}{
+		{name: "fail-fast returns ErrCassetteMiss", failFast: true, wantErrIs: llmvcr.ErrCassetteMiss},
+		{name: "disabled attempts live call", failFast: false, wantErrIs: nil},
+	}
 
-	rec, err := llmvcr.New(cassettePath, llmvcr.ModeReplayOnly)
-	if err != nil {
-		t.Fatalf("New() = %v", err)
-	}
-	t.Cleanup(func() { stopRec(t, rec) })
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cassettePath := recordKnownPath(t)
+			rec, err := llmvcr.New(cassettePath, llmvcr.ModeReplayOnly, llmvcr.WithFailFastOnMiss(tt.failFast))
+			if err != nil {
+				t.Fatalf("New() = %v", err)
+			}
+			t.Cleanup(func() { stopRec(t, rec) })
 
-	// Request a path not present in the cassette -> miss.
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://api.openai.com/v1/unknown", http.NoBody)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext() = %v", err)
-	}
-	resp, err := rec.HTTPClient().Do(req)
-	if err == nil {
-		_ = resp.Body.Close()
-	}
-	if !errors.Is(err, llmvcr.ErrCassetteMiss) {
-		t.Errorf("Do() error = %v, want errors.Is(_, ErrCassetteMiss)", err)
+			// Request a path not present in the cassette -> miss.
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://example.invalid/v1/unknown", http.NoBody)
+			if err != nil {
+				t.Fatalf("NewRequestWithContext() = %v", err)
+			}
+			resp, err := rec.HTTPClient().Do(req)
+			if err == nil {
+				_ = resp.Body.Close()
+			}
+			if tt.wantErrIs != nil {
+				if !errors.Is(err, tt.wantErrIs) {
+					t.Errorf("Do() error = %v, want errors.Is(_, %v)", err, tt.wantErrIs)
+				}
+				return
+			}
+			// A real transport is used, so the error must NOT be our sentinel.
+			if errors.Is(err, llmvcr.ErrCassetteMiss) {
+				t.Errorf("Do() returned ErrCassetteMiss despite WithFailFastOnMiss(false)")
+			}
+		})
 	}
 }
 
@@ -221,7 +236,7 @@ func TestRecordThenReplay_RoundTrip(t *testing.T) {
 	}
 	t.Cleanup(func() { stopRec(t, replayRec) })
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, "https://example.invalid/v1/chat/completions", bytes.NewBufferString(`{"prompt":"hi"}`))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "https://example.invalid/v1/chat/completions", bytes.NewBufferString(`{"prompt":"hi"}`))
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() = %v", err)
 	}
@@ -234,8 +249,8 @@ func TestRecordThenReplay_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadAll(replay) = %v", err)
 	}
-	if got := strings.TrimSpace(string(body)); got != wantBody {
-		t.Errorf("replayed body = %q, want %q", got, wantBody)
+	if diff := cmp.Diff(wantBody, strings.TrimSpace(string(body))); diff != "" {
+		t.Errorf("replayed body mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -257,28 +272,5 @@ func TestWithAdditionalScrubRules(t *testing.T) {
 	got := readCassette(t, cassettePath+".yaml")
 	if strings.Contains(got, "topsecret-value") {
 		t.Errorf("custom scrub rule not applied:\n%s", got)
-	}
-}
-
-func TestWithFailFastOnMissDisabled_AttemptsLiveCall(t *testing.T) {
-	t.Parallel()
-	cassettePath := recordKnownPath(t)
-	rec, err := llmvcr.New(cassettePath, llmvcr.ModeReplayOnly, llmvcr.WithFailFastOnMiss(false))
-	if err != nil {
-		t.Fatalf("New() = %v", err)
-	}
-	t.Cleanup(func() { stopRec(t, rec) })
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.invalid/v1/unknown", http.NoBody)
-	if err != nil {
-		t.Fatalf("NewRequestWithContext() = %v", err)
-	}
-	resp, err := rec.HTTPClient().Do(req)
-	if err == nil {
-		_ = resp.Body.Close()
-	}
-	// A real transport is used, so the error must NOT be our sentinel.
-	if errors.Is(err, llmvcr.ErrCassetteMiss) {
-		t.Errorf("Do() returned ErrCassetteMiss despite WithFailFastOnMiss(false)")
 	}
 }
