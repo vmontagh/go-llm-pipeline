@@ -27,6 +27,7 @@ var (
 	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 	jsonMarshalerType   = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
 	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
+	jsonNumberType      = reflect.TypeOf(json.Number(""))
 )
 
 // SchemaOf reflects a JSON Schema (as a provider-agnostic map) from v, which
@@ -104,6 +105,12 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 	}
 	switch t.Kind() {
 	case reflect.String:
+		// encoding/json marshals json.Number as a bare JSON number, not a quoted
+		// string, even though its kind is reflect.String; describe it as a number
+		// so a numeric response validates and decodes.
+		if t == jsonNumberType {
+			return map[string]any{PropType: TypeNumber}, nil
+		}
 		return map[string]any{PropType: TypeString}, nil
 	case reflect.Bool:
 		return map[string]any{PropType: TypeBoolean}, nil
@@ -113,6 +120,13 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 	case reflect.Float32, reflect.Float64:
 		return floatSchema(t.Kind()), nil
 	case reflect.Slice:
+		// encoding/json marshals a byte slice as a base64 string, not a JSON array,
+		// so describe it as type:string and record the marker that drives a
+		// decode-backed base64 check (schema-valid iff base64-decodable). A named
+		// byte element decodes identically, so it takes the same path.
+		if t.Elem().Kind() == reflect.Uint8 {
+			return map[string]any{PropType: TypeString, PropStringEncodedKind: StringEncodedBytes}, nil
+		}
 		items, err := schemaForType(t.Elem(), seen)
 		if err != nil {
 			return nil, err

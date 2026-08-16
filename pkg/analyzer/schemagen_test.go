@@ -559,20 +559,22 @@ func TestSchemaOfNumericWidthBounds(t *testing.T) {
 }
 
 // TestSchemaOfNestedNumericBounds covers the S5 sweep: nested slice-element
-// numerics inherit the derived width bounds.
+// numerics inherit the derived width bounds. A []uint8 is deliberately excluded
+// here because encoding/json marshals it as a base64 string (W11), so a wider
+// element type exercises the array-element path.
 func TestSchemaOfNestedNumericBounds(t *testing.T) {
 	t.Parallel()
 
-	schema, err := schemaOfField(t, reflect.TypeOf([]uint8(nil)), "field", "")
+	schema, err := schemaOfField(t, reflect.TypeOf([]uint16(nil)), "field", "")
 	if err != nil {
-		t.Fatalf("schemaOfField([]uint8) error: %v", err)
+		t.Fatalf("schemaOfField([]uint16) error: %v", err)
 	}
 	items, ok := prop(schema, "field")[analyzer.PropItems].(map[string]any)
 	if !ok {
 		t.Fatalf("items not a schema map: %#v", prop(schema, "field"))
 	}
-	if got := items[analyzer.PropMaximum]; got != json.Number("255") {
-		t.Errorf("[]uint8 element maximum = %v, want 255", got)
+	if got := items[analyzer.PropMaximum]; got != json.Number("65535") {
+		t.Errorf("[]uint16 element maximum = %v, want 65535", got)
 	}
 }
 
@@ -1322,5 +1324,79 @@ func TestSchemaOfNumericEnum(t *testing.T) {
 	}
 	if err := analyzer.Validate(got, []byte(`{"face":9}`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
 		t.Errorf("Validate(face=9) = %v, want ErrSchemaValidation", err)
+	}
+}
+
+// TestSchemaByteSliceIsBase64String covers W11: encoding/json marshals a byte
+// slice as a base64 string, so its derived schema is type:string with the
+// base64 decode marker rather than a JSON array.
+func TestSchemaByteSliceIsBase64String(t *testing.T) {
+	t.Parallel()
+
+	type namedByte byte
+	want := map[string]any{
+		analyzer.PropType:              analyzer.TypeString,
+		analyzer.PropStringEncodedKind: analyzer.StringEncodedBytes,
+	}
+	tests := []struct {
+		name string
+		typ  reflect.Type
+	}{
+		{name: "byte_slice", typ: reflect.TypeOf([]byte(nil))},
+		{name: "uint8_slice", typ: reflect.TypeOf([]uint8(nil))},
+		{name: "named_byte_slice", typ: reflect.TypeOf([]namedByte(nil))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema, err := schemaOfField(t, tc.typ, "field", "")
+			if err != nil {
+				t.Fatalf("schemaOfField(%s) error: %v", tc.typ, err)
+			}
+			if diff := cmp.Diff(want, prop(schema, "field")); diff != "" {
+				t.Errorf("schema mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestSchemaByteArrayStaysArray guards W11: a fixed-size [N]byte array marshals
+// as a JSON array (not base64), so its schema must remain type:array with exact
+// bounds and must never gain the base64 string marker.
+func TestSchemaByteArrayStaysArray(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]any{
+		analyzer.PropType: analyzer.TypeArray,
+		analyzer.PropItems: map[string]any{
+			analyzer.PropType:    analyzer.TypeInteger,
+			analyzer.PropMinimum: json.Number("0"),
+			analyzer.PropMaximum: json.Number("255"),
+		},
+		analyzer.PropMinItems: json.Number("2"),
+		analyzer.PropMaxItems: json.Number("2"),
+	}
+	schema, err := schemaOfField(t, reflect.TypeOf([2]byte{}), "field", "")
+	if err != nil {
+		t.Fatalf("schemaOfField([2]byte) error: %v", err)
+	}
+	if diff := cmp.Diff(want, prop(schema, "field")); diff != "" {
+		t.Errorf("schema mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestSchemaJSONNumberIsNumber covers W12: encoding/json marshals json.Number as
+// a bare JSON number, so its schema is type:number even though its reflect.Kind
+// is String.
+func TestSchemaJSONNumberIsNumber(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]any{analyzer.PropType: analyzer.TypeNumber}
+	schema, err := schemaOfField(t, reflect.TypeOf(json.Number("")), "field", "")
+	if err != nil {
+		t.Fatalf("schemaOfField(json.Number) error: %v", err)
+	}
+	if diff := cmp.Diff(want, prop(schema, "field")); diff != "" {
+		t.Errorf("schema mismatch (-want +got):\n%s", diff)
 	}
 }

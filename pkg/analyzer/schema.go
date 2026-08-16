@@ -25,10 +25,17 @@ const (
 	PropMaxLength   = "maxLength"
 	PropPattern     = "pattern"
 	// PropStringEncodedKind is an internal, non-standard keyword recording the Go
-	// scalar kind a json:",string" field decodes into (for example "int8" or
-	// "float64"). Validate uses it to confirm a quoted payload actually decodes
-	// into that kind rather than approximating the numeric/bool grammar with a
-	// regular expression, so schema-validity and decodability stay identical by
-	// construction. The wire contract to the model remains type:string.
+	// type a type:string field decodes into: a json:",string" scalar kind (for
+	// example "int8" or "float64") or StringEncodedBytes for a byte slice that
+	// encoding/json marshals as a base64 string. Validate uses it to confirm a
+	// quoted payload actually decodes into that type rather than approximating the
+	// grammar with a regular expression, so schema-validity and decodability stay
+	// identical by construction. The wire contract to the model remains
+	// type:string.
 	PropStringEncodedKind = "x-goStringKind"
+	// StringEncodedBytes is the PropStringEncodedKind token for a []byte field,
+	// which encoding/json marshals as a base64 string rather than a JSON array. It
+	// is deliberately not a reflect.Kind name so it cannot collide with a scalar
+	// kind token.
+	StringEncodedBytes = "bytes"
 )

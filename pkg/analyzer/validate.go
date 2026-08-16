@@ -496,9 +496,11 @@ func validateStringEncoded(schema map[string]any, s, path string, errs *[]error)
 }
 
 // stringDecodesInto reports whether s, as a JSON string payload, decodes into a
-// json:",string" field of type elem. It reproduces encoding/json's exact behavior
-// (including width limits and its number grammar) by unmarshaling into a
-// dynamically built holder struct, so validation and decoding never diverge.
+// field of type elem. It reproduces encoding/json's exact behavior by
+// unmarshaling into a dynamically built holder struct, so validation and decoding
+// never diverge: for a scalar the json:",string" tag enforces the width limits and
+// number grammar, and for a byte slice (where json ignores ,string) it enforces
+// base64 decodability.
 func stringDecodesInto(elem reflect.Type, s string) bool {
 	holder := reflect.StructOf([]reflect.StructField{{
 		Name: "V",
@@ -516,8 +518,10 @@ func stringDecodesInto(elem reflect.Type, s string) bool {
 	return json.Unmarshal(body, reflect.New(holder).Interface()) == nil
 }
 
-// stringEncodedKindTypes maps a reflect.Kind name to a representative type, so
-// validateStringEncoded can reconstruct the decode target from the schema keyword.
+// stringEncodedKindTypes maps a PropStringEncodedKind token to a representative
+// decode target, so validateStringEncoded can reconstruct it from the schema
+// keyword. Scalar kinds use their reflect.Kind name; StringEncodedBytes maps to a
+// byte slice, which encoding/json decodes from a base64 string.
 var stringEncodedKindTypes = map[string]reflect.Type{
 	reflect.Bool.String():    reflect.TypeOf(false),
 	reflect.Int.String():     reflect.TypeOf(int(0)),
@@ -533,6 +537,7 @@ var stringEncodedKindTypes = map[string]reflect.Type{
 	reflect.Uintptr.String(): reflect.TypeOf(uintptr(0)),
 	reflect.Float32.String(): reflect.TypeOf(float32(0)),
 	reflect.Float64.String(): reflect.TypeOf(float64(0)),
+	StringEncodedBytes:       reflect.TypeOf([]byte(nil)),
 }
 
 func stringEncodedKindType(name string) (reflect.Type, bool) {

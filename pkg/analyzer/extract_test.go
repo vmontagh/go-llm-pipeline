@@ -458,3 +458,46 @@ func TestExtractStrictDecoding(t *testing.T) {
 		})
 	}
 }
+
+// TestExtractByteSliceRoundTrip covers W11: a []byte field round-trips through a
+// base64 string response, so a schema-valid model reply decodes without a
+// false-negative retry loop.
+func TestExtractByteSliceRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	type withBytes struct {
+		B []byte `json:"b"`
+	}
+	a := &scriptedAnalyzer{responses: []string{`{"b":"aGk="}`}}
+	got, err := analyzer.Extract[withBytes](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Extract[withBytes] error: %v", err)
+	}
+	if diff := cmp.Diff([]byte("hi"), got.B); diff != "" {
+		t.Errorf("decoded bytes mismatch (-want +got):\n%s", diff)
+	}
+	if len(a.prompts) != 1 {
+		t.Errorf("Analyze called %d times, want 1", len(a.prompts))
+	}
+}
+
+// TestExtractJSONNumberRoundTrip covers W12: a json.Number field round-trips
+// through a bare numeric response instead of being rejected as a non-string.
+func TestExtractJSONNumberRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	type withNumber struct {
+		N json.Number `json:"n"`
+	}
+	a := &scriptedAnalyzer{responses: []string{`{"n":12}`}}
+	got, err := analyzer.Extract[withNumber](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"})
+	if err != nil {
+		t.Fatalf("Extract[withNumber] error: %v", err)
+	}
+	if got.N != json.Number("12") {
+		t.Errorf("Extract[withNumber].N = %q, want %q", got.N, "12")
+	}
+	if len(a.prompts) != 1 {
+		t.Errorf("Analyze called %d times, want 1", len(a.prompts))
+	}
+}
