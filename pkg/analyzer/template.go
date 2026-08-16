@@ -32,6 +32,7 @@ type Template[T any, R any] struct {
 	backOff         backoff.BackOff
 	shortCooldown   time.Duration
 	scrubFn         func(string) string
+	maxAssetBytes   int64
 }
 
 type templateConfig struct {
@@ -43,6 +44,7 @@ type templateConfig struct {
 	backOff         backoff.BackOff
 	shortCooldown   time.Duration
 	scrubFn         func(string) string
+	maxAssetBytes   int64
 }
 
 const defaultShortCooldownRetryThreshold = 5 * time.Second
@@ -92,6 +94,17 @@ func WithTemplateScrubFunc(fn func(string) string) TemplateConfigurator {
 	return templateConfiguratorFunc(func(c *templateConfig) { c.scrubFn = fn })
 }
 
+// WithTemplateMaxAssetBytes bounds how many bytes AnalyzeAsset reads from an
+// Asset payload. A value of zero disables the bound; a negative value is
+// ignored. Defaults to DefaultMaxAssetBytes.
+func WithTemplateMaxAssetBytes(n int64) TemplateConfigurator {
+	return templateConfiguratorFunc(func(c *templateConfig) {
+		if n >= 0 {
+			c.maxAssetBytes = n
+		}
+	})
+}
+
 func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, error), opts ...TemplateConfigurator) (*Template[T, R], error) {
 	if p == nil {
 		return nil, ErrNilProvider
@@ -105,6 +118,7 @@ func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, e
 		policy:        DefaultRetryPolicy(),
 		shortCooldown: defaultShortCooldownRetryThreshold,
 		scrubFn:       func(s string) string { return s },
+		maxAssetBytes: DefaultMaxAssetBytes,
 	}
 	for _, o := range opts {
 		if o != nil {
@@ -122,6 +136,7 @@ func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, e
 		backOff:         cfg.backOff,
 		shortCooldown:   cfg.shortCooldown,
 		scrubFn:         cfg.scrubFn,
+		maxAssetBytes:   cfg.maxAssetBytes,
 	}, nil
 }
 
@@ -166,21 +181,39 @@ func (t *Template[T, R]) Analyze(
 }
 
 // AnalyzeAsset runs the analysis Template for a single Asset. It reads the
-// asset payload into memory, forwards it to the provider alongside prompt, and
-// uses asset.ID to correlate published events. A nil payload is forwarded as no
-// binary data.
+// asset payload (bounded by the configured maximum size and honoring ctx
+// cancellation) and uses asset.ID to correlate published events. Textual assets
+// (see MetadataContentType) are folded into the prompt; every other media type,
+// including images, is forwarded to the provider as binary data. A nil payload
+// is forwarded as no binary data.
 func (t *Template[T, R]) AnalyzeAsset(
 	ctx context.Context,
 	prompt string,
 	asset Asset,
 	publish func(eventType, itemID, message string, isError bool),
 ) (R, error) {
-	payload, err := asset.payloadBytes()
+	payload, err := asset.payloadBytes(ctx, t.maxAssetBytes)
 	if err != nil {
 		var zero R
 		return zero, err
 	}
+	if isTextualContentType(asset.contentType()) {
+		return t.Analyze(ctx, joinPromptPayload(prompt, payload), nil, asset.ID, publish)
+	}
 	return t.Analyze(ctx, prompt, payload, asset.ID, publish)
+}
+
+// joinPromptPayload appends a textual payload to prompt, separated by a blank
+// line. Empty operands are handled without introducing stray separators.
+func joinPromptPayload(prompt string, payload []byte) string {
+	switch {
+	case len(payload) == 0:
+		return prompt
+	case prompt == "":
+		return string(payload)
+	default:
+		return prompt + "\n\n" + string(payload)
+	}
 }
 
 type callOnceParams struct {
