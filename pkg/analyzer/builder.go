@@ -73,6 +73,13 @@ func (b *Builder[T, R]) WithShortCooldownRetryThreshold(d time.Duration) *Builde
 	return b
 }
 
+// WithMaxAssetBytes bounds how many bytes AnalyzeAsset reads from an Asset
+// payload. Zero disables the bound; negative values are ignored.
+func (b *Builder[T, R]) WithMaxAssetBytes(n int64) *Builder[T, R] {
+	b.opts = append(b.opts, WithTemplateMaxAssetBytes(n))
+	return b
+}
+
 // Build assembles the Template around the configured Provider and returns the concrete *Template[T, R].
 func (b *Builder[T, R]) Build() (*Template[T, R], error) {
 	return NewTemplate[T, R](b.provider, b.parser, b.opts...)
