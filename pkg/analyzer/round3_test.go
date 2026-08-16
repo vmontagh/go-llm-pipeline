@@ -7,6 +7,7 @@ import (
 	"math"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -34,12 +35,13 @@ func TestSchemaOfMap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SchemaOf(counts{}) error: %v", err)
 		}
+		intMin, intMax := signedBounds(strconv.IntSize)
 		want := map[string]any{
 			analyzer.PropType: analyzer.TypeObject,
 			analyzer.PropAdditional: map[string]any{
 				analyzer.PropType:    analyzer.TypeInteger,
-				analyzer.PropMinimum: json.Number("-9223372036854775808"),
-				analyzer.PropMaximum: json.Number("9223372036854775807"),
+				analyzer.PropMinimum: json.Number(intMin),
+				analyzer.PropMaximum: json.Number(intMax),
 			},
 		}
 		if diff := cmp.Diff(want, prop(got, "scores")); diff != "" {
@@ -212,8 +214,13 @@ func TestExtractSchemaMarshalFailure(t *testing.T) {
 	t.Parallel()
 
 	badSchema := map[string]any{
-		analyzer.PropType:    analyzer.TypeNumber,
-		analyzer.PropMinimum: math.NaN(),
+		analyzer.PropType: analyzer.TypeObject,
+		analyzer.PropProperties: map[string]any{
+			"total": map[string]any{
+				analyzer.PropType:    analyzer.TypeNumber,
+				analyzer.PropMinimum: math.NaN(),
+			},
+		},
 	}
 	a := &scriptedAnalyzer{responses: []string{`{"number":"A-1","total":1}`}}
 	_, err := analyzer.Extract[invoice](t.Context(), a, analyzer.ExtractRequest{Prompt: "x"}, analyzer.WithSchema(badSchema))

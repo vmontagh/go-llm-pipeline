@@ -119,11 +119,34 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 		})
 	case present:
 		validateTypes(schema, types, value, path, errs)
+	default:
+		// A typeless schema constrains any instance, so JSON Schema still applies
+		// the keywords relevant to whatever kind the instance actually is (for
+		// example required/properties on an object, minLength on a string). It
+		// never reports a type mismatch, since absence means every type is allowed.
+		validateInferred(schema, value, path, errs)
 	}
 	// enum applies to every instance type, including arrays and objects, so it is
 	// checked once here rather than inside each structural branch.
 	if !enumAllows(schema, value) {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
+	}
+}
+
+// validateInferred applies the keyword constraints relevant to the instance's
+// own kind when the schema declares no type, so a typeless schema does not fail
+// open. A number is validated as TypeNumber (no integer check, since no type
+// declared it); bool and null carry no structural keywords.
+func validateInferred(schema map[string]any, value any, path string, errs *[]error) {
+	switch value.(type) {
+	case map[string]any:
+		validateObject(schema, value, path, errs)
+	case []any:
+		validateArray(schema, value, path, errs)
+	case string:
+		validateString(schema, value, path, errs)
+	case json.Number:
+		validateNumber(schema, TypeNumber, value, path, errs)
 	}
 }
 
