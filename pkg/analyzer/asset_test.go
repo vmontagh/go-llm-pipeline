@@ -1,7 +1,6 @@
 package analyzer
 
 import (
-	"context"
 	"errors"
 	"io"
 	"testing"
@@ -168,7 +167,7 @@ func TestTemplate_AnalyzeAsset(t *testing.T) {
 			var gotJobID string
 			publish := func(_, itemID, _ string, _ bool) { gotJobID = itemID }
 
-			got, err := tmpl.AnalyzeAsset(context.Background(), "prompt", tt.asset, publish)
+			got, err := tmpl.AnalyzeAsset(t.Context(), "prompt", tt.asset, publish)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("AnalyzeAsset error mismatch (-want +got):\n%s", diff)
