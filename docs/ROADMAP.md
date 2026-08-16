@@ -23,7 +23,7 @@
 
 Eino is an excellent fit for autonomous conversational systems (complex state graphs, ReAct loops, multi-agent delegation, and streaming chat UX). `go-llm-pipeline` is intentionally optimized for deterministic, production batch workflows.
 
-- **Deterministic testing as a first-class feature:** `pkg/llmtest` and `pkg/vcrpatch` record and replay provider HTTP interactions so CI remains fast, stable, and low-cost.
+- **Deterministic testing as a first-class feature:** `pkg/llmtest` records and replays provider HTTP interactions so CI remains fast, stable, and low-cost, while `pkg/vcrpatch` rewrites recorded cassettes for scenario testing.
 - **Batch extraction over chat streaming:** The core workload is high-throughput, typed enrichment of large asset sets into strict Go structs.
 - **Developer-orchestrated execution over autonomous loops:** Pipeline flow is explicit and predictable (for example, ensemble generation and judge synthesis), reducing drift and runtime surprises.
 - **Resource-aware local concurrency:** Local compute-bound workers and remote API-bound workers are tuned independently for practical VRAM/CPU/network constraints.
