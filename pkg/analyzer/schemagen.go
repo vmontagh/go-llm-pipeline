@@ -112,12 +112,22 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		return integerSchema(t.Kind()), nil
 	case reflect.Float32, reflect.Float64:
 		return floatSchema(t.Kind()), nil
-	case reflect.Slice, reflect.Array:
+	case reflect.Slice:
 		items, err := schemaForType(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]any{PropType: TypeArray, PropItems: items}, nil
+	case reflect.Array:
+		items, err := schemaForType(t.Elem(), seen)
+		if err != nil {
+			return nil, err
+		}
+		// A Go array has a fixed length, so bound the schema to exactly that many
+		// items; without this a response with too few or too many elements would
+		// be silently zero-filled or truncated on decode with no feedback.
+		n := json.Number(strconv.Itoa(t.Len()))
+		return map[string]any{PropType: TypeArray, PropItems: items, PropMinItems: n, PropMaxItems: n}, nil
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
 			return nil, fmt.Errorf("%w: map key type %s is not a string", ErrSchemaDerivation, t.Key())
@@ -423,6 +433,16 @@ func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.T
 			return nil, fmt.Errorf(`%w: json:",string" on a string field requires double-encoded JSON, which cannot be expressed as a plain-string schema; remove the ,string option`, ErrSchemaDerivation)
 		}
 		child = map[string]any{PropType: TypeString}
+		// A json:",string" numeric/bool field decodes from a quoted literal, so
+		// constrain the string to that grammar. Otherwise a value like "abc" is a
+		// schema-valid string that still fails to decode into the number, which
+		// would re-open the validate-before-decode loop. The pattern enforces the
+		// grammar but not width overflow (for example "999999999999" into int8
+		// still surfaces as a decode failure); the common non-numeric case is
+		// closed. Applied before applySchemaTag so an explicit pattern= overrides.
+		if p := stringOptionPattern(baseKind(field.Type)); p != "" {
+			child[PropPattern] = p
+		}
 	} else {
 		derived, err := schemaForType(field.Type, seen)
 		if err != nil {
@@ -460,6 +480,25 @@ func stringOptionApplies(kind reflect.Kind) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// stringOptionPattern returns a regular expression matching the JSON strings that
+// encoding/json accepts for a json:",string" field of the given base kind, so a
+// schema-valid string is also decodable. It returns "" for kinds without a
+// numeric/bool grammar (such as string, which fieldSchema rejects separately).
+func stringOptionPattern(kind reflect.Kind) string {
+	switch kind {
+	case reflect.Bool:
+		return `^(true|false)$`
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return `^-?[0-9]+$`
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return `^[0-9]+$`
+	case reflect.Float32, reflect.Float64:
+		return `^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`
+	default:
+		return ""
 	}
 }
 
