@@ -374,11 +374,16 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 }
 
 // enumAllows reports whether value is permitted by an enum constraint. It
-// returns true when no enum constraint is present.
+// returns true when no enum keyword is present. A present-but-empty enum is an
+// invalid schema (JSON Schema requires at least one member), so it permits no
+// value and always returns false.
 func enumAllows(schema map[string]any, value any) bool {
 	members, ok := enumMembers(schema)
-	if !ok || len(members) == 0 {
+	if !ok {
 		return true
+	}
+	if len(members) == 0 {
+		return false
 	}
 	for _, m := range members {
 		if enumEqual(m, value) {
@@ -440,6 +445,9 @@ func jsonDeepEqual(a, b any) bool {
 
 func enumDetail(schema map[string]any, value any) string {
 	members, _ := enumMembers(schema)
+	if len(members) == 0 {
+		return "schema enum is empty; no value is permitted"
+	}
 	parts := make([]string, 0, len(members))
 	for _, m := range members {
 		parts = append(parts, fmt.Sprintf("%v", m))
