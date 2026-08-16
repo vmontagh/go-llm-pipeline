@@ -156,10 +156,11 @@ func integerSchema(kind reflect.Kind) map[string]any {
 }
 
 // integerBounds returns the inclusive range representable by an integer kind as
-// exact json.Number literals. int and uint are treated as 64-bit; uintptr is
-// treated as unsigned 64-bit.
+// exact json.Number literals. The platform-sized kinds (int, uint, uintptr) use
+// strconv.IntSize so a 32-bit target derives 32-bit bounds; the explicitly-sized
+// kinds keep their fixed widths.
 func integerBounds(kind reflect.Kind) (lo, hi json.Number) {
-	bits, signed := 64, true
+	bits, signed := strconv.IntSize, true
 	switch kind {
 	case reflect.Int8:
 		bits = 8
@@ -167,16 +168,20 @@ func integerBounds(kind reflect.Kind) (lo, hi json.Number) {
 		bits = 16
 	case reflect.Int32:
 		bits = 32
-	case reflect.Int, reflect.Int64:
+	case reflect.Int64:
 		bits = 64
+	case reflect.Int:
+		bits = strconv.IntSize
 	case reflect.Uint8:
 		bits, signed = 8, false
 	case reflect.Uint16:
 		bits, signed = 16, false
 	case reflect.Uint32:
 		bits, signed = 32, false
-	case reflect.Uint, reflect.Uint64, reflect.Uintptr:
+	case reflect.Uint64:
 		bits, signed = 64, false
+	case reflect.Uint, reflect.Uintptr:
+		bits, signed = strconv.IntSize, false
 	}
 	one := big.NewInt(1)
 	if signed {
@@ -188,15 +193,20 @@ func integerBounds(kind reflect.Kind) (lo, hi json.Number) {
 		json.Number(new(big.Int).Sub(new(big.Int).Lsh(one, uint(bits)), one).String())
 }
 
-// floatSchema derives a type:number schema. float32 carries its representable
-// bounds so out-of-range values are rejected as schema violations; float64 spans
-// every JSON number and is left unconstrained.
+// floatSchema derives a type:number schema carrying the representable bounds of
+// the concrete float width as exact json.Number literals, so a value outside the
+// range (for example 1e400 for float64) is rejected as a schema violation with
+// field-level feedback rather than surfacing as an opaque decode failure.
 func floatSchema(kind reflect.Kind) map[string]any {
 	schema := map[string]any{PropType: TypeNumber}
+	bitSize := 64
+	maxVal := math.MaxFloat64
 	if kind == reflect.Float32 {
-		schema[PropMinimum] = json.Number(strconv.FormatFloat(-math.MaxFloat32, 'g', -1, 32))
-		schema[PropMaximum] = json.Number(strconv.FormatFloat(math.MaxFloat32, 'g', -1, 32))
+		bitSize = 32
+		maxVal = math.MaxFloat32
 	}
+	schema[PropMinimum] = json.Number(strconv.FormatFloat(-maxVal, 'g', -1, bitSize))
+	schema[PropMaximum] = json.Number(strconv.FormatFloat(maxVal, 'g', -1, bitSize))
 	return schema
 }
 
@@ -207,7 +217,10 @@ func structSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, e
 	if err := fc.collect(t, 0, true); err != nil {
 		return nil, err
 	}
-	props, required := resolveFields(fc.candidates)
+	props, required, err := resolveFields(fc.candidates)
+	if err != nil {
+		return nil, err
+	}
 
 	schema := map[string]any{
 		PropType:       TypeObject,
@@ -221,13 +234,17 @@ func structSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, e
 }
 
 // fieldCandidate is one struct field (direct or promoted from an embedded
-// struct) competing to define a JSON property.
+// struct) competing to define a JSON property. The schema is derived only after
+// dominance resolution, so a field encoding/json would ignore (shadowed or part
+// of an ambiguous name) never forces schema derivation of an unsupported type.
 type fieldCandidate struct {
 	name     string
 	depth    int
 	tagged   bool
 	required bool
-	schema   map[string]any
+	field    reflect.StructField
+	info     fieldInfo
+	seen     map[reflect.Type]bool
 }
 
 // fieldCollector accumulates field candidates while walking a struct and its
@@ -279,16 +296,14 @@ func (fc *fieldCollector) collect(t reflect.Type, depth int, parentRequired bool
 			continue
 		}
 
-		child, err := fieldSchema(&field, &info, fc.seen)
-		if err != nil {
-			return fmt.Errorf("field %s: %w", field.Name, err)
-		}
 		fc.candidates = append(fc.candidates, fieldCandidate{
 			name:     info.name,
 			depth:    depth,
 			tagged:   info.explicitName,
 			required: parentRequired && isRequired(&field, &info),
-			schema:   child,
+			field:    field,
+			info:     info,
+			seen:     fc.seen,
 		})
 	}
 	return nil
@@ -297,16 +312,19 @@ func (fc *fieldCollector) collect(t reflect.Type, depth int, parentRequired bool
 // resolveFields applies encoding/json dominance to the collected candidates:
 // for each JSON name the shallowest field wins; a tie at the shallowest depth is
 // resolved only when exactly one candidate is explicitly tagged, otherwise the
-// name is ambiguous and omitted entirely. Properties and required names are
-// emitted in first-discovery order for stable output.
-func resolveFields(candidates []fieldCandidate) (props map[string]any, required []string) {
+// name is ambiguous and omitted entirely. Schemas are derived only for the
+// winning fields, so a shadowed or ambiguous field of an unsupported type is
+// dropped (as encoding/json would) instead of failing derivation. Properties and
+// required names are emitted in first-discovery order for stable output.
+func resolveFields(candidates []fieldCandidate) (props map[string]any, required []string, err error) {
 	groups := make(map[string][]fieldCandidate)
 	var order []string
-	for _, c := range candidates {
+	for i := range candidates {
+		c := &candidates[i]
 		if _, seen := groups[c.name]; !seen {
 			order = append(order, c.name)
 		}
-		groups[c.name] = append(groups[c.name], c)
+		groups[c.name] = append(groups[c.name], *c)
 	}
 
 	props = make(map[string]any)
@@ -315,36 +333,40 @@ func resolveFields(candidates []fieldCandidate) (props map[string]any, required 
 		if !ok {
 			continue
 		}
-		props[name] = winner.schema
+		schema, derr := fieldSchema(&winner.field, &winner.info, winner.seen)
+		if derr != nil {
+			return nil, nil, fmt.Errorf("field %s: %w", winner.field.Name, derr)
+		}
+		props[name] = schema
 		if winner.required {
 			required = append(required, name)
 		}
 	}
-	return props, required
+	return props, required, nil
 }
 
 // dominantField selects the winning candidate for a JSON name, or reports false
 // when the name is ambiguous.
-func dominantField(group []fieldCandidate) (fieldCandidate, bool) {
+func dominantField(group []fieldCandidate) (*fieldCandidate, bool) {
 	if len(group) == 1 {
-		return group[0], true
+		return &group[0], true
 	}
 	minDepth := group[0].depth
-	for _, c := range group[1:] {
-		if c.depth < minDepth {
-			minDepth = c.depth
+	for i := range group {
+		if group[i].depth < minDepth {
+			minDepth = group[i].depth
 		}
 	}
-	var shallow []fieldCandidate
-	for _, c := range group {
-		if c.depth == minDepth {
-			shallow = append(shallow, c)
+	var shallow []*fieldCandidate
+	for i := range group {
+		if group[i].depth == minDepth {
+			shallow = append(shallow, &group[i])
 		}
 	}
 	if len(shallow) == 1 {
 		return shallow[0], true
 	}
-	var tagged []fieldCandidate
+	var tagged []*fieldCandidate
 	for _, c := range shallow {
 		if c.tagged {
 			tagged = append(tagged, c)
@@ -353,7 +375,7 @@ func dominantField(group []fieldCandidate) (fieldCandidate, bool) {
 	if len(tagged) == 1 {
 		return tagged[0], true
 	}
-	return fieldCandidate{}, false
+	return nil, false
 }
 
 func implementsMarshaler(t, iface reflect.Type) bool {
@@ -506,7 +528,12 @@ func applySchemaTag(schema map[string]any, tag string) error {
 func applySchemaDirective(schema map[string]any, key, val string) error {
 	switch key {
 	case schemaTagRequired, schemaTagOptional:
-		return nil // handled by parseRequiredOverride
+		// Requiredness is applied by parseRequiredOverride from the bare flag; a
+		// valued form (required=true) is a mistake that would otherwise be dropped.
+		if val != "" {
+			return fmt.Errorf("%w: %s does not take a value", ErrSchemaDerivation, key)
+		}
+		return nil
 	case "description":
 		schema[PropDescription] = val
 	case "pattern":
@@ -561,14 +588,44 @@ func requireType(schema map[string]any, directive string, want ...string) error 
 // (json.Number) so validation compares against the value the caller wrote with
 // no float64 rounding. It rejects anything that is not valid JSON-number syntax
 // (for example "1/2"), which would otherwise fail later when the schema is
-// marshaled for the model.
+// marshaled for the model. When the field already carries a native width bound
+// (from integerSchema/floatSchema), the tag may only narrow the range: a minimum
+// is intersected via max(native, tagged) and a maximum via min(native, tagged),
+// so a tag can never widen the range beyond what decodes into T.
 func setBound(schema map[string]any, key, directive, val string) error {
 	n, err := parseJSONNumber(val)
 	if err != nil {
 		return fmt.Errorf("%w: %s expects a number, got %q", ErrSchemaDerivation, directive, val)
 	}
-	schema[key] = n
+	schema[key] = narrowBound(schema[key], n, key)
 	return nil
+}
+
+// narrowBound intersects a tagged bound with any pre-existing native bound so a
+// tag only ever tightens the range. It returns tagged when there is no native
+// bound. key selects the direction: PropMinimum keeps the larger value, any other
+// (PropMaximum) keeps the smaller.
+func narrowBound(native any, tagged json.Number, key string) json.Number {
+	nativeNum, ok := native.(json.Number)
+	if !ok {
+		return tagged
+	}
+	nativeRat, nok := new(big.Rat).SetString(nativeNum.String())
+	taggedRat, tok := new(big.Rat).SetString(tagged.String())
+	if !nok || !tok {
+		return tagged
+	}
+	cmp := taggedRat.Cmp(nativeRat)
+	if key == PropMinimum {
+		if cmp < 0 {
+			return nativeNum
+		}
+		return tagged
+	}
+	if cmp > 0 {
+		return nativeNum
+	}
+	return tagged
 }
 
 // setLength stores a string-length keyword (minLength/maxLength) as a
