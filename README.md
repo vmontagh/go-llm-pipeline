@@ -69,7 +69,8 @@ func main() {
 | `pkg/policy` | Provider-agnostic retry/error taxonomy (tiers, `RetryPolicy`, error classification). |
 | `pkg/scrub` | Regexp-based text scrubbing to redact sensitive patterns and PII. |
 | `pkg/vcrpatch` | Patch and rewrite VCR cassettes (match requests, apply actions). |
-| `pkg/llmtest` | VCR-style HTTP recorder/replayer for deterministic LLM tests; fail-fast on cassette miss. |
+| `pkg/llmvcr` | Standalone VCR record/replay for provider `http.Client`s; auto-redacts secrets (via `pkg/scrub`) before writing cassettes; fail-fast on miss. |
+| `pkg/llmtest` | Mock provider response/interaction fixtures for deterministic tests. |
 | `pkg/observ` | Observability HTTP server (pprof) bound to a loopback address. |
 | `pkg/trace` | `runtime/trace`-based `Tracer` plus a no-op implementation. |
 | `pkg/httputil` | Small protocol-level HTTP helpers, independent of business logic. |
@@ -77,13 +78,32 @@ func main() {
 
 ### Determinism and testing
 
-Deterministic, zero-cost CI is a first-class goal. The determinism toolkit lives across three
-packages that work together:
+Deterministic, zero-cost CI is a first-class goal. The determinism toolkit is centered on
+`pkg/llmvcr`, with supporting packages for cassette patching, redaction rules, and fixtures:
 
-- `pkg/llmtest` records provider HTTP interactions and replays them locally, failing fast on a
-  cassette miss instead of making a live call.
+- `pkg/llmvcr` is the productized record/replay package. It returns a standard `*http.Client` that
+  records provider HTTP interactions to YAML cassettes and replays them offline, failing fast with
+  `llmvcr.ErrCassetteMiss` on a cassette miss instead of making a live call. It works with any client
+  that accepts an `*http.Client`, including the OpenAI provider (`openai.WithHTTPClient`) and the
+  Gemini `genai.Client` (`option.WithHTTPClient`). Sensitive headers, query parameters, and body
+  tokens (bearer tokens, `sk-` and `AIza` keys) are redacted via `pkg/scrub` before any cassette is
+  written.
 - `pkg/vcrpatch` patches and rewrites recorded cassettes for scenario testing.
-- `pkg/scrub` redacts sensitive patterns (API keys, tokens, PII) from cassette bodies and logs.
+- `pkg/scrub` provides the regexp redaction rules reused by `pkg/llmvcr` (and usable for logs).
+- `pkg/llmtest` provides mock provider response and interaction fixtures for tests.
+
+```go
+rec, err := llmvcr.New("testdata/openai_success", llmvcr.ModeReplayOnly)
+if err != nil {
+    // handle error
+}
+defer func() {
+    if err := rec.Stop(); err != nil {
+        log.Printf("stopping recorder: %v", err)
+    }
+}()
+provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
+```
 
 ### Development
 
