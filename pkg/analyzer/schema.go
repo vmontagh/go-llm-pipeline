@@ -13,4 +13,12 @@ const (
 	PropProperties = "properties"
 	PropRequired   = "required"
 	PropType       = "type"
+	// Constraint keywords emitted by SchemaOf and enforced by Validate.
+	PropDescription = "description"
+	PropEnum        = "enum"
+	PropMinimum     = "minimum"
+	PropMaximum     = "maximum"
+	PropMinLength   = "minLength"
+	PropMaxLength   = "maxLength"
+	PropPattern     = "pattern"
 )
