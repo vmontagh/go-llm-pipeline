@@ -2,11 +2,13 @@ package pipeline
 
 import (
 	"context"
-	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestPauseGate(t *testing.T) {
@@ -20,8 +22,9 @@ func TestPauseGate(t *testing.T) {
 			name: "WaitIfPaused on unpaused gate returns nil immediately",
 			run: func(t *testing.T) {
 				g := NewPauseGate()
-				if err := g.WaitIfPaused(t.Context()); err != nil {
-					t.Fatalf("WaitIfPaused() error = %v, want nil", err)
+				err := g.WaitIfPaused(t.Context())
+				if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
+					t.Fatalf("WaitIfPaused() diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -30,8 +33,8 @@ func TestPauseGate(t *testing.T) {
 			run: func(t *testing.T) {
 				g := NewPauseGate()
 				g.Pause()
-				if !g.IsPaused() {
-					t.Fatalf("IsPaused() = false, want true")
+				if diff := cmp.Diff(true, g.IsPaused()); diff != "" {
+					t.Fatalf("IsPaused() diff (-want +got):\n%s", diff)
 				}
 
 				startedWaiting := make(chan struct{})
@@ -39,8 +42,9 @@ func TestPauseGate(t *testing.T) {
 
 				go func() {
 					close(startedWaiting)
-					if err := g.WaitIfPaused(t.Context()); err != nil {
-						t.Errorf("WaitIfPaused() error = %v, want nil", err)
+					err := g.WaitIfPaused(t.Context())
+					if diff := cmp.Diff(nil, err, cmpopts.EquateErrors()); diff != "" {
+						t.Errorf("WaitIfPaused() diff (-want +got):\n%s", diff)
 					}
 					close(resumed)
 				}()
@@ -54,8 +58,8 @@ func TestPauseGate(t *testing.T) {
 				}
 
 				g.Resume()
-				if g.IsPaused() {
-					t.Fatalf("IsPaused() = true, want false")
+				if diff := cmp.Diff(false, g.IsPaused()); diff != "" {
+					t.Fatalf("IsPaused() diff (-want +got):\n%s", diff)
 				}
 
 				<-resumed
@@ -87,8 +91,8 @@ func TestPauseGate(t *testing.T) {
 				cancel()
 
 				err := <-errCh
-				if !errors.Is(err, context.Canceled) {
-					t.Fatalf("WaitIfPaused() error = %v, want %v", err, context.Canceled)
+				if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+					t.Fatalf("WaitIfPaused() diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -98,8 +102,8 @@ func TestPauseGate(t *testing.T) {
 				g := NewPauseGate()
 				g.Pause()
 				g.Pause()
-				if !g.IsPaused() {
-					t.Errorf("IsPaused() = false, want true")
+				if diff := cmp.Diff(true, g.IsPaused()); diff != "" {
+					t.Errorf("IsPaused() diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -109,8 +113,8 @@ func TestPauseGate(t *testing.T) {
 				g := NewPauseGate()
 				g.Resume()
 				g.Resume()
-				if g.IsPaused() {
-					t.Errorf("IsPaused() = true, want false")
+				if diff := cmp.Diff(false, g.IsPaused()); diff != "" {
+					t.Errorf("IsPaused() diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -121,8 +125,8 @@ func TestPauseGate(t *testing.T) {
 				g.Pause()
 				g.Resume()
 				g.Resume()
-				if g.IsPaused() {
-					t.Errorf("IsPaused() = true, want false")
+				if diff := cmp.Diff(false, g.IsPaused()); diff != "" {
+					t.Errorf("IsPaused() diff (-want +got):\n%s", diff)
 				}
 			},
 		},
@@ -141,8 +145,9 @@ func TestPauseGate(t *testing.T) {
 					go func() {
 						defer wg.Done()
 						for ctx.Err() == nil {
-							if err := g.WaitIfPaused(ctx); err != nil && !errors.Is(err, context.Canceled) {
-								t.Errorf("WaitIfPaused() error = %v", err)
+							err := g.WaitIfPaused(ctx)
+							if err != nil && cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()) != "" {
+								t.Errorf("WaitIfPaused() unexpected error = %v", err)
 							}
 							runtime.Gosched()
 						}
@@ -164,8 +169,8 @@ func TestPauseGate(t *testing.T) {
 
 				wg.Wait()
 
-				if got := completedCycles.Load(); got != totalCycles {
-					t.Errorf("completedCycles = %d, want %d", got, totalCycles)
+				if diff := cmp.Diff(int64(totalCycles), completedCycles.Load()); diff != "" {
+					t.Errorf("completedCycles diff (-want +got):\n%s", diff)
 				}
 			},
 		},
