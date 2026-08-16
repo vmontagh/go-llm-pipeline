@@ -9,8 +9,9 @@ description: >-
 
 # Go Code Review
 
-Review Go changes against the idiomatic Go ruleset in `go-idioms.md`, which is
-derived from 800+ PR review comments and aligned with the Google Go Style Guide.
+Review Go changes against the idiomatic Go ruleset in `go-idioms.md`, which
+distills recurring Go code-review feedback and is aligned with the Google Go
+Style Guide.
 
 ## How to review
 

@@ -2015,3 +2015,9 @@ Before submitting any Go PR, verify:
 - [ ] `gofmt -w` has been run
 - [ ] No secrets or generated files committed
 - [ ] All CI checks pass (errcheck, golangci-lint, race, coverage)
+
+---
+
+## Attribution
+
+These guidelines reference and occasionally paraphrase the [Google Go Style Guide](https://google.github.io/styleguide/go/) (Guide, Decisions, and Best Practices), which is licensed under [Creative Commons Attribution 3.0 (CC BY 3.0)](https://creativecommons.org/licenses/by/3.0/). Blockquote citations such as "Google Style Decisions > …" point to the corresponding sections of that public style guide, and a few short phrases are quoted directly with attribution. All explanatory prose, code examples, and rule selection in this document are original work, licensed under this repository's [MIT License](../../../LICENSE).
