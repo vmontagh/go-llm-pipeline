@@ -94,9 +94,11 @@ func (g *PauseGate) IsStopping() bool {
 	return g.stopping
 }
 
-// Waiters reports the number of callers currently blocked inside WaitIfPaused.
-// It lets tests wait until N callers are parked on the gate before calling
-// Resume or Stop, with no sleeps.
+// Waiters reports the number of callers parked in WaitIfPaused. A caller is
+// counted from just before it blocks until it returns, so a caller that has
+// just been released may remain counted briefly until it unwinds. This lets
+// tests wait until N callers are parked on the gate before calling Resume or
+// Stop, with no sleeps.
 func (g *PauseGate) Waiters() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -122,6 +124,12 @@ func (g *PauseGate) WaitIfPaused(ctx context.Context) error {
 	g.waiters++
 	g.mu.Unlock()
 
+	defer func() {
+		g.mu.Lock()
+		g.waiters--
+		g.mu.Unlock()
+	}()
+
 	if hook != nil {
 		hook()
 	}
@@ -129,7 +137,6 @@ func (g *PauseGate) WaitIfPaused(ctx context.Context) error {
 	select {
 	case <-ch:
 		g.mu.Lock()
-		g.waiters--
 		stopping := g.stopping
 		g.mu.Unlock()
 		if stopping {
@@ -137,9 +144,6 @@ func (g *PauseGate) WaitIfPaused(ctx context.Context) error {
 		}
 		return nil
 	case <-ctx.Done():
-		g.mu.Lock()
-		g.waiters--
-		g.mu.Unlock()
 		return ctx.Err()
 	}
 }
