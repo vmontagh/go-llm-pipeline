@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -22,14 +23,20 @@ import (
 // two invariants:
 //
 //	Property A (canonical acceptance):
-//	    Validate(SchemaOf(T), json.Marshal(v)) == nil  for every value v of T.
-//	    The schema must never reject an encoding the model could legitimately
-//	    produce. This is the exact class of bug the review rounds kept finding.
+//	    Validate(SchemaOf(T), json.Marshal(v)) == nil  for every value v of T
+//	    whose exported fields are present. The schema must never reject an
+//	    encoding the model could legitimately produce. This is the exact class of
+//	    bug the review rounds kept finding.
 //
 //	Property B (no validate-before-decode gap):
 //	    Validate(SchemaOf(T), x) == nil  =>  json.Unmarshal(x) into T succeeds.
 //	    The validator must never be more permissive than the decoder, or a
 //	    "schema-valid" response would still fail to decode.
+//
+// Property A is deliberately scoped to present values. SchemaOf derives non-null,
+// required schemas for pointer, slice, and map fields, so a nil one marshals to
+// null and is correctly rejected; the generator therefore always populates them
+// (see randValue) and null-valued fields are out of scope rather than a drift.
 //
 // Property B has one documented exception: types whose wire form is type:string
 // but whose decodable strings are a strict subset of all strings (for example
@@ -365,8 +372,9 @@ func mutateJSON(r *rand.Rand, data []byte) []byte {
 	for k := range obj {
 		keys = append(keys, k)
 	}
+	slices.Sort(keys) // map iteration is randomized; sort so the seed is deterministic
 	target := keys[r.IntN(len(keys))]
-	switch r.IntN(6) {
+	switch r.IntN(7) {
 	case 0:
 		// unchanged canonical document
 	case 1:
@@ -379,6 +387,8 @@ func mutateJSON(r *rand.Rand, data []byte) []byte {
 		obj[target] = json.Number("1e4000") // exceeds numeric magnitude bounds
 	case 5:
 		obj[target] = randString(r) // valid only where a string is expected
+	case 6:
+		obj[target] = json.Number("-0") // integral and >= minimum:0, but no unsigned field decodes it
 	}
 	out, err := json.Marshal(obj)
 	if err != nil {

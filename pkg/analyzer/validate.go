@@ -353,6 +353,11 @@ func valueMatchesType(typ string, value any) bool {
 	}
 }
 
+// jsonNegativeZero is the sole exponent-free integer literal that decodes into a
+// signed integer but not an unsigned one (strconv.ParseUint rejects the leading
+// minus); jsonIntegerLiteral treats it as a non-integer for that reason.
+const jsonNegativeZero = "-0"
+
 // jsonIntegerLiteral reports whether n is written as a JSON integer, that is with
 // no fractional part and no exponent. encoding/json decodes a number into a Go
 // integer field only in this form: it rejects 1.0, 1e0, and 1000E0 even though
@@ -361,8 +366,16 @@ func valueMatchesType(typ string, value any) bool {
 // is reported as a non-integer rather than validating and then failing to decode.
 // The decoder guarantees n is already a syntactically valid JSON number, so the
 // absence of '.', 'e', and 'E' is sufficient to identify the integer grammar.
+//
+// Negative zero (jsonNegativeZero) is the one exception: it is exponent-free and
+// satisfies the minimum:0 emitted for unsigned fields, but encoding/json decodes
+// unsigned fields with strconv.ParseUint, which rejects the leading minus.
+// Reporting it as a non-integer keeps Validate from accepting a value the decoder
+// would reject. Canonical encodings never emit "-0", so this does not narrow
+// canonical acceptance for signed fields.
 func jsonIntegerLiteral(n json.Number) bool {
-	return !strings.ContainsAny(string(n), ".eE")
+	s := string(n)
+	return !strings.ContainsAny(s, ".eE") && s != jsonNegativeZero
 }
 
 func validateObject(schema map[string]any, value any, path string, errs *[]error) {
