@@ -55,6 +55,43 @@ func main() {
 
 `Consume` also accepts options such as `WithPauseGate` to pause and resume processing at runtime.
 
+### Doctor diagnostics
+
+`pkg/doctor` checks local environment readiness before batch jobs. It is exposed
+as a library API — not a repo-level binary — so consumer applications wire it
+into their own command surface (for example a `doctor` subcommand or a
+`--dry-run` preflight). A `Runner` executes a fixed set of checks and returns a
+`Report` of pass/warn/fail/skip `Result`s; the doctor package never reads
+environment variables itself, so callers stay in control of credentials.
+
+Checks:
+
+- OS file-descriptor soft limit against configurable floors.
+- Network latency/reachability to the OpenAI and Gemini hosted APIs.
+- OpenAI and Gemini API key validity.
+- Local Ollama reachability and installed-model listing, with an optional
+  context-window preflight when a specific model is requested.
+
+```go
+cfg := doctor.DefaultConfig()
+cfg.OpenAIAPIKey = os.Getenv("OPENAI_API_KEY")
+cfg.GeminiAPIKey = cmp.Or(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_API_KEY"))
+cfg.OllamaHost = cmp.Or(os.Getenv("OLLAMA_HOST"), cfg.OllamaHost)
+
+report := doctor.NewRunner(&cfg).Run(ctx)
+report.Log(ctx, logger)   // pass/skip at INFO, warn at WARN, fail at ERROR
+fmt.Print(report.String()) // or render a plain-text summary for a CLI
+
+if report.HasFailure() {
+	os.Exit(1) // hard failures should block batch jobs; warnings do not
+}
+```
+
+Inject a custom `*http.Client` with `doctor.WithHTTPClient` (used in tests to
+avoid live network calls) and a `doctor.FileLimitReader` with
+`doctor.WithFileLimitReader`. Warnings never mark the report as failed, so
+borderline conditions surface without blocking automation.
+
 ### Package map
 
 | Package | Description |
@@ -75,6 +112,7 @@ func main() {
 | `pkg/trace` | `runtime/trace`-based `Tracer` plus a no-op implementation. |
 | `pkg/httputil` | Small protocol-level HTTP helpers, independent of business logic. |
 | `pkg/logger` | Helpers for creating `*slog.Logger` instances. |
+| `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 
 ### Determinism and testing
 
