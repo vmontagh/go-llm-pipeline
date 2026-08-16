@@ -159,7 +159,13 @@ type failFastTransport struct {
 func (t failFastTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	resp, err := t.inner.RoundTrip(req)
 	if err != nil && errors.Is(err, cassette.ErrInteractionNotFound) {
-		return nil, fmt.Errorf("%w: %s %s", ErrCassetteMiss, req.Method, safeURL(req.URL))
+		miss := fmt.Errorf("%w: %s %s", ErrCassetteMiss, req.Method, safeURL(req.URL))
+		// http.Client.Do rewraps this in a *url.Error built from req.URL, which
+		// still carries the raw (possibly secret) query string. The request is
+		// terminal on a fail-fast miss, so strip the sensitive parts in place to
+		// stop that wrapper leaking credentials.
+		stripSensitiveURL(req.URL)
+		return nil, miss
 	}
 	return resp, err
 }
@@ -189,10 +195,19 @@ func safeURL(u *url.URL) string {
 		return ""
 	}
 	sanitized := *u
-	sanitized.RawQuery = ""
-	sanitized.Fragment = ""
-	sanitized.User = nil
+	stripSensitiveURL(&sanitized)
 	return sanitized.String()
+}
+
+// stripSensitiveURL clears the parts of a URL that may carry credentials (query,
+// fragment, userinfo) in place.
+func stripSensitiveURL(u *url.URL) {
+	if u == nil {
+		return
+	}
+	u.RawQuery = ""
+	u.Fragment = ""
+	u.User = nil
 }
 
 // Recorder records and replays HTTP interactions through an *http.Client.
