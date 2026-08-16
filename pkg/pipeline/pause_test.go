@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -171,6 +172,128 @@ func TestPauseGate(t *testing.T) {
 
 				if diff := cmp.Diff(int64(totalCycles), completedCycles.Load()); diff != "" {
 					t.Errorf("completedCycles diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "WaitIfPaused returns ErrDraining once stopped",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Stop()
+
+				if diff := cmp.Diff(true, g.IsStopping()); diff != "" {
+					t.Fatalf("IsStopping() diff (-want +got):\n%s", diff)
+				}
+
+				err := g.WaitIfPaused(t.Context())
+				if diff := cmp.Diff(ErrDraining, err, cmpopts.EquateErrors()); diff != "" {
+					t.Fatalf("WaitIfPaused() diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "stop is not context cancellation",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Stop()
+
+				err := g.WaitIfPaused(t.Context())
+				if errors.Is(err, context.Canceled) {
+					t.Errorf("WaitIfPaused() = %v, want not errors.Is(context.Canceled)", err)
+				}
+				if !errors.Is(err, ErrDraining) {
+					t.Errorf("WaitIfPaused() = %v, want errors.Is(ErrDraining)", err)
+				}
+			},
+		},
+		{
+			name: "Stop is idempotent and takes precedence over pause and resume",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Stop()
+				g.Stop() // idempotent
+
+				g.Pause()  // no-op once stopping
+				g.Resume() // no-op once stopping
+
+				if diff := cmp.Diff(true, g.IsStopping()); diff != "" {
+					t.Errorf("IsStopping() diff (-want +got):\n%s", diff)
+				}
+				if diff := cmp.Diff(false, g.IsPaused()); diff != "" {
+					t.Errorf("IsPaused() diff (-want +got):\n%s", diff)
+				}
+
+				err := g.WaitIfPaused(t.Context())
+				if diff := cmp.Diff(ErrDraining, err, cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("WaitIfPaused() diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "Stop unblocks paused waiters with ErrDraining",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Pause()
+
+				startedWaiting := make(chan struct{})
+				g.waitHook = func() { close(startedWaiting) }
+
+				errCh := make(chan error, 1)
+				go func() {
+					errCh <- g.WaitIfPaused(t.Context())
+				}()
+
+				<-startedWaiting // waiter is parked on the paused gate
+
+				select {
+				case <-errCh:
+					t.Fatal("WaitIfPaused() unblocked before Stop()")
+				default:
+				}
+
+				g.Stop()
+
+				err := <-errCh
+				if diff := cmp.Diff(ErrDraining, err, cmpopts.EquateErrors()); diff != "" {
+					t.Fatalf("WaitIfPaused() diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "Waiters reflects parked callers",
+			run: func(t *testing.T) {
+				g := NewPauseGate()
+				g.Pause()
+
+				const waiters = 3
+				parked := make(chan struct{}, waiters)
+				g.waitHook = func() { parked <- struct{}{} }
+
+				var wg sync.WaitGroup
+				for i := 0; i < waiters; i++ {
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						err := g.WaitIfPaused(t.Context())
+						if diff := cmp.Diff(ErrDraining, err, cmpopts.EquateErrors()); diff != "" {
+							t.Errorf("WaitIfPaused() diff (-want +got):\n%s", diff)
+						}
+					}()
+				}
+
+				for i := 0; i < waiters; i++ {
+					<-parked // all callers have parked and incremented the waiter count
+				}
+
+				if diff := cmp.Diff(waiters, g.Waiters()); diff != "" {
+					t.Fatalf("Waiters() while parked diff (-want +got):\n%s", diff)
+				}
+
+				g.Stop()
+				wg.Wait()
+
+				if diff := cmp.Diff(0, g.Waiters()); diff != "" {
+					t.Fatalf("Waiters() after unblock diff (-want +got):\n%s", diff)
 				}
 			},
 		},

@@ -1,10 +1,43 @@
 // Package pipeline provides foundational concurrency utilities used by the
 // orchestrator: a generic worker-pool consumer and a dead-letter queue
 // for failed pipeline events.
+//
+// # Pipeline lifecycle
+//
+// A running pipeline can be paused, resumed, or gracefully drained without
+// tearing down the request context. [PauseGate] is the choke point every
+// worker passes through before processing an item, and its four states are
+// distinct on purpose:
+//
+//   - Running: new work is accepted, in-flight work runs, ctx is live.
+//   - Paused: new work blocks at the gate, in-flight work finishes then parks,
+//     ctx is live.
+//   - Draining: new work is refused, but in-flight and already-queued work runs
+//     to completion, and ctx stays live.
+//   - Cancelled: new work is refused and in-flight work is aborted because ctx
+//     itself is cancelled.
+//
+// The important distinction is between draining and cancellation. Cancelling
+// the context propagates into in-flight LLM/HTTP calls and aborts them
+// mid-write, which loses the current item and prevents a clean run summary.
+// Draining instead lets those calls finish normally. To keep the two apart,
+// [PauseGate.WaitIfPaused] reports why a worker woke up via its return value:
+//
+//   - nil: proceed and process the item.
+//   - [ErrDraining]: shutting down gracefully. Stop blocking on the pause, but
+//     do not abort; finish queued items on the still-live ctx and return when
+//     the input channel closes. errors.Is(err, context.Canceled) is false for a
+//     drain, so cancellation-handling paths do not misfire.
+//   - ctx error (e.g. context.Canceled): the whole request is dead; abort.
+//
+// [Consume] applies this contract directly: a worker parked on a paused gate
+// that is then stopped is released with [ErrDraining], drains the remaining
+// items, and returns cleanly once the channel closes, never cancelling ctx.
 package pipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -58,7 +91,16 @@ func Consume[T any](ctx context.Context, input <-chan T, concurrency int, wg *sy
 						return
 					}
 					if cfg.gate != nil {
-						if err := cfg.gate.WaitIfPaused(ctx); err != nil {
+						err := cfg.gate.WaitIfPaused(ctx)
+						switch {
+						case err == nil:
+							// Not paused: process the item.
+						case errors.Is(err, ErrDraining):
+							// Gate is draining: stop blocking on pause, but keep
+							// draining already-queued items to completion on the
+							// live ctx until the input channel is closed.
+						default:
+							// ctx cancelled: abort.
 							return
 						}
 					}
