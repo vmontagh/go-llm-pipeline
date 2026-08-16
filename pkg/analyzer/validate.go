@@ -83,12 +83,84 @@ func Validate(schema map[string]any, data []byte) error {
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return &FieldError{Rule: ruleJSON, Detail: "unexpected trailing content after JSON value"}
 	}
+	// Reject duplicate object keys before validating. Decoding into value above
+	// keeps only the last value for a repeated key, so validateValue can never see
+	// a shadowed first occurrence; a strict decode into the target type, however,
+	// processes every occurrence and may fail on the shadowed one. Failing closed
+	// here keeps validation and decoding consistent on an ambiguous document.
+	if dup := duplicateKeyError(data); dup != nil {
+		return dup
+	}
 	var errs []error
 	validateValue(canonical, value, "", &errs)
 	if len(errs) == 0 {
 		return nil
 	}
 	return errors.Join(errs...)
+}
+
+// duplicateKeyError scans data for an object that declares the same key twice and
+// returns a FieldError for the first such key, or nil when every object has unique
+// keys. It streams tokens rather than decoding into a value, so a repeated key is
+// observed instead of collapsed. data is assumed to be a single syntactically
+// valid JSON document (Validate has already decoded it), so a token error is
+// treated as no duplicate and left for the earlier syntax checks to report.
+func duplicateKeyError(data []byte) *FieldError {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	type frame struct {
+		object    bool
+		expectKey bool
+		seen      map[string]struct{}
+	}
+	var stack []frame
+	// afterValue records that a value completed in the enclosing frame, so the
+	// next token in an object is a key again.
+	afterValue := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].expectKey = true
+		}
+	}
+	// next reads the following token, reporting ok=false at end of input. The
+	// document is the single valid JSON value Validate already confirmed, so a
+	// read error only signals the stream is exhausted; confining it here keeps the
+	// scan free of an error-to-nil return.
+	next := func() (json.Token, bool) {
+		tok, err := dec.Token()
+		return tok, err == nil
+	}
+	for {
+		tok, ok := next()
+		if !ok {
+			break
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, frame{object: true, expectKey: true, seen: map[string]struct{}{}})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				afterValue()
+			}
+		case string:
+			top := len(stack) - 1
+			if top >= 0 && stack[top].object && stack[top].expectKey {
+				if _, dup := stack[top].seen[t]; dup {
+					return &FieldError{Rule: ruleJSON, Detail: fmt.Sprintf("duplicate object key %q", t)}
+				}
+				stack[top].seen[t] = struct{}{}
+				stack[top].expectKey = false
+				continue
+			}
+			afterValue()
+		default:
+			afterValue()
+		}
+	}
+	return nil
 }
 
 // canonicalizeSchema round-trips a schema through JSON so every value takes a
@@ -253,7 +325,7 @@ func isKnownType(typ string) bool {
 
 // valueMatchesType reports whether a decoded JSON value is of the given schema
 // type, used to select the matching branch of a union. An integer matches only a
-// json.Number with no fractional part.
+// json.Number written in integer form (see jsonIntegerLiteral).
 func valueMatchesType(typ string, value any) bool {
 	switch typ {
 	case TypeNull:
@@ -269,11 +341,7 @@ func valueMatchesType(typ string, value any) bool {
 		return ok
 	case TypeInteger:
 		n, ok := value.(json.Number)
-		if !ok {
-			return false
-		}
-		r, ok := toBigRat(n)
-		return ok && r.IsInt()
+		return ok && jsonIntegerLiteral(n)
 	case TypeObject:
 		_, ok := value.(map[string]any)
 		return ok
@@ -283,6 +351,31 @@ func valueMatchesType(typ string, value any) bool {
 	default:
 		return false
 	}
+}
+
+// jsonNegativeZero is the sole exponent-free integer literal that decodes into a
+// signed integer but not an unsigned one (strconv.ParseUint rejects the leading
+// minus); jsonIntegerLiteral treats it as a non-integer for that reason.
+const jsonNegativeZero = "-0"
+
+// jsonIntegerLiteral reports whether n is written as a JSON integer, that is with
+// no fractional part and no exponent. encoding/json decodes a number into a Go
+// integer field only in this form: it rejects 1.0, 1e0, and 1000E0 even though
+// they are mathematically integral. Validate treats exactly these literals as
+// integers so schema-validity and decodability stay identical; a value like 1e0
+// is reported as a non-integer rather than validating and then failing to decode.
+// The decoder guarantees n is already a syntactically valid JSON number, so the
+// absence of '.', 'e', and 'E' is sufficient to identify the integer grammar.
+//
+// Negative zero (jsonNegativeZero) is the one exception: it is exponent-free and
+// satisfies the minimum:0 emitted for unsigned fields, but encoding/json decodes
+// unsigned fields with strconv.ParseUint, which rejects the leading minus.
+// Reporting it as a non-integer keeps Validate from accepting a value the decoder
+// would reject. Canonical encodings never emit "-0", so this does not narrow
+// canonical acceptance for signed fields.
+func jsonIntegerLiteral(n json.Number) bool {
+	s := string(n)
+	return !strings.ContainsAny(s, ".eE") && s != jsonNegativeZero
 }
 
 func validateObject(schema map[string]any, value any, path string, errs *[]error) {
@@ -563,7 +656,7 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not a number", s)})
 		return
 	}
-	if typ == TypeInteger && !val.IsInt() {
+	if typ == TypeInteger && !jsonIntegerLiteral(num) {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not an integer", s)})
 	}
 	if lo, present, valid := boundKeyword(schema, PropMinimum); present {
