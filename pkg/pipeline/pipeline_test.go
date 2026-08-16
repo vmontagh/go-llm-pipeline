@@ -261,6 +261,123 @@ func TestConsume(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "DrainComplete default processes every queued item after draining",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				gate.Stop()
+
+				input := make(chan int, 3)
+				input <- 1
+				input <- 2
+				input <- 3
+				close(input)
+
+				var count atomic.Int64
+				var wg sync.WaitGroup
+
+				process := func(_ context.Context, _ int) {
+					count.Add(1)
+				}
+
+				// No WithDrainMode: DrainComplete is the zero-value default.
+				Consume(t.Context(), input, 2, &wg, process, WithPauseGate(gate))
+				wg.Wait()
+
+				if diff := cmp.Diff(int64(3), count.Load()); diff != "" {
+					t.Fatalf("DrainComplete count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "DrainDiscard routes queued items to handler and never processes",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				gate.Stop()
+
+				const items = 4
+				input := make(chan int, items)
+				for i := 0; i < items; i++ {
+					input <- i
+				}
+				close(input)
+
+				var processed atomic.Int64
+				var mu sync.Mutex
+				var discarded []int
+				var wg sync.WaitGroup
+
+				process := func(_ context.Context, _ int) {
+					processed.Add(1)
+				}
+				drainSkip := func(v int) {
+					mu.Lock()
+					discarded = append(discarded, v)
+					mu.Unlock()
+				}
+
+				Consume(t.Context(), input, 2, &wg, process,
+					WithPauseGate(gate), WithDrainMode(DrainDiscard), WithDrainHandler(drainSkip))
+				wg.Wait()
+
+				if diff := cmp.Diff(int64(0), processed.Load()); diff != "" {
+					t.Fatalf("processed count diff (-want +got):\n%s", diff)
+				}
+				if diff := cmp.Diff(items, len(discarded)); diff != "" {
+					t.Fatalf("discarded count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "DrainDiscard with no handler drops items and returns cleanly",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				gate.Stop()
+
+				input := make(chan int, 3)
+				input <- 1
+				input <- 2
+				input <- 3
+				close(input)
+
+				var processed atomic.Int64
+				var wg sync.WaitGroup
+
+				Consume(t.Context(), input, 2, &wg, func(_ context.Context, _ int) {
+					processed.Add(1)
+				}, WithPauseGate(gate), WithDrainMode(DrainDiscard))
+				wg.Wait()
+
+				if diff := cmp.Diff(int64(0), processed.Load()); diff != "" {
+					t.Fatalf("processed count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "WithDrainHandler nil fn is a no-op",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				gate.Stop()
+
+				input := make(chan int, 2)
+				input <- 1
+				input <- 2
+				close(input)
+
+				var processed atomic.Int64
+				var wg sync.WaitGroup
+
+				var nilFn func(int)
+				Consume(t.Context(), input, 1, &wg, func(_ context.Context, _ int) {
+					processed.Add(1)
+				}, WithPauseGate(gate), WithDrainMode(DrainDiscard), WithDrainHandler(nilFn))
+				wg.Wait()
+
+				if diff := cmp.Diff(int64(0), processed.Load()); diff != "" {
+					t.Fatalf("processed count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {

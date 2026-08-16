@@ -12,8 +12,10 @@
 //   - Running: new work is accepted, in-flight work runs, ctx is live.
 //   - Paused: new work blocks at the gate, in-flight work finishes then parks,
 //     ctx is live.
-//   - Draining: new work is refused, but in-flight and already-queued work runs
-//     to completion, and ctx stays live.
+//   - Draining: new work is refused, but in-flight and already-queued work is
+//     handled per the configured [DrainMode], and ctx stays live. The default
+//     [DrainComplete] runs queued work to completion; [DrainDiscard] instead
+//     drops not-yet-started items via a drain handler.
 //   - Cancelled: new work is refused and in-flight work is aborted because ctx
 //     itself is cancelled.
 //
@@ -31,8 +33,11 @@
 //   - ctx error (e.g. context.Canceled): the whole request is dead; abort.
 //
 // [Consume] applies this contract directly: a worker parked on a paused gate
-// that is then stopped is released with [ErrDraining], drains the remaining
-// items, and returns cleanly once the channel closes, never cancelling ctx.
+// that is then stopped is released with [ErrDraining]. Under the default
+// [DrainComplete] it drains the remaining items and returns cleanly once the
+// channel closes; under [DrainDiscard] it drops not-yet-started items via the
+// configured drain handler and returns once the channel closes. Neither path
+// cancels ctx.
 package pipeline
 
 import (
@@ -41,8 +46,23 @@ import (
 	"sync"
 )
 
+// DrainMode selects how Consume handles items once the pause gate is draining
+// (after [PauseGate.Stop]). The zero value is the backward-compatible default.
+type DrainMode int
+
+const (
+	// DrainComplete finishes queued and in-flight items on the live ctx until
+	// the input channel closes. It is the default drain behavior.
+	DrainComplete DrainMode = iota
+	// DrainDiscard stops intake: not-yet-started items are dropped instead of
+	// processed, accounted for via the configured drain handler.
+	DrainDiscard
+)
+
 type consumeConfig struct {
-	gate *PauseGate
+	gate         *PauseGate
+	drainMode    DrainMode
+	drainDiscard func(any)
 }
 
 // ConsumeOption configures Consume behavior.
@@ -52,6 +72,28 @@ type ConsumeOption func(*consumeConfig)
 func WithPauseGate(gate *PauseGate) ConsumeOption {
 	return func(c *consumeConfig) {
 		c.gate = gate
+	}
+}
+
+// WithDrainMode configures how Consume handles items once the gate is draining.
+func WithDrainMode(m DrainMode) ConsumeOption {
+	return func(c *consumeConfig) {
+		c.drainMode = m
+	}
+}
+
+// WithDrainHandler accounts for each item Consume discards under DrainDiscard
+// (e.g. stats, WaitGroup balancing, skipped events). T is inferred from fn. A
+// nil fn is a no-op.
+func WithDrainHandler[T any](fn func(T)) ConsumeOption {
+	return func(c *consumeConfig) {
+		if fn != nil {
+			c.drainDiscard = func(v any) {
+				if t, ok := v.(T); ok {
+					fn(t)
+				}
+			}
+		}
 	}
 }
 
@@ -96,9 +138,17 @@ func Consume[T any](ctx context.Context, input <-chan T, concurrency int, wg *sy
 						case err == nil:
 							// Not paused: process the item.
 						case errors.Is(err, ErrDraining):
-							// Gate is draining: stop blocking on pause, but keep
-							// draining already-queued items to completion on the
-							// live ctx until the input channel is closed.
+							// Gate is draining. Under DrainDiscard, drop this
+							// not-yet-started item via the handler and keep
+							// pulling to empty the channel until it closes.
+							// Under DrainComplete, fall through to process it on
+							// the live ctx until the input channel is closed.
+							if cfg.drainMode == DrainDiscard {
+								if cfg.drainDiscard != nil {
+									cfg.drainDiscard(item)
+								}
+								continue
+							}
 						default:
 							// ctx cancelled: abort.
 							return
