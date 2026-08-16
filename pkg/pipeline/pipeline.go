@@ -5,6 +5,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -58,7 +59,16 @@ func Consume[T any](ctx context.Context, input <-chan T, concurrency int, wg *sy
 						return
 					}
 					if cfg.gate != nil {
-						if err := cfg.gate.WaitIfPaused(ctx); err != nil {
+						err := cfg.gate.WaitIfPaused(ctx)
+						switch {
+						case err == nil:
+							// Not paused: process the item.
+						case errors.Is(err, ErrDraining):
+							// Gate is draining: stop blocking on pause, but keep
+							// draining already-queued items to completion on the
+							// live ctx until the input channel is closed.
+						default:
+							// ctx cancelled: abort.
 							return
 						}
 					}

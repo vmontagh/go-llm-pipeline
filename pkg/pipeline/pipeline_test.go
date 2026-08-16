@@ -185,6 +185,82 @@ func TestConsume(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "stopped gate drains queued items and returns after channel close",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				gate.Stop()
+
+				input := make(chan int, 3)
+				input <- 1
+				input <- 2
+				input <- 3
+				close(input)
+
+				var count atomic.Int64
+				var wg sync.WaitGroup
+
+				process := func(ctx context.Context, _ int) {
+					if err := ctx.Err(); err != nil {
+						t.Errorf("process ctx.Err() = %v, want nil (ctx must stay live while draining)", err)
+					}
+					count.Add(1)
+				}
+
+				Consume(t.Context(), input, 2, &wg, process, WithPauseGate(gate))
+				wg.Wait() // returns only after the input channel is drained and closed
+
+				if diff := cmp.Diff(int64(3), count.Load()); diff != "" {
+					t.Fatalf("drained count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
+		{
+			name: "stopping a paused gate drains in-flight and remaining items",
+			run: func(t *testing.T) {
+				gate := NewPauseGate()
+				input := make(chan int, 5)
+
+				var count atomic.Int64
+				var wg sync.WaitGroup
+				item1Started := make(chan struct{})
+				item1Continue := make(chan struct{})
+				gateReached := make(chan struct{}, 1)
+				gate.waitHook = func() { gateReached <- struct{}{} }
+
+				process := func(ctx context.Context, item int) {
+					if err := ctx.Err(); err != nil {
+						t.Errorf("process ctx.Err() = %v, want nil (stop must not cancel ctx)", err)
+					}
+					if item == 1 {
+						close(item1Started)
+						<-item1Continue
+					}
+					count.Add(1)
+				}
+
+				Consume(t.Context(), input, 1, &wg, process, WithPauseGate(gate))
+
+				input <- 1
+				<-item1Started // item 1 is actively running
+
+				// Pause while item 1 is in flight, then queue more work.
+				gate.Pause()
+				input <- 2
+				input <- 3
+				close(item1Continue) // let item 1 finish
+				<-gateReached        // worker parked on the paused gate
+
+				// Stop: unblock the worker, drain remaining items, no cancellation.
+				gate.Stop()
+				close(input)
+				wg.Wait()
+
+				if diff := cmp.Diff(int64(3), count.Load()); diff != "" {
+					t.Fatalf("drained count diff (-want +got):\n%s", diff)
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
