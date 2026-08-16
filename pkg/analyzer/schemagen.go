@@ -433,16 +433,14 @@ func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.T
 			return nil, fmt.Errorf(`%w: json:",string" on a string field requires double-encoded JSON, which cannot be expressed as a plain-string schema; remove the ,string option`, ErrSchemaDerivation)
 		}
 		child = map[string]any{PropType: TypeString}
-		// A json:",string" numeric/bool field decodes from a quoted literal, so
-		// constrain the string to that grammar. Otherwise a value like "abc" is a
-		// schema-valid string that still fails to decode into the number, which
-		// would re-open the validate-before-decode loop. The pattern enforces the
-		// grammar but not width overflow (for example "999999999999" into int8
-		// still surfaces as a decode failure); the common non-numeric case is
-		// closed. Applied before applySchemaTag so an explicit pattern= overrides.
-		if p := stringOptionPattern(baseKind(field.Type)); p != "" {
-			child[PropPattern] = p
-		}
+		// A json:",string" numeric/bool field decodes from a quoted literal. Record
+		// the Go kind so Validate can confirm the quoted string actually decodes
+		// into it, making schema-validity and decodability identical by
+		// construction (including width limits and encoding/json's exact number
+		// grammar). A regular-expression approximation would drift from
+		// encoding/json in both directions, so it is deliberately avoided. Recorded
+		// before applySchemaTag so an explicit jsonschema:"pattern=" still composes.
+		child[PropStringEncodedKind] = baseKind(field.Type).String()
 	} else {
 		derived, err := schemaForType(field.Type, seen)
 		if err != nil {
@@ -466,39 +464,21 @@ func baseKind(t reflect.Type) reflect.Kind {
 
 // stringOptionApplies reports whether encoding/json honors the json:",string"
 // option for a field of the given kind. json only quotes bool, integer, float,
-// and string fields; for any other kind the option is silently ignored, so the
-// schema must describe the field's real shape or no response could decode. A
-// string-kind field is reported here but rejected by fieldSchema, because
-// json:",string" double-encodes a string and cannot be a plain-string schema.
+// and string fields (including uintptr); for any other kind the option is
+// silently ignored, so the schema must describe the field's real shape or no
+// response could decode. A string-kind field is reported here but rejected by
+// fieldSchema, because json:",string" double-encodes a string and cannot be a
+// plain-string schema.
 func stringOptionApplies(kind reflect.Kind) bool {
 	switch kind {
 	case reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
 		reflect.Float32, reflect.Float64,
 		reflect.String:
 		return true
 	default:
 		return false
-	}
-}
-
-// stringOptionPattern returns a regular expression matching the JSON strings that
-// encoding/json accepts for a json:",string" field of the given base kind, so a
-// schema-valid string is also decodable. It returns "" for kinds without a
-// numeric/bool grammar (such as string, which fieldSchema rejects separately).
-func stringOptionPattern(kind reflect.Kind) string {
-	switch kind {
-	case reflect.Bool:
-		return `^(true|false)$`
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return `^-?[0-9]+$`
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		return `^[0-9]+$`
-	case reflect.Float32, reflect.Float64:
-		return `^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`
-	default:
-		return ""
 	}
 }
 
@@ -549,27 +529,50 @@ func applySchemaTag(schema map[string]any, tag string) error {
 	if strings.TrimSpace(tag) == "" {
 		return nil
 	}
+	if err := checkRequiredExclusive(tag); err != nil {
+		return err
+	}
 	for _, part := range strings.Split(tag, ";") {
 		part = strings.TrimSpace(part)
 		if part == "" {
 			continue
 		}
-		key, val, _ := strings.Cut(part, "=")
+		key, val, hasValue := strings.Cut(part, "=")
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
-		if err := applySchemaDirective(schema, key, val); err != nil {
+		if err := applySchemaDirective(schema, key, val, hasValue); err != nil {
 			return err
 		}
 	}
 	return coerceEnumTypes(schema)
 }
 
-func applySchemaDirective(schema map[string]any, key, val string) error {
+// checkRequiredExclusive rejects a tag that carries both the required and
+// optional flags, whose effect would otherwise depend on directive order.
+func checkRequiredExclusive(tag string) error {
+	var hasRequired, hasOptional bool
+	for _, part := range strings.Split(tag, ";") {
+		name, _, _ := strings.Cut(strings.TrimSpace(part), "=")
+		switch strings.TrimSpace(name) {
+		case schemaTagRequired:
+			hasRequired = true
+		case schemaTagOptional:
+			hasOptional = true
+		}
+	}
+	if hasRequired && hasOptional {
+		return fmt.Errorf("%w: required and optional are mutually exclusive", ErrSchemaDerivation)
+	}
+	return nil
+}
+
+func applySchemaDirective(schema map[string]any, key, val string, hasValue bool) error {
 	switch key {
 	case schemaTagRequired, schemaTagOptional:
-		// Requiredness is applied by parseRequiredOverride from the bare flag; a
-		// valued form (required=true) is a mistake that would otherwise be dropped.
-		if val != "" {
+		// Requiredness is applied by parseRequiredOverride from the bare flag; any
+		// '=' form (required=true or even a trailing required=) is a mistake that
+		// would otherwise be silently dropped.
+		if hasValue {
 			return fmt.Errorf("%w: %s does not take a value", ErrSchemaDerivation, key)
 		}
 		return nil

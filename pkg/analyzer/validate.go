@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -128,9 +129,7 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 	}
 	// enum applies to every instance type, including arrays and objects, so it is
 	// checked once here rather than inside each structural branch.
-	if !enumAllows(schema, value) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: enumDetail(schema, value)})
-	}
+	validateEnum(schema, value, path, errs)
 }
 
 // validateInferred applies the keyword constraints relevant to the instance's
@@ -150,10 +149,11 @@ func validateInferred(schema map[string]any, value any, path string, errs *[]err
 	}
 }
 
-// schemaTypes reads the type keyword as either a single string or a JSON Schema
-// union ([]any of strings). It reports present=false when type is absent (leaving
-// the instance unconstrained by type) and malformed=true when type is present but
-// not a usable shape — an empty union, a union with a non-string member, or a
+// schemaTypes reads the type keyword as a single string or a JSON Schema union
+// (a []any of strings, or a native []string in a not-yet-canonicalized caller
+// schema). It reports present=false when type is absent (leaving the instance
+// unconstrained by type) and malformed=true when type is present but not a usable
+// shape — an empty union, a union with a non-string member, or a
 // non-string/non-array value — so the caller fails closed with a schema error
 // rather than silently skipping type checks.
 func schemaTypes(schema map[string]any) (types []string, present, malformed bool) {
@@ -177,6 +177,13 @@ func schemaTypes(schema map[string]any) (types []string, present, malformed bool
 			out = append(out, s)
 		}
 		return out, true, false
+	case []string:
+		// A caller-supplied schema (checked before canonicalization) may hold a
+		// native []string union; canonicalized schemas only ever carry []any.
+		if len(t) == 0 {
+			return nil, true, true
+		}
+		return append([]string(nil), t...), true, false
 	default:
 		return nil, true, true
 	}
@@ -284,25 +291,39 @@ func validateObject(schema map[string]any, value any, path string, errs *[]error
 		addTypeError(errs, path, TypeObject, value)
 		return
 	}
-	props, _ := mapField(schema, PropProperties)
-	for _, name := range requiredNames(schema) {
-		if _, present := obj[name]; !present {
-			*errs = append(*errs, &FieldError{
-				Path:   childPath(path, name),
-				Rule:   PropRequired,
-				Detail: "missing required property",
-			})
+	props, ok := propertiesMap(schema)
+	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropProperties, Detail: "schema properties must be a schema object map"})
+		return
+	}
+	names, malformed := requiredNames(schema)
+	if malformed {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropRequired, Detail: "schema required must be an array of strings"})
+	} else {
+		for _, name := range names {
+			if _, present := obj[name]; !present {
+				*errs = append(*errs, &FieldError{
+					Path:   childPath(path, name),
+					Rule:   PropRequired,
+					Detail: "missing required property",
+				})
+			}
 		}
 	}
 	validateAdditional(schema, obj, props, path, errs)
-	names := make([]string, 0, len(props))
+	childNames := make([]string, 0, len(props))
 	for name := range props {
-		names = append(names, name)
+		childNames = append(childNames, name)
 	}
-	sort.Strings(names)
-	for _, name := range names {
+	sort.Strings(childNames)
+	for _, name := range childNames {
 		child, ok := props[name].(map[string]any)
 		if !ok {
+			*errs = append(*errs, &FieldError{
+				Path:   childPath(path, name),
+				Rule:   PropProperties,
+				Detail: "property schema must be a schema object",
+			})
 			continue
 		}
 		if v, present := obj[name]; present {
@@ -311,12 +332,28 @@ func validateObject(schema map[string]any, value any, path string, errs *[]error
 	}
 }
 
+// propertiesMap reads the properties keyword. It reports ok=false only when the
+// keyword is present but not an object map, so a caller schema that misshapes
+// properties fails closed; an absent keyword yields a nil map and ok=true.
+func propertiesMap(schema map[string]any) (map[string]any, bool) {
+	raw, present := schema[PropProperties]
+	if !present {
+		return nil, true
+	}
+	m, ok := raw.(map[string]any)
+	return m, ok
+}
+
 // validateAdditional enforces the additionalProperties keyword. A bool false
 // rejects any property not declared in properties; a bool true (or absence)
 // allows them; a schema map validates each extra property against that schema,
 // which is how map[string]T fields are checked.
 func validateAdditional(schema, obj, props map[string]any, path string, errs *[]error) {
-	switch additional := schema[PropAdditional].(type) {
+	raw, present := schema[PropAdditional]
+	if !present {
+		return
+	}
+	switch additional := raw.(type) {
 	case bool:
 		if additional {
 			return
@@ -333,6 +370,12 @@ func validateAdditional(schema, obj, props map[string]any, path string, errs *[]
 		for _, name := range extraNames(obj, props) {
 			validateValue(additional, obj[name], childPath(path, name), errs)
 		}
+	default:
+		*errs = append(*errs, &FieldError{
+			Path:   path,
+			Rule:   PropAdditional,
+			Detail: "schema additionalProperties must be a boolean or schema object",
+		})
 	}
 }
 
@@ -370,8 +413,13 @@ func validateArray(schema map[string]any, value any, path string, errs *[]error)
 			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxItems)})
 		}
 	}
-	items, ok := mapField(schema, PropItems)
+	raw, present := schema[PropItems]
+	if !present {
+		return
+	}
+	items, ok := raw.(map[string]any)
 	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropItems, Detail: "schema items must be a schema object"})
 		return
 	}
 	for i, elem := range arr {
@@ -402,15 +450,94 @@ func validateString(schema map[string]any, value any, path string, errs *[]error
 			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, maxLen)})
 		}
 	}
-	if pattern, ok := stringField(schema, PropPattern); ok && pattern != "" {
-		re, err := regexp.Compile(pattern)
+	if raw, present := schema[PropPattern]; present {
+		pattern, ok := raw.(string)
 		switch {
-		case err != nil:
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
-		case !re.MatchString(s):
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
+		case !ok:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: "schema pattern must be a string"})
+		case pattern == "":
+			// An empty pattern matches every string; treat it as no constraint.
+		default:
+			re, err := regexp.Compile(pattern)
+			switch {
+			case err != nil:
+				*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
+			case !re.MatchString(s):
+				*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
+			}
 		}
 	}
+	validateStringEncoded(schema, s, path, errs)
+}
+
+// validateStringEncoded enforces the internal x-goStringKind keyword emitted for
+// json:",string" fields: the quoted string must decode into the recorded Go kind
+// exactly as encoding/json would, so a schema-valid string is always decodable. A
+// present-but-unusable keyword (non-string, or an unknown kind name) fails closed
+// with a FieldError rather than silently skipping the check.
+func validateStringEncoded(schema map[string]any, s, path string, errs *[]error) {
+	raw, present := schema[PropStringEncodedKind]
+	if !present {
+		return
+	}
+	name, ok := raw.(string)
+	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: "schema x-goStringKind must be a string"})
+		return
+	}
+	elem, ok := stringEncodedKindType(name)
+	if !ok {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("schema x-goStringKind %q is not a supported kind", name)})
+		return
+	}
+	if !stringDecodesInto(elem, s) {
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("value %q does not decode into %s", s, name)})
+	}
+}
+
+// stringDecodesInto reports whether s, as a JSON string payload, decodes into a
+// json:",string" field of type elem. It reproduces encoding/json's exact behavior
+// (including width limits and its number grammar) by unmarshaling into a
+// dynamically built holder struct, so validation and decoding never diverge.
+func stringDecodesInto(elem reflect.Type, s string) bool {
+	holder := reflect.StructOf([]reflect.StructField{{
+		Name: "V",
+		Type: elem,
+		Tag:  reflect.StructTag(`json:"v,string"`),
+	}})
+	quoted, err := json.Marshal(s)
+	if err != nil {
+		return false
+	}
+	body := make([]byte, 0, len(quoted)+7)
+	body = append(body, `{"v":`...)
+	body = append(body, quoted...)
+	body = append(body, '}')
+	return json.Unmarshal(body, reflect.New(holder).Interface()) == nil
+}
+
+// stringEncodedKindTypes maps a reflect.Kind name to a representative type, so
+// validateStringEncoded can reconstruct the decode target from the schema keyword.
+var stringEncodedKindTypes = map[string]reflect.Type{
+	reflect.Bool.String():    reflect.TypeOf(false),
+	reflect.Int.String():     reflect.TypeOf(int(0)),
+	reflect.Int8.String():    reflect.TypeOf(int8(0)),
+	reflect.Int16.String():   reflect.TypeOf(int16(0)),
+	reflect.Int32.String():   reflect.TypeOf(int32(0)),
+	reflect.Int64.String():   reflect.TypeOf(int64(0)),
+	reflect.Uint.String():    reflect.TypeOf(uint(0)),
+	reflect.Uint8.String():   reflect.TypeOf(uint8(0)),
+	reflect.Uint16.String():  reflect.TypeOf(uint16(0)),
+	reflect.Uint32.String():  reflect.TypeOf(uint32(0)),
+	reflect.Uint64.String():  reflect.TypeOf(uint64(0)),
+	reflect.Uintptr.String(): reflect.TypeOf(uintptr(0)),
+	reflect.Float32.String(): reflect.TypeOf(float32(0)),
+	reflect.Float64.String(): reflect.TypeOf(float64(0)),
+}
+
+func stringEncodedKindType(name string) (reflect.Type, bool) {
+	t, ok := stringEncodedKindTypes[name]
+	return t, ok
 }
 
 func validateNumber(schema map[string]any, typ string, value any, path string, errs *[]error) {
@@ -452,24 +579,38 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 	}
 }
 
-// enumAllows reports whether value is permitted by an enum constraint. It
-// returns true when no enum keyword is present. A present-but-empty enum is an
-// invalid schema (JSON Schema requires at least one member), so it permits no
-// value and always returns false.
-func enumAllows(schema map[string]any, value any) bool {
-	members, ok := enumMembers(schema)
+// validateEnum enforces the enum keyword. An absent enum permits every value; a
+// present enum that is not an array, or is an empty array (JSON Schema requires
+// at least one member), is an invalid schema that permits nothing and yields a
+// FieldError. Otherwise the value must deep-equal one member.
+func validateEnum(schema map[string]any, value any, path string, errs *[]error) {
+	raw, present := schema[PropEnum]
+	if !present {
+		return
+	}
+	members, ok := raw.([]any)
 	if !ok {
-		return true
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum must be an array"})
+		return
 	}
 	if len(members) == 0 {
-		return false
+		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum is empty; no value is permitted"})
+		return
 	}
 	for _, m := range members {
 		if enumEqual(m, value) {
-			return true
+			return
 		}
 	}
-	return false
+	parts := make([]string, 0, len(members))
+	for _, m := range members {
+		parts = append(parts, fmt.Sprintf("%v", m))
+	}
+	*errs = append(*errs, &FieldError{
+		Path:   path,
+		Rule:   PropEnum,
+		Detail: fmt.Sprintf("value %v is not one of [%s]", value, strings.Join(parts, ", ")),
+	})
 }
 
 func enumEqual(member, value any) bool {
@@ -522,37 +663,29 @@ func jsonDeepEqual(a, b any) bool {
 	}
 }
 
-func enumDetail(schema map[string]any, value any) string {
-	members, _ := enumMembers(schema)
-	if len(members) == 0 {
-		return "schema enum is empty; no value is permitted"
+// requiredNames reads the required keyword. It reports malformed=true when the
+// keyword is present but not an array of strings (a non-array, or an array with a
+// non-string member), so a misshapen caller schema fails closed instead of
+// silently dropping the constraint. An absent keyword yields nil names and
+// malformed=false.
+func requiredNames(schema map[string]any) (names []string, malformed bool) {
+	raw, present := schema[PropRequired]
+	if !present {
+		return nil, false
 	}
-	parts := make([]string, 0, len(members))
-	for _, m := range members {
-		parts = append(parts, fmt.Sprintf("%v", m))
-	}
-	return fmt.Sprintf("value %v is not one of [%s]", value, strings.Join(parts, ", "))
-}
-
-// enumMembers returns the enum members from a canonicalized schema, where they
-// are always a []any of canonical values.
-func enumMembers(schema map[string]any) ([]any, bool) {
-	e, ok := schema[PropEnum].([]any)
-	return e, ok
-}
-
-func requiredNames(schema map[string]any) []string {
-	req, ok := schema[PropRequired].([]any)
+	req, ok := raw.([]any)
 	if !ok {
-		return nil
+		return nil, true
 	}
 	out := make([]string, 0, len(req))
 	for _, r := range req {
-		if s, ok := r.(string); ok {
-			out = append(out, s)
+		s, ok := r.(string)
+		if !ok {
+			return nil, true
 		}
+		out = append(out, s)
 	}
-	return out
+	return out, false
 }
 
 func addTypeError(errs *[]error, path, want string, value any) {
@@ -593,11 +726,6 @@ func childPath(parent, name string) string {
 func stringField(schema map[string]any, key string) (string, bool) {
 	s, ok := schema[key].(string)
 	return s, ok
-}
-
-func mapField(schema map[string]any, key string) (map[string]any, bool) {
-	m, ok := schema[key].(map[string]any)
-	return m, ok
 }
 
 // intKeyword reads a schema keyword that must be a non-negative integer (string

@@ -138,9 +138,9 @@ func TestUnusableNumericKeywords(t *testing.T) {
 	}
 }
 
-// TestStringOptionPattern covers U3: a json:",string" numeric/bool field gains a
-// grammar pattern so a non-decodable string is a schema violation with
-// field-level feedback rather than an opaque decode failure.
+// TestStringOptionPattern covers U3/W2: a json:",string" numeric field records
+// the Go kind so a non-decodable string is a schema violation with field-level
+// feedback rather than an opaque decode failure.
 func TestStringOptionPattern(t *testing.T) {
 	t.Parallel()
 
@@ -152,8 +152,8 @@ func TestStringOptionPattern(t *testing.T) {
 	if field[analyzer.PropType] != analyzer.TypeString {
 		t.Errorf("type = %v, want string", field[analyzer.PropType])
 	}
-	if field[analyzer.PropPattern] != `^-?[0-9]+$` {
-		t.Errorf("pattern = %v, want signed-int grammar", field[analyzer.PropPattern])
+	if field[analyzer.PropStringEncodedKind] != "int" {
+		t.Errorf("x-goStringKind = %v, want int", field[analyzer.PropStringEncodedKind])
 	}
 
 	if err := analyzer.Validate(field, []byte(`"abc"`)); !errors.Is(err, analyzer.ErrSchemaValidation) {
