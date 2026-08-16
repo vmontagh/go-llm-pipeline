@@ -11,6 +11,8 @@ const (
 	TypeString     = "string"
 	PropAdditional = "additionalProperties"
 	PropItems      = "items"
+	PropMinItems   = "minItems"
+	PropMaxItems   = "maxItems"
 	PropProperties = "properties"
 	PropRequired   = "required"
 	PropType       = "type"

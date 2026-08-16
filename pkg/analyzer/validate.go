@@ -109,7 +109,15 @@ func canonicalizeSchema(schema map[string]any) (map[string]any, error) {
 }
 
 func validateValue(schema map[string]any, value any, path string, errs *[]error) {
-	if types, ok := schemaTypes(schema); ok {
+	types, present, malformed := schemaTypes(schema)
+	switch {
+	case malformed:
+		*errs = append(*errs, &FieldError{
+			Path:   path,
+			Rule:   PropType,
+			Detail: fmt.Sprintf("invalid schema type: %v", schema[PropType]),
+		})
+	case present:
 		validateTypes(schema, types, value, path, errs)
 	}
 	// enum applies to every instance type, including arrays and objects, so it is
@@ -120,22 +128,34 @@ func validateValue(schema map[string]any, value any, path string, errs *[]error)
 }
 
 // schemaTypes reads the type keyword as either a single string or a JSON Schema
-// union ([]any of strings). It reports false when type is absent, leaving the
-// instance unconstrained by type.
-func schemaTypes(schema map[string]any) ([]string, bool) {
-	switch t := schema[PropType].(type) {
+// union ([]any of strings). It reports present=false when type is absent (leaving
+// the instance unconstrained by type) and malformed=true when type is present but
+// not a usable shape — an empty union, a union with a non-string member, or a
+// non-string/non-array value — so the caller fails closed with a schema error
+// rather than silently skipping type checks.
+func schemaTypes(schema map[string]any) (types []string, present, malformed bool) {
+	raw, ok := schema[PropType]
+	if !ok {
+		return nil, false, false
+	}
+	switch t := raw.(type) {
 	case string:
-		return []string{t}, true
+		return []string{t}, true, false
 	case []any:
+		if len(t) == 0 {
+			return nil, true, true
+		}
 		out := make([]string, 0, len(t))
 		for _, v := range t {
-			if s, ok := v.(string); ok {
-				out = append(out, s)
+			s, ok := v.(string)
+			if !ok {
+				return nil, true, true
 			}
+			out = append(out, s)
 		}
-		return out, len(out) > 0
+		return out, true, false
 	default:
-		return nil, false
+		return nil, true, true
 	}
 }
 
@@ -311,6 +331,22 @@ func validateArray(schema map[string]any, value any, path string, errs *[]error)
 		addTypeError(errs, path, TypeArray, value)
 		return
 	}
+	if minItems, present, valid := intKeyword(schema, PropMinItems); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinItems, Detail: "schema minItems is not a usable non-negative integer"})
+		case int64(len(arr)) < minItems:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinItems, Detail: fmt.Sprintf("array length %d is below minimum %d", len(arr), minItems)})
+		}
+	}
+	if maxItems, present, valid := intKeyword(schema, PropMaxItems); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: "schema maxItems is not a usable non-negative integer"})
+		case int64(len(arr)) > maxItems:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxItems)})
+		}
+	}
 	items, ok := mapField(schema, PropItems)
 	if !ok {
 		return
@@ -326,12 +362,22 @@ func validateString(schema map[string]any, value any, path string, errs *[]error
 		addTypeError(errs, path, TypeString, value)
 		return
 	}
-	runes := utf8.RuneCountInString(s)
-	if minLen, ok := floatField(schema, PropMinLength); ok && float64(runes) < minLen {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, int(minLen))})
+	runes := int64(utf8.RuneCountInString(s))
+	if minLen, present, valid := intKeyword(schema, PropMinLength); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: "schema minLength is not a usable non-negative integer"})
+		case runes < minLen:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, minLen)})
+		}
 	}
-	if maxLen, ok := floatField(schema, PropMaxLength); ok && float64(runes) > maxLen {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, int(maxLen))})
+	if maxLen, present, valid := intKeyword(schema, PropMaxLength); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: "schema maxLength is not a usable non-negative integer"})
+		case runes > maxLen:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, maxLen)})
+		}
 	}
 	if pattern, ok := stringField(schema, PropPattern); ok && pattern != "" {
 		re, err := regexp.Compile(pattern)
@@ -365,11 +411,21 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 	if typ == TypeInteger && !val.IsInt() {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not an integer", s)})
 	}
-	if lo, ok := bigBound(schema, PropMinimum); ok && val.Cmp(lo) < 0 {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", s, boundString(schema, PropMinimum))})
+	if lo, present, valid := boundKeyword(schema, PropMinimum); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: "schema minimum is not a usable number"})
+		case val.Cmp(lo) < 0:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", s, boundString(schema, PropMinimum))})
+		}
 	}
-	if hi, ok := bigBound(schema, PropMaximum); ok && val.Cmp(hi) > 0 {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: fmt.Sprintf("value %s exceeds maximum %s", s, boundString(schema, PropMaximum))})
+	if hi, present, valid := boundKeyword(schema, PropMaximum); present {
+		switch {
+		case !valid:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: "schema maximum is not a usable number"})
+		case val.Cmp(hi) > 0:
+			*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: fmt.Sprintf("value %s exceeds maximum %s", s, boundString(schema, PropMaximum))})
+		}
 	}
 }
 
@@ -521,45 +577,26 @@ func mapField(schema map[string]any, key string) (map[string]any, bool) {
 	return m, ok
 }
 
-// floatField reads a numeric schema keyword, accepting any JSON-compatible Go
-// numeric type so caller-supplied schemas (which may use int, int64, etc.) are
-// enforced the same as derived schemas.
-func floatField(schema map[string]any, key string) (float64, bool) {
-	return toFloat(schema[key])
-}
-
-func toFloat(v any) (float64, bool) {
-	switch n := v.(type) {
-	case float64:
-		return n, true
-	case float32:
-		return float64(n), true
-	case int:
-		return float64(n), true
-	case int8:
-		return float64(n), true
-	case int16:
-		return float64(n), true
-	case int32:
-		return float64(n), true
-	case int64:
-		return float64(n), true
-	case uint:
-		return float64(n), true
-	case uint8:
-		return float64(n), true
-	case uint16:
-		return float64(n), true
-	case uint32:
-		return float64(n), true
-	case uint64:
-		return float64(n), true
-	case json.Number:
-		f, err := n.Float64()
-		return f, err == nil
-	default:
-		return 0, false
+// intKeyword reads a schema keyword that must be a non-negative integer (string
+// lengths, array item counts). It reports present=false when the key is absent
+// (skip the constraint) and valid=false when the key is present but not a usable
+// non-negative integer — including a non-numeric value or one whose magnitude
+// exceeds the safe conversion bound — so callers fail closed with a schema error
+// rather than silently dropping the constraint.
+func intKeyword(schema map[string]any, key string) (n int64, present, valid bool) {
+	raw, ok := schema[key]
+	if !ok {
+		return 0, false, false
 	}
+	r, ok := toBigRat(raw)
+	if !ok || !r.IsInt() || r.Sign() < 0 {
+		return 0, true, false
+	}
+	num := r.Num()
+	if !num.IsInt64() {
+		return 0, true, false
+	}
+	return num.Int64(), true, true
 }
 
 // numberMagnitudeExceeded reports whether a JSON number literal is large enough
@@ -630,12 +667,21 @@ func toBigRat(v any) (*big.Rat, bool) {
 	}
 }
 
-func bigBound(schema map[string]any, key string) (*big.Rat, bool) {
-	raw, present := schema[key]
-	if !present {
-		return nil, false
+// boundKeyword reads a numeric minimum/maximum keyword. It reports present=false
+// when the key is absent (skip the comparison) and valid=false when the key is
+// present but cannot be interpreted as a usable number — non-numeric or an
+// over-magnitude literal — so callers fail closed with a schema error rather than
+// silently dropping the bound.
+func boundKeyword(schema map[string]any, key string) (bound *big.Rat, present, valid bool) {
+	raw, ok := schema[key]
+	if !ok {
+		return nil, false, false
 	}
-	return toBigRat(raw)
+	r, ok := toBigRat(raw)
+	if !ok {
+		return nil, true, false
+	}
+	return r, true, true
 }
 
 func boundString(schema map[string]any, key string) string {
