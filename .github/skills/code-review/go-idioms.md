@@ -85,6 +85,7 @@ Use `cmp.Equal(got, want, cmpopts.EquateErrors())` for error comparison in tests
 
 Avoid `wantErr bool` patterns that merely check `err != nil`. Always compare against a specific error value.
 
+
 ```go
 // WRONG
 wantErr: true,
@@ -100,6 +101,7 @@ if got, want := err, tt.wantErr; !cmp.Equal(got, want, cmpopts.EquateErrors()) {
 ### 1.5 Use `errors.Join` for order-independent validation
 
 When a function validates multiple fields, collect all errors with `errors.Join` instead of returning on the first failure. This makes tests order-independent and reports all problems at once.
+
 
 ```go
 func (s *Service) validate(r *Request) error {
@@ -208,6 +210,7 @@ func (e *MissingKeyError) Error() string { return fmt.Sprintf("missing key: %s",
 
 Avoid prefixes like "failed to", "unable to", "error" in `fmt.Errorf` — they add noise without information. State what was being done.
 
+
 ```go
 // WRONG — redundant stop words
 return fmt.Errorf("failed to open file %s: %w", path, err)
@@ -222,6 +225,7 @@ return fmt.Errorf("reading config: %w", err)
 
 `Must` helpers (that panic on error) are only appropriate for package-level `var` blocks with observably constant values. Always provide a non-panicking counterpart. Never call `Must` in runtime code paths.
 
+
 ```go
 // OK — package-level constant init
 var defaultTemplate = template.Must(template.New("t").Parse("{{.Name}}"))
@@ -235,6 +239,7 @@ func HandleRequest(r *http.Request) {
 ### 1.13 Return `(value, bool)` for single-failure-mode lookups
 
 When a function has exactly one failure mode (e.g., "not found"), return `(T, bool)` instead of `(T, error)`.
+
 
 ```go
 // WRONG — error is always the same "not found"
@@ -256,6 +261,7 @@ func Lookup(key string) (string, bool) {
 ### 1.14 Convert to status codes only at system boundaries
 
 Libraries should return plain Go errors. Convert to gRPC/HTTP status codes only in RPC handlers or API gateways.
+
 
 ```go
 // WRONG — status code deep in business logic
@@ -404,6 +410,7 @@ timeformat.Date(t)
 
 For complex tests, use descriptive names. For simple tests, `Test<FunctionName>` suffices.
 
+
 ```go
 // Simple
 func TestAdd(t *testing.T) { ... }
@@ -497,6 +504,7 @@ Go zero-value semantics mean `false`, `0`, `""`, and `nil` are the defaults. Nev
 
 Unit tests must never depend on wall clock or `time.Sleep`. Inject a fake/logical clock.
 
+
 ```go
 // WRONG — flaky, slow
 time.Sleep(2 * time.Second)
@@ -515,6 +523,7 @@ fakeClock.Advance(2 * time.Second)
 ### 3.5 Follow the AAA pattern (Arrange, Act, Assert)
 
 Organize test cases into three distinct blocks for readability.
+
 
 ```go
 func TestAdd(t *testing.T) {
@@ -599,6 +608,7 @@ if diff := cmp.Diff(want, got); diff != "" {
 
 Test-doubles (fakes) are preferred over mocks. Mocks couple tests to call order and arguments, making them brittle. Name test-double packages `<pkg>test` (e.g., `dbtest`).
 
+
 ```go
 // package dbtest
 type FakeDatabase struct {
@@ -616,6 +626,7 @@ func (f *FakeDatabase) Save(data string) error {
 
 Don't write tests whose expectations are copied from the implementation. Test observable properties and documented behavior.
 
+
 ```go
 // WRONG — test mirrors the implementation
 got := TempFile(123)
@@ -631,6 +642,7 @@ if !strings.HasPrefix(got, "/tmp/") {
 ### 3.12 Prefer black-box testing (`*_test` package)
 
 Use the `package foo_test` pattern so tests can only access exported APIs. This ensures tests are resilient to implementation changes and don't inflate coverage artificially.
+
 
 ```go
 // WRONG — white-box: tests internals directly
@@ -651,6 +663,7 @@ func TestValidate(t *testing.T) {
 ### 3.13 Use `t.Parallel` for table-driven tests
 
 When test cases are independent, add `t.Parallel()` to reduce execution time.
+
 
 ```go
 func TestAdd(t *testing.T) {
@@ -675,6 +688,7 @@ func TestAdd(t *testing.T) {
 ### 3.14 Use `testing.Short()` and `t.Skip` for long tests
 
 Long-running tests should opt out of presubmit CI with `testing.Short()`:
+
 
 ```go
 func TestLongIntegrationTest(t *testing.T) {
@@ -723,6 +737,7 @@ t.Run("emptyInput_returnsError", func(t *testing.T) { ... })
 
 Never add `IsTest bool` flags or similar logic that changes behavior under test. Use dependency injection instead.
 
+
 ```go
 // WRONG — production code knows about tests
 func Connect(addr string, isTest bool) (*DB, error) {
@@ -740,6 +755,7 @@ func NewService(c Connector) *Service { ... }
 ### 3.18 Test both happy path and error conditions
 
 Cover edge cases, boundary conditions, and error paths — not just the golden path.
+
 
 ```go
 // WRONG — only tests the happy path
@@ -759,6 +775,7 @@ tests := []struct{ name, input string; want int; wantErr error }{
 ### 3.19 Isolate tests from external dependencies
 
 Unit tests must not hit databases, filesystems, or network services. Use dependency injection and test-doubles.
+
 
 ```go
 // WRONG — unit test hits a real database
@@ -832,6 +849,7 @@ func TestProcess(t *testing.T) {
 
 Register teardown with `t.Cleanup` inside the helper so callers can't forget to defer it.
 
+
 ```go
 // WRONG — caller must remember to defer
 func newFakeDB(t *testing.T) (*DB, func()) {
@@ -859,6 +877,7 @@ func TestQuery(t *testing.T) {
 
 Store test input files in a `testdata/` directory (ignored by `go build`). Use `os.CreateTemp` or `t.TempDir()` for temporary outputs.
 
+
 ```go
 // WRONG — inline large test data or hardcoded /tmp paths
 golden := "/tmp/test_output.json"
@@ -872,6 +891,7 @@ output := filepath.Join(tmpDir, "output.json")
 ### 3.24 Extract `main` into a testable `run()` function
 
 Keep `main()` as a thin wrapper. Extract the real logic into `run(ctx, args, stdout, stderr) error` so it can be tested directly.
+
 
 ```go
 // WRONG — untestable main
@@ -898,6 +918,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error { .
 ### 3.25 Embed the interface in test fakes for large interfaces
 
 When faking a large interface, embed it in the struct to satisfy the compiler. Only implement the methods your test needs.
+
 
 ```go
 // WRONG — manually stub 20+ methods
@@ -999,6 +1020,7 @@ logger.Info("processing items", "count", len(items))
 ```
 
 ### 4.6 Logging: use severity levels correctly
+
 
 | Level   | Use for |
 |---------|---------|
@@ -1144,6 +1166,7 @@ func runServe(cmd *cobra.Command, args []string) {
 
 For N concurrent operations with error aggregation, use `golang.org/x/sync/errgroup`.
 
+
 ```go
 g, ctx := errgroup.WithContext(ctx)
 for _, url := range urls {
@@ -1202,6 +1225,7 @@ func (c *Cache) Get(key string) string { ... }
 
 Refactor package-level `var` into struct fields with methods. If backward compatibility is needed, delegate package-level functions to a default instance.
 
+
 ```go
 // WRONG — package-level mutable state
 var db *sql.DB
@@ -1216,6 +1240,7 @@ func (s *Store) Query(q string) (*sql.Rows, error) { return s.db.Query(q) }
 ### 4.19 Keep context keys unexported — provide accessor functions
 
 Never export the context key type. Provide `FromContext` and `NewContext` functions.
+
 
 ```go
 // WRONG — exported key, callers can collide or misuse
@@ -1236,6 +1261,7 @@ func UserIDFrom(ctx context.Context) (string, bool) {
 
 Reserve `func init` for trivial, stateless setup (e.g., registering codecs, lookup tables). Flag values are not yet parsed during `init`. Prefer explicit initialization in `main`.
 
+
 ```go
 // WRONG — flags are not parsed yet in init
 var configPath = flag.String("config", "", "path")
@@ -1253,6 +1279,7 @@ func main() {
 ### 4.21 Don't use `sync.Once` for fallible operations
 
 `sync.Once` runs the function exactly once — if it fails, retries are impossible. Use a mutex with check-on-demand for operations that can fail transiently.
+
 
 ```go
 // WRONG — if Connect fails, it's never retried
@@ -1282,6 +1309,7 @@ func GetConn() (*grpc.ClientConn, error) {
 
 Types that hold resources (connections, goroutines, file handles) must provide an explicit `Close()` or `Stop()` method. Never rely on finalizers.
 
+
 ```go
 // RIGHT — explicit lifecycle
 type Worker struct { cancel context.CancelFunc }
@@ -1297,6 +1325,7 @@ func (w *Worker) Stop() { w.cancel() }
 ### 4.23 Don't mix `os.Exit` with `defer`
 
 `os.Exit` terminates immediately — deferred functions never run. Move exit logic to `main` and return errors from `run()` instead.
+
 
 ```go
 // WRONG — defer never executes
@@ -1603,6 +1632,7 @@ func Retry(cfg RetryConfig, fn func() error) error { ... }
 
 ### 5.17 Use `time.Duration` and `time.Time` — never raw integers for time
 
+
 ```go
 // WRONG — what unit is this? seconds? milliseconds?
 func SetTimeout(ms int) { ... }
@@ -1616,6 +1646,7 @@ func SetDeadline(t time.Time) { ... }
 ### 5.18 Use `strings.Builder` for string concatenation in loops
 
 Concatenating with `+=` in a loop creates O(n^2) allocations. Use `strings.Builder`.
+
 
 ```go
 // WRONG — O(n²) allocations
@@ -1636,6 +1667,7 @@ result := sb.String()
 
 `strings.Cut` avoids magic indices and handles missing separators cleanly.
 
+
 ```go
 // WRONG — magic index, off-by-one risk
 parts := strings.SplitN(line, "=", 2)
@@ -1649,6 +1681,7 @@ if !ok { return }
 
 ### 5.20 Use underscores in long numeric literals
 
+
 ```go
 // WRONG — hard to count digits, easy to mistype
 const maxFileSize = 1073741824
@@ -1660,6 +1693,7 @@ const maxFileSize = 1_073_741_824 // 1 GiB
 ### 5.21 Remove `v := v` copies in range loops (Go 1.22+)
 
 Since Go 1.22, loop variables are per-iteration. The `v := v` shadow is dead code.
+
 
 ```go
 // WRONG — unnecessary since Go 1.22
@@ -1678,6 +1712,7 @@ for _, v := range items {
 
 Prefer `slices.Contains`, `slices.SortFunc`, `maps.Keys` over hand-rolled loops.
 
+
 ```go
 // WRONG — hand-rolled search
 found := false
@@ -1690,6 +1725,7 @@ found := slices.Contains(items, target)
 ```
 
 ### 5.23 Use `cmp.Or` for first-non-zero defaults
+
 
 ```go
 // WRONG — verbose if/else chain
@@ -1709,6 +1745,7 @@ name := cmp.Or(cfg.Name, envName, "default")
 
 `time.Tick` leaks the underlying ticker. Use `time.NewTicker` and defer `Stop()`.
 
+
 ```go
 // WRONG — ticker is never stopped, resource leak
 for range time.Tick(5 * time.Second) {
@@ -1726,6 +1763,7 @@ for range ticker.C {
 ### 5.25 Enum zero value should be Unknown or Invalid
 
 Define the zero value of an enum as `Unknown` or `Invalid` so uninitialized values are never silently valid.
+
 
 ```go
 // WRONG — zero value is a valid status
@@ -1748,6 +1786,7 @@ const (
 
 `append` may return a slice that shares memory with the original. Use `slices.Clip` before appending to a sub-slice to prevent mutation of other slices.
 
+
 ```go
 // WRONG — a and b may share underlying array
 a := original[:3]
@@ -1761,6 +1800,7 @@ b := append(a, newItem) // safe
 ### 5.27 Factory functions only when zero value is unusable
 
 Don't write `New` constructors that merely return a struct literal with no logic. Use factory functions only when the type requires initialization (maps, channels, goroutines).
+
 
 ```go
 // WRONG — New adds nothing over a literal
@@ -1780,6 +1820,7 @@ func NewDB() *DB { return &DB{entries: make(map[string]*Entry)} }
 ### 5.28 Use method values when signatures match
 
 Pass `obj.Method` directly instead of wrapping it in an anonymous function.
+
 
 ```go
 // WRONG — unnecessary wrapper
@@ -1893,6 +1934,7 @@ if err == nil { // if NO error
 
 Explicitly document goroutine safety when a seemingly read-only method mutates internal state (e.g., caching). Assume mutative methods are NOT goroutine-safe unless documented.
 
+
 ```go
 // RIGHT — documents non-obvious concurrency constraint
 // Lookup returns the cached value for key. It is safe for concurrent use.
@@ -1912,6 +1954,7 @@ func (c *Cache) Lookup(key string) (string, error) { ... }
 ### 7.2 Ensure all CI checks pass
 
 Linters (`golangci-lint`, `errcheck`), tests (with race detection), code coverage, and architecture lint must all pass.
+
 
 ### 7.3 Never commit secrets, credentials, or generated files
 
