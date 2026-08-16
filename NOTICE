@@ -1,0 +1,18 @@
+go-llm-pipeline
+Copyright (c) 2026 Vajih
+
+This product is licensed under the MIT License (see LICENSE).
+
+---
+
+Third-party attribution
+
+The documentation at .github/skills/code-review/go-idioms.md references and
+occasionally paraphrases the Google Go Style Guide
+(https://google.github.io/styleguide/go/), which is licensed under the
+Creative Commons Attribution 3.0 License (CC BY 3.0):
+https://creativecommons.org/licenses/by/3.0/
+
+That document cites Google Go Style Guide sections and quotes a few short
+phrases directly, with attribution. All other prose, code examples, and rule
+selection in this repository are original work licensed under the MIT License.
