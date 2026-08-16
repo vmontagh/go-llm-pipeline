@@ -88,7 +88,7 @@ func TestStringOptionDecodeEquivalence(t *testing.T) {
 	samples := []string{
 		"true", "false", "yes", "",
 		"0", "1", "-1", "01", "+1", "127", "128", "-128", "-129", "255", "256",
-		"abc", "1.", ".5", "1.5", "1e10", "1e100", "1e400", "1.5e2", "-3",
+		"abc", "1.", ".5", "1.5", "-1.5", "1e3", "1e10", "1e100", "1e400", "1.5e2", "-3",
 	}
 	for _, k := range kinds {
 		t.Run(k.name, func(t *testing.T) {
@@ -228,6 +228,74 @@ func TestWellFormedSchemaUnaffected(t *testing.T) {
 	}
 	if err := analyzer.Validate(schema, []byte(`{"number":"A-1","total":2}`)); err != nil {
 		t.Errorf("Validate(valid invoice) error = %v, want nil", err)
+	}
+}
+
+// TestWellFormedStructuralKeywords covers W4: the VALID shape of each hardened
+// keyword still validates a conforming instance, proving the fail-closed checks
+// only reject genuinely malformed keyword values.
+func TestWellFormedStructuralKeywords(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		schema   map[string]any
+		instance string
+	}{
+		{
+			name:     "additionalProperties_bool",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeObject, analyzer.PropAdditional: false},
+			instance: `{}`,
+		},
+		{
+			name:     "additionalProperties_schema",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeObject, analyzer.PropAdditional: map[string]any{analyzer.PropType: analyzer.TypeInteger}},
+			instance: `{"x":1}`,
+		},
+		{
+			name:     "items_schema",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeArray, analyzer.PropItems: map[string]any{analyzer.PropType: analyzer.TypeInteger}},
+			instance: `[1,2]`,
+		},
+		{
+			name:     "pattern_string",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropPattern: "^a+$"},
+			instance: `"aaa"`,
+		},
+		{
+			name:     "enum_array",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeString, analyzer.PropEnum: []any{"a", "b"}},
+			instance: `"a"`,
+		},
+		{
+			name:     "required_array",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeObject, analyzer.PropRequired: []any{"id"}},
+			instance: `{"id":1}`,
+		},
+		{
+			name:     "properties_object",
+			schema:   map[string]any{analyzer.PropType: analyzer.TypeObject, analyzer.PropProperties: map[string]any{"id": map[string]any{analyzer.PropType: analyzer.TypeInteger}}},
+			instance: `{"id":1}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := analyzer.Validate(tc.schema, []byte(tc.instance)); err != nil {
+				t.Errorf("Validate(%s) error = %v, want nil", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestNilAnalyzerSentinel covers W9: Extract with a nil analyzer returns the
+// ErrNilAnalyzer sentinel, matched via errors.Is rather than its message string.
+func TestNilAnalyzerSentinel(t *testing.T) {
+	t.Parallel()
+
+	_, err := analyzer.Extract[invoice](t.Context(), nil, analyzer.ExtractRequest{Prompt: "x"})
+	if !errors.Is(err, analyzer.ErrNilAnalyzer) {
+		t.Errorf("Extract(nil) error = %v, want ErrNilAnalyzer", err)
 	}
 }
 
