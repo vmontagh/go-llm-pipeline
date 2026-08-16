@@ -40,6 +40,10 @@ func (e *FieldError) Error() string {
 // Unwrap reports ErrSchemaValidation so a FieldError satisfies errors.Is.
 func (e *FieldError) Unwrap() error { return ErrSchemaValidation }
 
+// ruleJSON labels FieldErrors that reject a document at the JSON-syntax level,
+// before any schema keyword is applied.
+const ruleJSON = "json"
+
 // Validate checks data (a JSON document) against schema, a JSON Schema map as
 // produced by SchemaOf or supplied via WithSchema. It returns nil when data
 // conforms, or an errors.Join of *FieldError values (each wrapping
@@ -54,7 +58,10 @@ func Validate(schema map[string]any, data []byte) error {
 	dec.UseNumber()
 	var value any
 	if err := dec.Decode(&value); err != nil {
-		return &FieldError{Rule: "json", Detail: fmt.Sprintf("invalid JSON: %v", err)}
+		return &FieldError{Rule: ruleJSON, Detail: fmt.Sprintf("invalid JSON: %v", err)}
+	}
+	if dec.More() {
+		return &FieldError{Rule: ruleJSON, Detail: "unexpected trailing content after JSON value"}
 	}
 	var errs []error
 	validateValue(schema, value, "", &errs)
@@ -102,17 +109,7 @@ func validateObject(schema map[string]any, value any, path string, errs *[]error
 			})
 		}
 	}
-	if additional, ok := schema[PropAdditional].(bool); ok && !additional {
-		for name := range obj {
-			if _, declared := props[name]; !declared {
-				*errs = append(*errs, &FieldError{
-					Path:   childPath(path, name),
-					Rule:   PropAdditional,
-					Detail: "unexpected property",
-				})
-			}
-		}
-	}
+	validateAdditional(schema, obj, props, path, errs)
 	names := make([]string, 0, len(props))
 	for name := range props {
 		names = append(names, name)
@@ -127,6 +124,43 @@ func validateObject(schema map[string]any, value any, path string, errs *[]error
 			validateValue(child, v, childPath(path, name), errs)
 		}
 	}
+}
+
+// validateAdditional enforces the additionalProperties keyword. A bool false
+// rejects any property not declared in properties; a bool true (or absence)
+// allows them; a schema map validates each extra property against that schema,
+// which is how map[string]T fields are checked.
+func validateAdditional(schema, obj, props map[string]any, path string, errs *[]error) {
+	switch additional := schema[PropAdditional].(type) {
+	case bool:
+		if additional {
+			return
+		}
+		extras := extraNames(obj, props)
+		for _, name := range extras {
+			*errs = append(*errs, &FieldError{
+				Path:   childPath(path, name),
+				Rule:   PropAdditional,
+				Detail: "unexpected property",
+			})
+		}
+	case map[string]any:
+		for _, name := range extraNames(obj, props) {
+			validateValue(additional, obj[name], childPath(path, name), errs)
+		}
+	}
+}
+
+// extraNames returns the sorted object keys not declared in props.
+func extraNames(obj, props map[string]any) []string {
+	var extras []string
+	for name := range obj {
+		if _, declared := props[name]; !declared {
+			extras = append(extras, name)
+		}
+	}
+	sort.Strings(extras)
+	return extras
 }
 
 func validateArray(schema map[string]any, value any, path string, errs *[]error) {
@@ -183,7 +217,7 @@ func validateNumber(schema map[string]any, typ string, value any, path string, e
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not a number", s)})
 		return
 	}
-	if typ == TypeInteger && !isIntegerLiteral(s) {
+	if typ == TypeInteger && !val.IsInt() {
 		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not an integer", s)})
 	}
 	if !enumAllows(schema, num) {
@@ -413,10 +447,4 @@ func boundString(schema map[string]any, key string) string {
 	default:
 		return fmt.Sprintf("%v", n)
 	}
-}
-
-// isIntegerLiteral reports whether a json.Number string denotes an integer (no
-// fraction or exponent), so integer validation is exact for values beyond 2^53.
-func isIntegerLiteral(s string) bool {
-	return !strings.ContainsAny(s, ".eE")
 }

@@ -22,6 +22,15 @@ type textValued struct {
 type customTime struct{}
 
 func (customTime) MarshalText() ([]byte, error) { return []byte("2020-01-01"), nil }
+func (*customTime) UnmarshalText([]byte) error  { return nil }
+
+type marshalOnly struct{}
+
+func (marshalOnly) MarshalText() ([]byte, error) { return []byte("x"), nil }
+
+type textMarshalOnly struct {
+	When marshalOnly `json:"when"`
+}
 
 type quotedNumber struct {
 	Count int `json:"count,string"`
@@ -55,7 +64,7 @@ func TestSchemaOfHardening(t *testing.T) {
 			wantErr: analyzer.ErrSchemaDerivation,
 		},
 		{
-			name:  "text marshaler is a string",
+			name:  "text marshaler and unmarshaler is a string",
 			value: textValued{},
 			check: func(t *testing.T, schema map[string]any) {
 				got := prop(schema, "when")
@@ -63,6 +72,11 @@ func TestSchemaOfHardening(t *testing.T) {
 					t.Errorf("when type = %v, want string", got[analyzer.PropType])
 				}
 			},
+		},
+		{
+			name:    "marshal-only text type rejected",
+			value:   textMarshalOnly{},
+			wantErr: analyzer.ErrSchemaDerivation,
 		},
 		{
 			name:  "json string option is a string",

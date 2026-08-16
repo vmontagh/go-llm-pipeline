@@ -22,23 +22,31 @@ var ErrSchemaDerivation = errors.New("analyzer: schema derivation failed")
 const schemaTag = "jsonschema"
 
 var (
-	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
-	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	textMarshalerType   = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+	textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
+	jsonMarshalerType   = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	jsonUnmarshalerType = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
 )
 
 // SchemaOf reflects a JSON Schema (as a provider-agnostic map) from v, which
 // must be a struct or a pointer to one. Field names are taken from json tags; a
 // field is required unless it is a pointer or its json tag carries ",omitempty".
-// Fields tagged json:",string" are derived as strings. Types implementing
-// encoding.TextMarshaler (such as time.Time) are derived as strings; types with
-// custom json.Marshaler behaviour and recursive (cyclic) types are rejected with
-// ErrSchemaDerivation rather than producing a schema no response can satisfy.
-// Anonymous struct fields are flattened following encoding/json promotion, with
-// shallower (outer) fields winning name conflicts. The optional jsonschema
-// struct tag adds description, enum, minimum/maximum, minLength/maxLength,
-// pattern, and can force required/optional; enum members are string-valued for
-// string fields and coerced to numbers or booleans for numeric/boolean fields.
-// Objects emit additionalProperties:false so Validate rejects unexpected keys.
+// Fields tagged json:",string" are derived as strings. Because Extract decodes a
+// response into T, string handling follows the decode contract: types that
+// implement encoding.TextUnmarshaler (such as time.Time) are derived as strings,
+// while a type that only marshals to text — or a struct with custom
+// json.Marshaler/json.Unmarshaler behaviour — is rejected with ErrSchemaDerivation
+// rather than producing a schema no decoded value can satisfy. Recursive (cyclic)
+// types are also rejected. Maps with string keys become objects whose
+// additionalProperties schema is derived from the element type. Anonymous struct
+// fields are flattened following encoding/json promotion: the shallowest field
+// wins a name conflict, a same-depth tie is resolved only when exactly one field
+// is explicitly tagged, and an otherwise ambiguous name is omitted. The optional
+// jsonschema struct tag adds description, enum, minimum/maximum, minLength/
+// maxLength, pattern, and can force required/optional; enum members are
+// string-valued for string fields and coerced to numbers or booleans for
+// numeric/boolean fields. Objects emit additionalProperties:false so Validate
+// rejects unexpected keys.
 func SchemaOf(v any) (map[string]any, error) {
 	if v == nil {
 		return nil, fmt.Errorf("%w: nil value", ErrSchemaDerivation)
@@ -57,8 +65,14 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if implementsMarshaler(t, textMarshalerType) {
+	// Extract decodes a JSON response into T, so the schema must describe the
+	// decode contract. A type that unmarshals from text (such as time.Time) is a
+	// JSON string; a type that only marshals to text cannot be decoded from it.
+	if implementsMarshaler(t, textUnmarshalerType) {
 		return map[string]any{PropType: TypeString}, nil
+	}
+	if implementsMarshaler(t, textMarshalerType) {
+		return nil, fmt.Errorf("%w: type %s marshals to text but cannot unmarshal from it", ErrSchemaDerivation, t)
 	}
 	switch t.Kind() {
 	case reflect.String:
@@ -77,9 +91,16 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		}
 		return map[string]any{PropType: TypeArray, PropItems: items}, nil
 	case reflect.Map:
-		return map[string]any{PropType: TypeObject, PropAdditional: true}, nil
+		if t.Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("%w: map key type %s is not a string", ErrSchemaDerivation, t.Key())
+		}
+		elem, err := schemaForType(t.Elem(), seen)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{PropType: TypeObject, PropAdditional: elem}, nil
 	case reflect.Struct:
-		if implementsMarshaler(t, jsonMarshalerType) {
+		if implementsMarshaler(t, jsonMarshalerType) || implementsMarshaler(t, jsonUnmarshalerType) {
 			return nil, fmt.Errorf("%w: type %s uses custom JSON marshaling", ErrSchemaDerivation, t)
 		}
 		return schemaForStruct(t, seen)
@@ -95,53 +116,11 @@ func schemaForStruct(t reflect.Type, seen map[reflect.Type]bool) (map[string]any
 	seen[t] = true
 	defer delete(seen, t)
 
-	props := make(map[string]any)
-	requiredSet := make(map[string]bool)
-	var required []string
-	// Embedded (promoted) fields are merged after direct fields so that
-	// shallower names win, mirroring encoding/json.
-	embedded := make(map[string]any)
-	embeddedRequired := make(map[string]bool)
-	var embeddedOrder []string
-
-	for i := range t.NumField() {
-		field := t.Field(i)
-		info := jsonFieldInfo(&field)
-		if info.skip || (!field.IsExported() && !field.Anonymous) {
-			continue
-		}
-
-		if field.Anonymous && !info.explicitName {
-			if err := promoteEmbedded(&field, seen, embedded, embeddedRequired, &embeddedOrder); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if !field.IsExported() {
-			continue
-		}
-
-		child, err := fieldSchema(&field, &info, seen)
-		if err != nil {
-			return nil, fmt.Errorf("field %s: %w", field.Name, err)
-		}
-		props[info.name] = child
-		if isRequired(&field, &info) {
-			requiredSet[info.name] = true
-			required = append(required, info.name)
-		}
+	fc := &fieldCollector{seen: seen}
+	if err := fc.collect(t, 0, true); err != nil {
+		return nil, err
 	}
-
-	for _, name := range embeddedOrder {
-		if _, defined := props[name]; defined {
-			continue
-		}
-		props[name] = embedded[name]
-		if embeddedRequired[name] && !requiredSet[name] {
-			requiredSet[name] = true
-			required = append(required, name)
-		}
-	}
+	props, required := resolveFields(fc.candidates)
 
 	schema := map[string]any{
 		PropType:       TypeObject,
@@ -154,34 +133,140 @@ func schemaForStruct(t reflect.Type, seen map[reflect.Type]bool) (map[string]any
 	return schema, nil
 }
 
-// promoteEmbedded flattens an anonymous struct field's properties into the
-// parent, following encoding/json field promotion for the common case.
-func promoteEmbedded(field *reflect.StructField, seen map[reflect.Type]bool, props map[string]any, required map[string]bool, order *[]string) error {
-	ft := field.Type
-	for ft.Kind() == reflect.Pointer {
-		ft = ft.Elem()
-	}
-	if ft.Kind() != reflect.Struct || implementsMarshaler(ft, textMarshalerType) || implementsMarshaler(ft, jsonMarshalerType) {
-		return fmt.Errorf("%w: unsupported embedded field %s", ErrSchemaDerivation, field.Name)
-	}
-	child, err := schemaForStruct(ft, seen)
-	if err != nil {
-		return err
-	}
-	childProps, ok := child[PropProperties].(map[string]any)
-	if !ok {
-		return nil
-	}
-	for name, sub := range childProps {
-		if _, exists := props[name]; !exists {
-			props[name] = sub
-			*order = append(*order, name)
+// fieldCandidate is one struct field (direct or promoted from an embedded
+// struct) competing to define a JSON property.
+type fieldCandidate struct {
+	name     string
+	depth    int
+	tagged   bool
+	required bool
+	schema   map[string]any
+}
+
+// fieldCollector accumulates field candidates while walking a struct and its
+// embedded structs, keeping shared state (visited types, discovery order) off
+// the recursive call signature.
+type fieldCollector struct {
+	seen       map[reflect.Type]bool
+	candidates []fieldCandidate
+}
+
+// collect walks t and its anonymous embedded structs, recording one candidate
+// per exported field. Embedded structs are flattened following encoding/json
+// promotion; parentRequired carries whether the embedding chain is itself
+// required, so a field promoted through an optional (pointer/omitempty/
+// jsonschema:"optional") embedding is never required.
+func (fc *fieldCollector) collect(t reflect.Type, depth int, parentRequired bool) error {
+	for i := range t.NumField() {
+		field := t.Field(i)
+		info := jsonFieldInfo(&field)
+		if info.skip {
+			continue
 		}
-	}
-	for _, name := range requiredNames(child) {
-		required[name] = true
+
+		if field.Anonymous && !info.explicitName {
+			ft := field.Type
+			for ft.Kind() == reflect.Pointer {
+				ft = ft.Elem()
+			}
+			if ft.Kind() == reflect.Struct &&
+				!implementsMarshaler(ft, textUnmarshalerType) &&
+				!implementsMarshaler(ft, jsonMarshalerType) &&
+				!implementsMarshaler(ft, jsonUnmarshalerType) {
+				if fc.seen[ft] {
+					return fmt.Errorf("%w: recursive type %s", ErrSchemaDerivation, ft)
+				}
+				fc.seen[ft] = true
+				embRequired := parentRequired && isRequired(&field, &info)
+				err := fc.collect(ft, depth+1, embRequired)
+				delete(fc.seen, ft)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+			// An embedded marshaler or non-struct type is treated as a single
+			// field named after the type, matching encoding/json.
+		}
+		if !field.IsExported() {
+			continue
+		}
+
+		child, err := fieldSchema(&field, &info, fc.seen)
+		if err != nil {
+			return fmt.Errorf("field %s: %w", field.Name, err)
+		}
+		fc.candidates = append(fc.candidates, fieldCandidate{
+			name:     info.name,
+			depth:    depth,
+			tagged:   info.explicitName,
+			required: parentRequired && isRequired(&field, &info),
+			schema:   child,
+		})
 	}
 	return nil
+}
+
+// resolveFields applies encoding/json dominance to the collected candidates:
+// for each JSON name the shallowest field wins; a tie at the shallowest depth is
+// resolved only when exactly one candidate is explicitly tagged, otherwise the
+// name is ambiguous and omitted entirely. Properties and required names are
+// emitted in first-discovery order for stable output.
+func resolveFields(candidates []fieldCandidate) (props map[string]any, required []string) {
+	groups := make(map[string][]fieldCandidate)
+	var order []string
+	for _, c := range candidates {
+		if _, seen := groups[c.name]; !seen {
+			order = append(order, c.name)
+		}
+		groups[c.name] = append(groups[c.name], c)
+	}
+
+	props = make(map[string]any)
+	for _, name := range order {
+		winner, ok := dominantField(groups[name])
+		if !ok {
+			continue
+		}
+		props[name] = winner.schema
+		if winner.required {
+			required = append(required, name)
+		}
+	}
+	return props, required
+}
+
+// dominantField selects the winning candidate for a JSON name, or reports false
+// when the name is ambiguous.
+func dominantField(group []fieldCandidate) (fieldCandidate, bool) {
+	if len(group) == 1 {
+		return group[0], true
+	}
+	minDepth := group[0].depth
+	for _, c := range group[1:] {
+		if c.depth < minDepth {
+			minDepth = c.depth
+		}
+	}
+	var shallow []fieldCandidate
+	for _, c := range group {
+		if c.depth == minDepth {
+			shallow = append(shallow, c)
+		}
+	}
+	if len(shallow) == 1 {
+		return shallow[0], true
+	}
+	var tagged []fieldCandidate
+	for _, c := range shallow {
+		if c.tagged {
+			tagged = append(tagged, c)
+		}
+	}
+	if len(tagged) == 1 {
+		return tagged[0], true
+	}
+	return fieldCandidate{}, false
 }
 
 func implementsMarshaler(t, iface reflect.Type) bool {
@@ -319,36 +404,48 @@ func applySchemaDirective(schema map[string]any, key, val string) error {
 	case "max":
 		return setBound(schema, PropMaximum, key, val)
 	case "minLength":
-		return setFloat(schema, PropMinLength, key, val)
+		return setLength(schema, PropMinLength, key, val)
 	case "maxLength":
-		return setFloat(schema, PropMaxLength, key, val)
+		return setLength(schema, PropMaxLength, key, val)
 	default:
 		return fmt.Errorf("%w: unknown jsonschema directive %q", ErrSchemaDerivation, key)
 	}
 	return nil
 }
 
-// setBound stores a numeric minimum/maximum as the exact decimal literal
-// (json.Number) so validation compares against the value the caller wrote, with
-// no float64 rounding. It validates the literal parses as an exact rational.
+// setBound stores a numeric minimum/maximum as the exact JSON-number literal
+// (json.Number) so validation compares against the value the caller wrote with
+// no float64 rounding. It rejects anything that is not valid JSON-number syntax
+// (for example "1/2"), which would otherwise fail later when the schema is
+// marshaled for the model.
 func setBound(schema map[string]any, key, directive, val string) error {
-	if _, ok := new(big.Rat).SetString(val); !ok {
+	n, err := parseJSONNumber(val)
+	if err != nil {
 		return fmt.Errorf("%w: %s expects a number, got %q", ErrSchemaDerivation, directive, val)
+	}
+	schema[key] = n
+	return nil
+}
+
+// setLength stores a string-length keyword (minLength/maxLength) as a
+// non-negative integer json.Number, rejecting negative, fractional, and
+// non-finite values.
+func setLength(schema map[string]any, key, directive, val string) error {
+	if _, err := strconv.ParseUint(val, 10, 64); err != nil {
+		return fmt.Errorf("%w: %s expects a non-negative integer, got %q", ErrSchemaDerivation, directive, val)
 	}
 	schema[key] = json.Number(val)
 	return nil
 }
 
-// setFloat stores a numeric length keyword (minLength/maxLength) as a float64.
-// Lengths are bounded by practical string sizes, so exact rationals are
-// unnecessary here.
-func setFloat(schema map[string]any, key, directive, val string) error {
-	f, err := strconv.ParseFloat(val, 64)
-	if err != nil {
-		return fmt.Errorf("%w: %s expects a number, got %q", ErrSchemaDerivation, directive, val)
+// parseJSONNumber returns val as a json.Number only when it is valid JSON-number
+// syntax, so bounds and enum members always marshal cleanly.
+func parseJSONNumber(val string) (json.Number, error) {
+	var n json.Number
+	if err := json.Unmarshal([]byte(val), &n); err != nil {
+		return "", err
 	}
-	schema[key] = f
-	return nil
+	return n, nil
 }
 
 // parseEnum splits a pipe-separated enum list into string members;
@@ -382,10 +479,17 @@ func coerceEnumTypes(schema map[string]any) error {
 			if !ok {
 				continue
 			}
-			if _, ok := new(big.Rat).SetString(s); !ok {
+			n, err := parseJSONNumber(s)
+			if err != nil {
 				return fmt.Errorf("%w: enum member %q is not a number", ErrSchemaDerivation, s)
 			}
-			members[i] = json.Number(s)
+			if typ == TypeInteger {
+				r, ok := new(big.Rat).SetString(s)
+				if !ok || !r.IsInt() {
+					return fmt.Errorf("%w: enum member %q is not an integer", ErrSchemaDerivation, s)
+				}
+			}
+			members[i] = n
 		}
 		return nil
 	case TypeBoolean:

@@ -150,6 +150,14 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 		schema = derived
 	}
 
+	// Marshal the schema once, before any provider call, so a schema that cannot
+	// be rendered (for example a WithSchema map holding a non-finite float) fails
+	// fast instead of silently sending the model no constraints.
+	schemaJSON, err := json.Marshal(schema)
+	if err != nil {
+		return zero, fmt.Errorf("marshaling schema: %w", err)
+	}
+
 	var (
 		lastErr      error
 		lastFeedback *FeedbackInput
@@ -159,7 +167,7 @@ func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opt
 			return zero, err
 		}
 
-		prompt := buildPrompt(req.Prompt, schema, lastFeedback, cfg.formatter)
+		prompt := buildPrompt(req.Prompt, string(schemaJSON), lastFeedback, cfg.formatter)
 		raw, err := a.Analyze(ctx, prompt, req.ImageData, req.JobID, req.Publish)
 		if err != nil {
 			return zero, fmt.Errorf("analyzing (attempt %d): %w", attempt, err)
@@ -215,13 +223,13 @@ func decodeAndValidate[T any](schema map[string]any, raw string, strict bool) (T
 }
 
 // buildPrompt appends the schema instruction and, when the previous attempt
-// failed, the correction feedback to the base prompt. Feedback is replaced each
-// attempt rather than compounded.
-func buildPrompt(base string, schema map[string]any, feedback *FeedbackInput, formatter func(FeedbackInput) string) string {
+// failed, the correction feedback to the base prompt. schemaJSON is the
+// pre-marshaled schema. Feedback is replaced each attempt rather than compounded.
+func buildPrompt(base, schemaJSON string, feedback *FeedbackInput, formatter func(FeedbackInput) string) string {
 	var b strings.Builder
 	b.WriteString(base)
 	b.WriteString("\n\nRespond with ONLY a single JSON object conforming to this JSON Schema:\n")
-	b.WriteString(schemaJSON(schema))
+	b.WriteString(schemaJSON)
 	if feedback != nil {
 		b.WriteString("\n\n")
 		b.WriteString(formatter(*feedback))
@@ -230,12 +238,18 @@ func buildPrompt(base string, schema map[string]any, feedback *FeedbackInput, fo
 }
 
 // defaultFeedback renders a deterministic correction message from a failed
-// attempt for the next prompt.
+// attempt for the next prompt. It distinguishes malformed JSON from a
+// syntactically valid response that did not match the required structure
+// (ErrDecode) so the model gets actionable guidance.
 func defaultFeedback(in FeedbackInput) string {
 	var b strings.Builder
 	b.WriteString("Your previous response was invalid and must be corrected.")
 	if in.ParseError != nil {
-		b.WriteString("\nThe response did not contain a valid JSON object: ")
+		if errors.Is(in.ParseError, ErrDecode) {
+			b.WriteString("\nThe response was valid JSON but did not match the required structure: ")
+		} else {
+			b.WriteString("\nThe response did not contain a valid JSON object: ")
+		}
 		b.WriteString(in.ParseError.Error())
 	}
 	if len(in.Fields) > 0 {
@@ -271,14 +285,6 @@ func fieldErrors(err error) []*FieldError {
 	}
 	collect(err)
 	return out
-}
-
-func schemaJSON(schema map[string]any) string {
-	b, err := json.Marshal(schema)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
 }
 
 // NewTextTemplate wires a Template that returns the provider's raw text
