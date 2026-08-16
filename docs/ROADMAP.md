@@ -23,7 +23,7 @@
 
 Eino is an excellent fit for autonomous conversational systems (complex state graphs, ReAct loops, multi-agent delegation, and streaming chat UX). `go-llm-pipeline` is intentionally optimized for deterministic, production batch workflows.
 
-- **Deterministic testing as a first-class feature:** `pkg/llmvcr` records and replays provider HTTP interactions so CI remains fast, stable, and low-cost.
+- **Deterministic testing as a first-class feature:** `pkg/llmtest` and `pkg/vcrpatch` record and replay provider HTTP interactions so CI remains fast, stable, and low-cost.
 - **Batch extraction over chat streaming:** The core workload is high-throughput, typed enrichment of large asset sets into strict Go structs.
 - **Developer-orchestrated execution over autonomous loops:** Pipeline flow is explicit and predictable (for example, ensemble generation and judge synthesis), reducing drift and runtime surprises.
 - **Resource-aware local concurrency:** Local compute-bound workers and remote API-bound workers are tuned independently for practical VRAM/CPU/network constraints.
@@ -47,7 +47,7 @@ Eino is an excellent fit for autonomous conversational systems (complex state gr
 
 - **Category:** Opik is an *observability and evaluation control plane* (UI, backend, SDKs in Python/TypeScript/Java/Ruby). `go-llm-pipeline` is an *execution substrate* — a Go library for orchestrating batch pipelines.
 - **Primary workflow:** Opik instruments arbitrary LLM apps to collect traces, score outputs, and compare experiments. `go-llm-pipeline` runs the pipeline itself: worker pools, typed extraction, retries, and local/remote concurrency tuning.
-- **Determinism model:** `go-llm-pipeline` provides offline determinism via `pkg/llmvcr` cassette record/replay, so CI runs without contacting any provider. Opik provides reproducibility via stored traces, datasets, and versioned experiments against live or recorded calls.
+- **Determinism model:** `go-llm-pipeline` provides offline determinism via `pkg/llmtest` cassette record/replay, so CI runs without contacting any provider. Opik provides reproducibility via stored traces, datasets, and versioned experiments against live or recorded calls.
 - **Type system:** `go-llm-pipeline` is built around strict Go structs and schema-enforced extraction with validation-driven retry loops. Opik is language-agnostic and treats outputs primarily as evaluable artifacts rather than typed runtime contracts.
 - **Local-first posture:** `go-llm-pipeline` is designed around local inference (Ollama) with separate concurrency caps for local compute-bound vs. remote API-bound work. Opik is deployment-flexible (self-hosted or Comet Cloud) but is not principally a local inference orchestrator.
 - **Footprint:** `go-llm-pipeline` is a dependency-light Go library with no server component. Opik ships a full platform (backend services, frontend, storage) intended to be run as infrastructure.
