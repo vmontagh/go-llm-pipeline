@@ -193,6 +193,29 @@ func TestMemoryStoreNearest(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreNearestScoreEndpoints(t *testing.T) {
+	t.Parallel()
+
+	// Identical and opposite vectors must report exactly ±1 despite the small
+	// error independent normalization introduces.
+	s := vectorstore.NewMemoryStore()
+	mustAdd(t, s,
+		vectorstore.Item{ID: "same", Vector: vectorstore.Vector{1, 1}},
+		vectorstore.Item{ID: "opposite", Vector: vectorstore.Vector{-1, -1}},
+	)
+
+	got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 1}, 2)
+	if err != nil {
+		t.Fatalf("Nearest() = %v, want nil", err)
+	}
+	want := map[string]float64{"same": 1, "opposite": -1}
+	for _, n := range got {
+		if diff := cmp.Diff(want[n.Item.ID], n.Score); diff != "" {
+			t.Errorf("Nearest() score for %q mismatch (-want +got):\n%s", n.Item.ID, diff)
+		}
+	}
+}
+
 func TestMemoryStoreNearestErrors(t *testing.T) {
 	t.Parallel()
 

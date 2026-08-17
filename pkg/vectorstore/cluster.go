@@ -38,7 +38,7 @@ func ClusterItems(items []Item, threshold float64) ([]Cluster, error) {
 	}
 	for i := range items {
 		for j := i + 1; j < len(items); j++ {
-			if dot(normalized[i], normalized[j]) >= threshold {
+			if cosine(normalized[i], normalized[j]) >= threshold {
 				union(parent, i, j)
 			}
 		}

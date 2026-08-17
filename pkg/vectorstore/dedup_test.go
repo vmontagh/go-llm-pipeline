@@ -1,6 +1,7 @@
 package vectorstore_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -52,6 +53,26 @@ func TestFindDuplicates(t *testing.T) {
 			},
 			threshold: 0.5,
 			want:      [][2]string{{"a", "m"}, {"a", "z"}, {"m", "z"}},
+		},
+		{
+			name: "identical vectors meet endpoint threshold 1",
+			// Independent normalization would score identical {1,1} vectors a
+			// hair below 1; the cosine endpoint snap keeps them paired at 1.
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 1}},
+				{ID: "b", Vector: vectorstore.Vector{1, 1}},
+			},
+			threshold: 1,
+			want:      [][2]string{{"a", "b"}},
+		},
+		{
+			name: "opposite vectors meet endpoint threshold -1",
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{-1, 0}},
+			},
+			threshold: -1,
+			want:      [][2]string{{"a", "b"}},
 		},
 		{
 			name: "no pairs meet threshold",
@@ -143,6 +164,38 @@ func TestFindDuplicatesErrors(t *testing.T) {
 			_, err := vectorstore.FindDuplicates(t.Context(), tc.items, tc.threshold)
 			if !errors.Is(err, tc.want) {
 				t.Errorf("FindDuplicates(%s) = %v, want %v", tc.name, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestFindDuplicatesCancelled(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		items []vectorstore.Item
+	}{
+		{
+			name:  "empty items",
+			items: nil,
+		},
+		{
+			name: "non-empty items",
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{1, 0}},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			if _, err := vectorstore.FindDuplicates(ctx, tc.items, 0.9); !errors.Is(err, context.Canceled) {
+				t.Errorf("FindDuplicates(%s, cancelled ctx) = %v, want context.Canceled", tc.name, err)
 			}
 		})
 	}

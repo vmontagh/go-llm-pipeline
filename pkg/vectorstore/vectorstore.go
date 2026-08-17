@@ -120,6 +120,29 @@ func dot(a, b Vector) float64 {
 	return sum
 }
 
+// cosineEpsilon is how close a raw dot product must be to an endpoint before it
+// is snapped there. Independently normalizing two mathematically identical
+// vectors can land a few ULPs off ±1 (for example, identical {1, 1} vectors
+// score 0.9999999999999998), which would wrongly exclude them from an
+// endpoint-threshold comparison.
+const cosineEpsilon = 1e-9
+
+// cosine returns the cosine similarity of two unit vectors: their dot product
+// clamped to [-1, 1] and snapped to an exact endpoint when within
+// cosineEpsilon. This keeps threshold comparisons well-behaved at the exact
+// endpoints ±1, so identical vectors score exactly 1 and opposite vectors
+// exactly -1.
+func cosine(a, b Vector) float64 {
+	switch s := dot(a, b); {
+	case s > 1-cosineEpsilon:
+		return 1
+	case s < -1+cosineEpsilon:
+		return -1
+	default:
+		return s
+	}
+}
+
 // normalizeItems validates every item and returns their unit-length vectors,
 // positionally aligned with items. It enforces non-empty, unique IDs, valid
 // vectors, and a single shared dimension, so batch helpers such as

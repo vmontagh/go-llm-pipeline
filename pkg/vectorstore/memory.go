@@ -106,13 +106,38 @@ func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]
 		return nil, fmt.Errorf("querying nearest: %w", err)
 	}
 
+	neighbors, err := s.snapshot(ctx, query, len(vector))
+	if err != nil {
+		return nil, err
+	}
+
+	// Sorting only touches the defensive copies in neighbors, so it runs after
+	// the read lock is released to avoid blocking concurrent Add calls.
+	sort.Slice(neighbors, func(i, j int) bool {
+		if neighbors[i].Score != neighbors[j].Score {
+			return neighbors[i].Score > neighbors[j].Score
+		}
+		return neighbors[i].Item.ID < neighbors[j].Item.ID
+	})
+	if len(neighbors) > limit {
+		neighbors = neighbors[:limit]
+	}
+	return neighbors, nil
+}
+
+// snapshot scores every stored item against the normalized query under the read
+// lock and returns freshly copied neighbors. It enforces the store's dimension
+// and honors cancellation, including on an empty store where the scan loop would
+// otherwise never run. Sorting is deliberately left to the caller so it happens
+// after the lock is released.
+func (s *MemoryStore) snapshot(ctx context.Context, query Vector, dim int) ([]Neighbor, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("querying nearest: %w", err)
 	}
-	if s.dim != 0 && len(vector) != s.dim {
-		return nil, fmt.Errorf("querying nearest: %w: got %d, want %d", ErrDimensionMismatch, len(vector), s.dim)
+	if s.dim != 0 && dim != s.dim {
+		return nil, fmt.Errorf("querying nearest: %w: got %d, want %d", ErrDimensionMismatch, dim, s.dim)
 	}
 
 	neighbors := make([]Neighbor, 0, len(s.items))
@@ -122,18 +147,8 @@ func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]
 		}
 		neighbors = append(neighbors, Neighbor{
 			Item:  copyItem(e.item),
-			Score: dot(query, e.normalized),
+			Score: cosine(query, e.normalized),
 		})
-	}
-
-	sort.Slice(neighbors, func(i, j int) bool {
-		if neighbors[i].Score != neighbors[j].Score {
-			return neighbors[i].Score > neighbors[j].Score
-		}
-		return neighbors[i].Item.ID < neighbors[j].Item.ID
-	})
-	if len(neighbors) > limit {
-		neighbors = neighbors[:limit]
 	}
 	return neighbors, nil
 }

@@ -59,6 +59,17 @@ func TestClusterItems(t *testing.T) {
 			want:      [][]string{{"a"}, {"b"}},
 		},
 		{
+			name: "identical vectors cluster at endpoint threshold 1",
+			// The cosine endpoint snap keeps identical {1,1} vectors linked at
+			// exactly 1 rather than a hair below.
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 1}},
+				{ID: "b", Vector: vectorstore.Vector{1, 1}},
+			},
+			threshold: 1,
+			want:      [][]string{{"a", "b"}},
+		},
+		{
 			name:      "no items",
 			items:     nil,
 			threshold: 0.5,

@@ -28,6 +28,9 @@ type Duplicate struct {
 // valid and share one dimension (see the package errors). threshold must be
 // within the cosine range [-1, 1].
 func FindDuplicates(ctx context.Context, items []Item, threshold float64) ([]Duplicate, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("finding duplicates: %w", err)
+	}
 	if err := validateThreshold(threshold); err != nil {
 		return nil, fmt.Errorf("finding duplicates: %w", err)
 	}
@@ -42,7 +45,7 @@ func FindDuplicates(ctx context.Context, items []Item, threshold float64) ([]Dup
 			return nil, fmt.Errorf("finding duplicates: %w", err)
 		}
 		for j := i + 1; j < len(items); j++ {
-			score := dot(normalized[i], normalized[j])
+			score := cosine(normalized[i], normalized[j])
 			if score >= threshold {
 				a, b := orderPair(items[i], items[j])
 				dups = append(dups, Duplicate{A: copyItem(a), B: copyItem(b), Score: score})
