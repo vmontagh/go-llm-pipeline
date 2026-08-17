@@ -4,10 +4,9 @@
 //
 // The package deliberately does not compute embeddings itself: callers own the
 // choice of embedding model and inject the resulting vectors. This keeps the
-// core module dependency-light and lets the same [Store] contract back several
-// implementations. The MVP ships an in-memory implementation ([MemoryStore]);
-// a persistent store can satisfy the same interface later without changing
-// caller code.
+// core module dependency-light. The MVP ships an in-memory implementation
+// ([MemoryStore]); a persistent implementation can be added later behind the
+// same method set.
 //
 // All operations run fully offline. Similarity is cosine similarity over
 // normalized vectors, so scores lie in the range [-1, 1] where 1 is identical
@@ -15,7 +14,6 @@
 package vectorstore
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -75,51 +73,39 @@ type Neighbor struct {
 	Score float64
 }
 
-// Store indexes embeddings and answers nearest-neighbor queries. It is the
-// abstraction that decouples callers from a particular storage backend, so an
-// in-memory store today and a persistent store later are interchangeable.
-type Store interface {
-	// Add inserts item, replacing any existing item with the same ID. It
-	// returns a sentinel-wrapped error for invalid input (see the package
-	// errors).
-	Add(ctx context.Context, item Item) error
-	// Nearest returns up to limit neighbors ordered by descending Score, with
-	// ties broken by ascending Item.ID. It returns ErrInvalidLimit when limit
-	// is not positive and fewer than limit results when the store holds fewer
-	// items.
-	Nearest(ctx context.Context, vector Vector, limit int) ([]Neighbor, error)
-}
-
-// Embedder converts a caller value of type T into an embedding Vector. It is
-// the injection seam for embedding models: the package intentionally provides
-// no implementation so callers stay in control of the model and its
-// dependencies, then feed the produced vectors into a [Store].
-type Embedder[T any] interface {
-	// Embed returns the embedding for value.
-	Embed(ctx context.Context, value T) (Vector, error)
-}
-
 // normalize returns a unit-length copy of v. It rejects empty vectors, vectors
 // with non-finite components, and zero-magnitude vectors, for which cosine
 // similarity is undefined.
+//
+// Components are scaled by the largest absolute value before the sum of squares
+// is formed. This keeps the intermediate magnitude near 1, so very large
+// components do not overflow to +Inf (which would cache a valid vector as all
+// zeros) and very small components do not underflow to 0.
 func normalize(v Vector) (Vector, error) {
 	if len(v) == 0 {
 		return nil, ErrEmptyVector
 	}
-	var sum float64
+	var maxAbs float64
 	for _, x := range v {
 		if math.IsNaN(x) || math.IsInf(x, 0) {
 			return nil, fmt.Errorf("%w: non-finite component", ErrInvalidVector)
 		}
-		sum += x * x
+		if a := math.Abs(x); a > maxAbs {
+			maxAbs = a
+		}
 	}
-	mag := math.Sqrt(sum)
-	if mag == 0 {
+	if maxAbs == 0 {
 		return nil, fmt.Errorf("%w: zero magnitude", ErrInvalidVector)
 	}
+	var sum float64
+	for _, x := range v {
+		scaled := x / maxAbs
+		sum += scaled * scaled
+	}
+	root := math.Sqrt(sum)
 	out := make(Vector, len(v))
 	for i, x := range v {
-		out[i] = x / mag
+		out[i] = (x / maxAbs) / root
 	}
 	return out, nil
 }

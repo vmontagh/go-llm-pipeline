@@ -1,6 +1,7 @@
 package vectorstore
 
 import (
+	"fmt"
 	"sort"
 )
 
@@ -24,11 +25,11 @@ type Cluster struct {
 // similar to no other item forms a singleton cluster.
 func ClusterItems(items []Item, threshold float64) ([]Cluster, error) {
 	if err := validateThreshold(threshold); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("clustering items: %w", err)
 	}
 	normalized, err := normalizeItems(items)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("clustering items: %w", err)
 	}
 
 	parent := make([]int, len(items))

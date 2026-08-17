@@ -19,37 +19,63 @@ func mustAdd(t *testing.T, s *vectorstore.MemoryStore, items ...vectorstore.Item
 	}
 }
 
-func TestMemoryStoreAddValidation(t *testing.T) {
+// neighborIDs projects neighbors to their IDs for order-sensitive comparison.
+func neighborIDs(neighbors []vectorstore.Neighbor) []string {
+	if len(neighbors) == 0 {
+		return nil
+	}
+	out := make([]string, len(neighbors))
+	for i, n := range neighbors {
+		out[i] = n.Item.ID
+	}
+	return out
+}
+
+func TestMemoryStoreAdd(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		item vectorstore.Item
-		want error
+		name   string
+		seed   []vectorstore.Item
+		item   vectorstore.Item
+		cancel bool
+		want   error
 	}{
 		{
 			name: "valid",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}},
 		},
 		{
-			name: "emptyID",
+			name: "empty id",
 			item: vectorstore.Item{Vector: vectorstore.Vector{1, 0}},
 			want: vectorstore.ErrEmptyID,
 		},
 		{
-			name: "emptyVector",
+			name: "empty vector",
 			item: vectorstore.Item{ID: "a"},
 			want: vectorstore.ErrEmptyVector,
 		},
 		{
-			name: "nanComponent",
+			name: "nan component",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{nan(), 0}},
 			want: vectorstore.ErrInvalidVector,
 		},
 		{
-			name: "zeroMagnitude",
+			name: "zero magnitude",
 			item: vectorstore.Item{ID: "a", Vector: vectorstore.Vector{0, 0}},
 			want: vectorstore.ErrInvalidVector,
+		},
+		{
+			name: "dimension mismatch",
+			seed: []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
+			item: vectorstore.Item{ID: "b", Vector: vectorstore.Vector{1, 0, 0}},
+			want: vectorstore.ErrDimensionMismatch,
+		},
+		{
+			name:   "cancelled context",
+			item:   vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}},
+			cancel: true,
+			want:   context.Canceled,
 		},
 	}
 
@@ -57,27 +83,22 @@ func TestMemoryStoreAddValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			s := vectorstore.NewMemoryStore()
-			got := s.Add(t.Context(), tc.item)
-			if !cmp.Equal(got, tc.want, cmpEqErr()) {
-				t.Fatalf("Add(%+v) = %v, want %v", tc.item, got, tc.want)
+			mustAdd(t, s, tc.seed...)
+
+			ctx := t.Context()
+			if tc.cancel {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			if err := s.Add(ctx, tc.item); !errors.Is(err, tc.want) {
+				t.Errorf("Add(%+v) = %v, want %v", tc.item, err, tc.want)
 			}
 		})
 	}
 }
 
-func TestMemoryStoreAddDimensionMismatch(t *testing.T) {
-	t.Parallel()
-
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}})
-
-	err := s.Add(t.Context(), vectorstore.Item{ID: "b", Vector: vectorstore.Vector{1, 0, 0}})
-	if !errors.Is(err, vectorstore.ErrDimensionMismatch) {
-		t.Fatalf("Add(mismatched dim) = %v, want ErrDimensionMismatch", err)
-	}
-}
-
-func TestMemoryStoreAddUpsert(t *testing.T) {
+func TestMemoryStoreUpsert(t *testing.T) {
 	t.Parallel()
 
 	s := vectorstore.NewMemoryStore()
@@ -94,205 +115,200 @@ func TestMemoryStoreAddUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Nearest() = %v, want nil", err)
 	}
-	if len(got) != 1 || got[0].Item.Metadata["v"] != "2" {
-		t.Fatalf("Nearest() = %+v, want upserted item with metadata v=2", got)
-	}
 	if diff := cmp.Diff(1.0, got[0].Score); diff != "" {
-		t.Fatalf("upserted vector score mismatch (-want +got):\n%s", diff)
+		t.Errorf("upserted vector score mismatch (-want +got):\n%s", diff)
+	}
+	if got, want := got[0].Item.Metadata["v"], "2"; got != want {
+		t.Errorf("upserted metadata v = %q, want %q", got, want)
 	}
 }
 
-func TestMemoryStoreNearestOrdering(t *testing.T) {
+func TestMemoryStoreNearest(t *testing.T) {
 	t.Parallel()
 
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s,
-		vectorstore.Item{ID: "east", Vector: vectorstore.Vector{1, 0}},
-		vectorstore.Item{ID: "north", Vector: vectorstore.Vector{0, 1}},
-		vectorstore.Item{ID: "west", Vector: vectorstore.Vector{-1, 0}},
-	)
-
-	got, err := s.Nearest(t.Context(), vectorstore.Vector{2, 0}, 3)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
+	tests := []struct {
+		name  string
+		items []vectorstore.Item
+		query vectorstore.Vector
+		limit int
+		want  []string
+	}{
+		{
+			name: "ordered by descending similarity",
+			items: []vectorstore.Item{
+				{ID: "east", Vector: vectorstore.Vector{1, 0}},
+				{ID: "north", Vector: vectorstore.Vector{0, 1}},
+				{ID: "west", Vector: vectorstore.Vector{-1, 0}},
+			},
+			query: vectorstore.Vector{2, 0},
+			limit: 3,
+			want:  []string{"east", "north", "west"},
+		},
+		{
+			name: "ties broken by ascending id",
+			items: []vectorstore.Item{
+				{ID: "zebra", Vector: vectorstore.Vector{1, 0}},
+				{ID: "alpha", Vector: vectorstore.Vector{1, 0}},
+			},
+			query: vectorstore.Vector{1, 0},
+			limit: 2,
+			want:  []string{"alpha", "zebra"},
+		},
+		{
+			name: "limit truncates results",
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{0, 1}},
+			},
+			query: vectorstore.Vector{1, 0},
+			limit: 1,
+			want:  []string{"a"},
+		},
+		{
+			name: "limit larger than store returns all",
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{0, 1}},
+			},
+			query: vectorstore.Vector{1, 0},
+			limit: 10,
+			want:  []string{"a", "b"},
+		},
 	}
 
-	wantIDs := []string{"east", "north", "west"}
-	gotIDs := make([]string, len(got))
-	for i, n := range got {
-		gotIDs[i] = n.Item.ID
-	}
-	if diff := cmp.Diff(wantIDs, gotIDs); diff != "" {
-		t.Fatalf("Nearest() id order mismatch (-want +got):\n%s", diff)
-	}
-	if got[0].Score <= got[1].Score || got[1].Score <= got[2].Score {
-		t.Fatalf("Nearest() scores not strictly descending: %v", []float64{got[0].Score, got[1].Score, got[2].Score})
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := vectorstore.NewMemoryStore()
+			mustAdd(t, s, tc.items...)
+
+			got, err := s.Nearest(t.Context(), tc.query, tc.limit)
+			if err != nil {
+				t.Fatalf("Nearest(%s) = %v, want nil", tc.name, err)
+			}
+			if diff := cmp.Diff(tc.want, neighborIDs(got)); diff != "" {
+				t.Errorf("Nearest(%s) id order mismatch (-want +got):\n%s", tc.name, diff)
+			}
+		})
 	}
 }
 
-func TestMemoryStoreNearestTieBreakByID(t *testing.T) {
+func TestMemoryStoreNearestErrors(t *testing.T) {
 	t.Parallel()
 
-	s := vectorstore.NewMemoryStore()
-	// Both vectors are identical to the query, so scores tie and ID breaks it.
-	mustAdd(t, s,
-		vectorstore.Item{ID: "zebra", Vector: vectorstore.Vector{1, 0}},
-		vectorstore.Item{ID: "alpha", Vector: vectorstore.Vector{1, 0}},
-	)
-
-	got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 2)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
+	tests := []struct {
+		name   string
+		seed   []vectorstore.Item
+		query  vectorstore.Vector
+		limit  int
+		cancel bool
+		want   error
+	}{
+		{
+			name:  "zero limit",
+			seed:  []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
+			query: vectorstore.Vector{1, 0},
+			limit: 0,
+			want:  vectorstore.ErrInvalidLimit,
+		},
+		{
+			name:  "negative limit",
+			seed:  []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
+			query: vectorstore.Vector{1, 0},
+			limit: -1,
+			want:  vectorstore.ErrInvalidLimit,
+		},
+		{
+			name:  "dimension mismatch",
+			seed:  []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
+			query: vectorstore.Vector{1, 0, 0},
+			limit: 1,
+			want:  vectorstore.ErrDimensionMismatch,
+		},
+		{
+			name:   "cancelled context",
+			seed:   []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
+			query:  vectorstore.Vector{1, 0},
+			limit:  1,
+			cancel: true,
+			want:   context.Canceled,
+		},
+		{
+			// An empty store scans nothing, so cancellation must be detected
+			// before the scan loop or it would be silently ignored.
+			name:   "cancelled context on empty store",
+			query:  vectorstore.Vector{1, 0},
+			limit:  1,
+			cancel: true,
+			want:   context.Canceled,
+		},
 	}
-	wantIDs := []string{"alpha", "zebra"}
-	gotIDs := []string{got[0].Item.ID, got[1].Item.ID}
-	if diff := cmp.Diff(wantIDs, gotIDs); diff != "" {
-		t.Fatalf("tie-break order mismatch (-want +got):\n%s", diff)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := vectorstore.NewMemoryStore()
+			mustAdd(t, s, tc.seed...)
+
+			ctx := t.Context()
+			if tc.cancel {
+				cancelled, cancel := context.WithCancel(ctx)
+				cancel()
+				ctx = cancelled
+			}
+			if _, err := s.Nearest(ctx, tc.query, tc.limit); !errors.Is(err, tc.want) {
+				t.Errorf("Nearest(%s) = %v, want %v", tc.name, err, tc.want)
+			}
+		})
 	}
 }
 
-func TestMemoryStoreNearestLimit(t *testing.T) {
+func TestMemoryStoreDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s,
-		vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}},
-		vectorstore.Item{ID: "b", Vector: vectorstore.Vector{0, 1}},
-	)
-
-	got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
+	tests := []struct {
+		name   string
+		mutate func(in vectorstore.Item, out []vectorstore.Neighbor)
+	}{
+		{
+			name: "input mutated after add",
+			mutate: func(in vectorstore.Item, _ []vectorstore.Neighbor) {
+				in.Vector[0] = 999
+				in.Metadata["k"] = "mutated"
+			},
+		},
+		{
+			name: "output mutated after query",
+			mutate: func(_ vectorstore.Item, out []vectorstore.Neighbor) {
+				out[0].Item.Vector[0] = 999
+				out[0].Item.Metadata["k"] = "mutated"
+			},
+		},
 	}
-	if len(got) != 1 {
-		t.Fatalf("Nearest(limit=1) returned %d results, want 1", len(got))
-	}
 
-	// A limit larger than the store returns only what exists.
-	got, err = s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 10)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("Nearest(limit=10) returned %d results, want 2", len(got))
-	}
-}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := vectorstore.NewMemoryStore()
+			in := vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}, Metadata: map[string]string{"k": "v"}}
+			mustAdd(t, s, in)
 
-func TestMemoryStoreNearestInvalidLimit(t *testing.T) {
-	t.Parallel()
+			out, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
+			if err != nil {
+				t.Fatalf("Nearest() = %v, want nil", err)
+			}
+			tc.mutate(in, out)
 
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}})
-
-	for _, limit := range []int{0, -1} {
-		_, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, limit)
-		if !errors.Is(err, vectorstore.ErrInvalidLimit) {
-			t.Fatalf("Nearest(limit=%d) = %v, want ErrInvalidLimit", limit, err)
-		}
-	}
-}
-
-func TestMemoryStoreNearestDimensionMismatch(t *testing.T) {
-	t.Parallel()
-
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}})
-
-	_, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0, 0}, 1)
-	if !errors.Is(err, vectorstore.ErrDimensionMismatch) {
-		t.Fatalf("Nearest(wrong dim) = %v, want ErrDimensionMismatch", err)
-	}
-}
-
-func TestMemoryStoreInputDefensiveCopy(t *testing.T) {
-	t.Parallel()
-
-	s := vectorstore.NewMemoryStore()
-	vec := vectorstore.Vector{1, 0}
-	meta := map[string]string{"k": "v"}
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vec, Metadata: meta})
-
-	// Mutate the caller's inputs after Add; the store must be unaffected.
-	vec[0] = 999
-	meta["k"] = "mutated"
-
-	got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
-	}
-	if diff := cmp.Diff(1.0, got[0].Score); diff != "" {
-		t.Fatalf("stored vector was mutated via input alias (-want +got):\n%s", diff)
-	}
-	if got[0].Item.Metadata["k"] != "v" {
-		t.Fatalf("stored metadata mutated via input alias: %v", got[0].Item.Metadata)
-	}
-}
-
-func TestMemoryStoreOutputDefensiveCopy(t *testing.T) {
-	t.Parallel()
-
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}, Metadata: map[string]string{"k": "v"}})
-
-	got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
-	}
-	got[0].Item.Vector[0] = 999
-	got[0].Item.Metadata["k"] = "mutated"
-
-	again, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
-	if err != nil {
-		t.Fatalf("Nearest() = %v, want nil", err)
-	}
-	if diff := cmp.Diff(1.0, again[0].Score); diff != "" {
-		t.Fatalf("stored vector mutated via returned alias (-want +got):\n%s", diff)
-	}
-	if again[0].Item.Metadata["k"] != "v" {
-		t.Fatalf("stored metadata mutated via returned alias: %v", again[0].Item.Metadata)
-	}
-}
-
-func TestMemoryStoreAddCancelled(t *testing.T) {
-	t.Parallel()
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	s := vectorstore.NewMemoryStore()
-	err := s.Add(ctx, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Add(cancelled ctx) = %v, want context.Canceled", err)
-	}
-}
-
-func TestMemoryStoreNearestCancelled(t *testing.T) {
-	t.Parallel()
-
-	s := vectorstore.NewMemoryStore()
-	mustAdd(t, s, vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}})
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	_, err := s.Nearest(ctx, vectorstore.Vector{1, 0}, 1)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Nearest(cancelled ctx) = %v, want context.Canceled", err)
-	}
-}
-
-func TestMemoryStoreNearestCancelledEmptyStore(t *testing.T) {
-	t.Parallel()
-
-	// An empty store scans nothing, so cancellation must be detected before the
-	// scan loop or it would be silently ignored.
-	s := vectorstore.NewMemoryStore()
-
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	_, err := s.Nearest(ctx, vectorstore.Vector{1, 0}, 1)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Nearest(cancelled ctx, empty store) = %v, want context.Canceled", err)
+			got, err := s.Nearest(t.Context(), vectorstore.Vector{1, 0}, 1)
+			if err != nil {
+				t.Fatalf("Nearest() = %v, want nil", err)
+			}
+			if diff := cmp.Diff(1.0, got[0].Score); diff != "" {
+				t.Errorf("stored vector mutated via alias (-want +got):\n%s", diff)
+			}
+			if got, want := got[0].Item.Metadata["k"], "v"; got != want {
+				t.Errorf("stored metadata k = %q, want %q", got, want)
+			}
+		})
 	}
 }

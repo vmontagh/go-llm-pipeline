@@ -19,8 +19,8 @@ type Duplicate struct {
 
 // FindDuplicates returns every pair of items whose cosine similarity is at
 // least threshold. It is a pure function over the supplied items rather than a
-// Store method, so persistent backends do not have to expose their entire
-// contents to support deduplication.
+// method on [MemoryStore], so persistent backends do not have to expose their
+// entire contents to support deduplication.
 //
 // Pairs are deduplicated (each unordered pair appears once, with A.ID < B.ID)
 // and the result is sorted by (A.ID, B.ID) for deterministic output. Every item
@@ -29,11 +29,11 @@ type Duplicate struct {
 // within the cosine range [-1, 1].
 func FindDuplicates(ctx context.Context, items []Item, threshold float64) ([]Duplicate, error) {
 	if err := validateThreshold(threshold); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("finding duplicates: %w", err)
 	}
 	normalized, err := normalizeItems(items)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("finding duplicates: %w", err)
 	}
 
 	var dups []Duplicate

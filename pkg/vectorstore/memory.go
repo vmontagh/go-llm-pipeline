@@ -31,10 +31,10 @@ func WithInitialCapacity(n int) MemoryStoreOption {
 	}
 }
 
-// MemoryStore is a concurrency-safe, in-memory [Store]. It holds every vector
-// in a map keyed by Item.ID and scans all items on each query, which suits
-// tests, small batches, and transient workflows. The zero value is not usable;
-// construct one with NewMemoryStore.
+// MemoryStore is a concurrency-safe, in-memory vector store. It holds every
+// vector in a map keyed by Item.ID and scans all items on each query, which
+// suits tests, small batches, and transient workflows. The zero value is not
+// usable; construct one with NewMemoryStore.
 type MemoryStore struct {
 	mu    sync.RWMutex
 	dim   int
@@ -70,7 +70,7 @@ func (s *MemoryStore) Add(ctx context.Context, item Item) error {
 		return fmt.Errorf("vectorstore: add cancelled: %w", err)
 	}
 	if item.ID == "" {
-		return ErrEmptyID
+		return fmt.Errorf("adding item: %w", ErrEmptyID)
 	}
 	normalized, err := normalize(item.Vector)
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]
 		return nil, fmt.Errorf("querying nearest: %w", err)
 	}
 	if limit <= 0 {
-		return nil, fmt.Errorf("%w: %d", ErrInvalidLimit, limit)
+		return nil, fmt.Errorf("querying nearest: %w: %d", ErrInvalidLimit, limit)
 	}
 	query, err := normalize(vector)
 	if err != nil {
