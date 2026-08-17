@@ -120,23 +120,43 @@ func dot(a, b Vector) float64 {
 	return sum
 }
 
-// cosineEpsilon is how close a raw dot product must be to an endpoint before it
-// is snapped there. Independently normalizing two mathematically identical
-// vectors can land a few ULPs off ±1 (for example, identical {1, 1} vectors
-// score 0.9999999999999998), which would wrongly exclude them from an
-// endpoint-threshold comparison.
-const cosineEpsilon = 1e-9
-
-// cosine returns the cosine similarity of two unit vectors: their dot product
-// clamped to [-1, 1] and snapped to an exact endpoint when within
-// cosineEpsilon. This keeps threshold comparisons well-behaved at the exact
-// endpoints ±1, so identical vectors score exactly 1 and opposite vectors
-// exactly -1.
+// cosine returns the cosine similarity of two unit vectors. It returns exactly
+// 1 for identical and -1 for antipodal normalized vectors — cases where
+// independent normalization would otherwise land a few ULPs off the endpoint —
+// and clamps any other result into the valid [-1, 1] range without perturbing
+// it. Distinct directions therefore keep their true score (which may sit just
+// below 1) rather than being snapped to an endpoint.
 func cosine(a, b Vector) float64 {
-	switch s := dot(a, b); {
-	case s > 1-cosineEpsilon:
+	if slices.Equal(a, b) {
 		return 1
-	case s < -1+cosineEpsilon:
+	}
+	if antipodal(a, b) {
+		return -1
+	}
+	return clampUnit(dot(a, b))
+}
+
+// antipodal reports whether a equals -b component-wise, i.e. the two unit
+// vectors point in exactly opposite directions.
+func antipodal(a, b Vector) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != -b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// clampUnit constrains s to the valid cosine range [-1, 1], correcting only
+// floating-point excursions past an endpoint.
+func clampUnit(s float64) float64 {
+	switch {
+	case s > 1:
+		return 1
+	case s < -1:
 		return -1
 	default:
 		return s

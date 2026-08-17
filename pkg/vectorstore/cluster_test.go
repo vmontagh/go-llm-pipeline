@@ -37,14 +37,17 @@ func TestClusterItems(t *testing.T) {
 	}{
 		{
 			name: "single linkage connects transitive group",
-			// a-b-c form a chain of adjacent-close vectors; x-y form a second
-			// group. Single-linkage keeps them apart at threshold 0.6.
+			// a, b, c lie on an arc at 0°, 35°, 70°. At threshold 0.6 the
+			// adjacent pairs a-b and b-c meet it (cos35° ≈ 0.82) but the ends
+			// a-c do not (cos70° ≈ 0.34), so all three group only via
+			// transitive single linkage. x, y form a separate pair far enough
+			// away not to connect to the arc.
 			items: []vectorstore.Item{
-				{ID: "c", Vector: vectorstore.Vector{0.8, 0.2}},
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},
-				{ID: "b", Vector: vectorstore.Vector{0.9, 0.1}},
-				{ID: "x", Vector: vectorstore.Vector{0, 1}},
-				{ID: "y", Vector: vectorstore.Vector{0.1, 0.9}},
+				{ID: "c", Vector: vectorstore.Vector{0.342020, 0.939693}},  // 70°
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},                // 0°
+				{ID: "b", Vector: vectorstore.Vector{0.819152, 0.573576}},  // 35°
+				{ID: "x", Vector: vectorstore.Vector{-0.906308, 0.422618}}, // 155°
+				{ID: "y", Vector: vectorstore.Vector{-0.939693, 0.342020}}, // 160°
 			},
 			threshold: 0.6,
 			want:      [][]string{{"a", "b", "c"}, {"x", "y"}},
@@ -60,8 +63,8 @@ func TestClusterItems(t *testing.T) {
 		},
 		{
 			name: "identical vectors cluster at endpoint threshold 1",
-			// The cosine endpoint snap keeps identical {1,1} vectors linked at
-			// exactly 1 rather than a hair below.
+			// Identical {1,1} vectors normalize to the same unit vector, so
+			// cosine reports exactly 1 and they link at threshold 1.
 			items: []vectorstore.Item{
 				{ID: "a", Vector: vectorstore.Vector{1, 1}},
 				{ID: "b", Vector: vectorstore.Vector{1, 1}},

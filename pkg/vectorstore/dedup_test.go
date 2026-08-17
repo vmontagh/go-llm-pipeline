@@ -56,8 +56,8 @@ func TestFindDuplicates(t *testing.T) {
 		},
 		{
 			name: "identical vectors meet endpoint threshold 1",
-			// Independent normalization would score identical {1,1} vectors a
-			// hair below 1; the cosine endpoint snap keeps them paired at 1.
+			// Identical {1,1} vectors normalize to the same unit vector, so
+			// cosine reports exactly 1 and they pair at threshold 1.
 			items: []vectorstore.Item{
 				{ID: "a", Vector: vectorstore.Vector{1, 1}},
 				{ID: "b", Vector: vectorstore.Vector{1, 1}},
@@ -73,6 +73,17 @@ func TestFindDuplicates(t *testing.T) {
 			},
 			threshold: -1,
 			want:      [][2]string{{"a", "b"}},
+		},
+		{
+			name: "near-identical distinct directions excluded at threshold 1",
+			// {1,0} and {1,1e-5} have cosine just below 1; they must not be
+			// snapped together at the exact endpoint.
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{1, 1e-5}},
+			},
+			threshold: 1,
+			want:      nil,
 		},
 		{
 			name: "no pairs meet threshold",
