@@ -43,6 +43,8 @@ components:
     in: pkg/vectorstore/**
   examples:
     in: examples/**
+  integtest:
+    in: integ-test/**
 
 deps:
   logger:
@@ -190,3 +192,11 @@ deps:
     mayDependOn:
       - ollama
       - vectorstore
+
+  integtest:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - ollama
+      - vectorstore
+      - vcrtest
