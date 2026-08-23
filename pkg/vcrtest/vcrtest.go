@@ -47,10 +47,10 @@ import (
 // errInvalidCassetteName indicates a cassette name that is not a local path and
 // would escape the testdata/cassettes directory (for example "../escape" or an
 // absolute path).
-var errInvalidCassetteName = errors.New("vcrtest: invalid cassette name")
+var errInvalidCassetteName = errors.New("invalid cassette name")
 
 // errCassetteNotFound indicates a replay-mode cassette is absent on disk.
-var errCassetteNotFound = errors.New("vcrtest: cassette not found")
+var errCassetteNotFound = errors.New("cassette not found")
 
 // EnvVCRMode is the environment variable that opts into recording. Set it to
 // "record" to record missing cassettes; any other value replays.
