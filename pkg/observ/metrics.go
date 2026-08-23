@@ -87,8 +87,8 @@ func (m *Metrics) Snapshot() map[string]int64 {
 
 // Handler returns an http.Handler that serves the current snapshot as a JSON
 // object of name to value. encoding/json marshals string-keyed maps with sorted
-// keys, so the output is deterministic. Mount it on the observability server to
-// expose counters over HTTP.
+// keys, so the output is deterministic. Mount it on the observability server
+// with Server.Handle (before the server starts) to expose counters over HTTP.
 func (m *Metrics) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		body, err := json.MarshalIndent(m.Snapshot(), "", "  ")

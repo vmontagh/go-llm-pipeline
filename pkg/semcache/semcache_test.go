@@ -113,6 +113,11 @@ func TestNewValidation(t *testing.T) {
 			wantErr: semcache.ErrInvalidEviction,
 		},
 		{
+			name:    "zero eviction policy is invalid",
+			opts:    []semcache.Option{semcache.WithEviction(semcache.EvictInvalid)},
+			wantErr: semcache.ErrInvalidEviction,
+		},
+		{
 			name:    "valid semantic config",
 			opts:    []semcache.Option{semcache.WithSemantic(emb, 0.8), semcache.WithMaxEntries(10)},
 			wantErr: nil,
@@ -617,5 +622,113 @@ func TestConcurrentAccess(t *testing.T) {
 
 	if got := c.Len(); got > 64 {
 		t.Errorf("Len() = %d, want <= 64", got)
+	}
+}
+
+func TestSemanticSkipsStaleVector(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// "stale" scores highest for the query but its entry is dropped from the key
+	// map while its vector remains indexed, so getSemantic must skip it and
+	// return the live "valid" neighbor rather than reporting a false miss.
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"stale": {1, 0, 0},
+		"valid": {0.9, 0.1, 0}, // cosine with the query ~0.994, above threshold
+		"query": {1, 0, 0},
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	staleKey := semcache.Key{Model: "m", Prompt: "stale"}
+	if err := c.Put(ctx, staleKey, "resp-stale"); err != nil {
+		t.Fatalf("Put(stale) = %v", err)
+	}
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "valid"}, "resp-valid"); err != nil {
+		t.Fatalf("Put(valid) = %v", err)
+	}
+	c.DropEntryKeepVector(staleKey)
+
+	resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "query"})
+	if err != nil {
+		t.Fatalf("Get() = %v, want nil", err)
+	}
+	if !hit {
+		t.Errorf("Get() hit = false, want true (must skip the stale vector)")
+	}
+	if resp != "resp-valid" {
+		t.Errorf("Get() response = %q, want %q", resp, "resp-valid")
+	}
+}
+
+func TestBoundedPartitionStores(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// With a max of one entry and a distinct model (hence partition) per Put,
+	// each insertion evicts the previous one. Eviction must drop the emptied
+	// partition store so the count stays bounded rather than growing per key.
+	emb := &fakeEmbedder{vectors: map[string][]float64{"cat": {1, 0, 0}}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9), semcache.WithMaxEntries(1))
+
+	const puts = 25
+	for i := range puts {
+		key := semcache.Key{Model: fmt.Sprintf("m%d", i), Prompt: "cat"}
+		if err := c.Put(ctx, key, "r"); err != nil {
+			t.Fatalf("Put(%d) = %v", i, err)
+		}
+		if got := c.PartitionCount(); got != 1 {
+			t.Fatalf("PartitionCount() after put %d = %d, want 1", i, got)
+		}
+	}
+	if got := c.Len(); got != 1 {
+		t.Errorf("Len() = %d, want 1", got)
+	}
+}
+
+func TestConcurrentSemanticPutEviction(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// A bounded semantic cache under concurrent replacement, eviction, and reads
+	// must keep the exact and semantic paths consistent and never race. Run with
+	// -race to catch interleavings between the index update and the map commit.
+	const prompts = 24
+	vectors := make(map[string][]float64, prompts)
+	for i := range prompts {
+		vectors[fmt.Sprintf("p%d", i)] = []float64{float64(i + 1), 1, 0}
+	}
+	emb := &fakeEmbedder{vectors: vectors}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.5), semcache.WithMaxEntries(16))
+
+	const (
+		goroutines = 24
+		iterations = 120
+	)
+	models := []string{"m0", "m1", "m2", "m3"}
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := range goroutines {
+		go func() {
+			defer wg.Done()
+			for i := range iterations {
+				key := semcache.Key{
+					Model:  models[(g+i)%len(models)],
+					Prompt: fmt.Sprintf("p%d", (g*iterations+i)%prompts),
+				}
+				if err := c.Put(ctx, key, "r"); err != nil {
+					t.Errorf("Put() = %v", err)
+					return
+				}
+				if _, _, err := c.Get(ctx, key); err != nil {
+					t.Errorf("Get() = %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := c.Len(); got > 16 {
+		t.Errorf("Len() = %d, want <= 16", got)
+	}
+	if got := c.PartitionCount(); got > 16 {
+		t.Errorf("PartitionCount() = %d, want <= 16", got)
 	}
 }
