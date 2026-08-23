@@ -22,9 +22,11 @@ an `ollama.Embedder` whose `*http.Client` is backed by a named YAML cassette via
   placeholder host; the recorded interaction still matches because the default
   matcher tolerates a changed host.
 - **Live-local** (`-tags=live`): the embedder points at a real Ollama
-  (`OLLAMA_HOST`, default `http://localhost:11434`). With `VCR_MODE=record` a
-  missing cassette is recorded exactly once; the recorded vectors are what the
-  fake lane then replays, so the two lanes assert identical behaviour.
+  (`OLLAMA_HOST`, default `http://localhost:11434`). `make test-bdd-live` first
+  deletes the scenario cassettes so `VCR_MODE=record` (record-once) genuinely
+  records live interactions rather than replaying an existing cassette. The
+  recorded vectors are what the fake lane then replays, so the two lanes assert
+  identical behaviour, and the target fails fast if Ollama is unreachable.
 
 The outer `*testing.T` from `TestFeatures` is threaded into the scenario
 initializer so steps can call the testing.T-aware `vcrtest.Client`.
@@ -36,16 +38,20 @@ Cassettes are committed under `testdata/cassettes/`, one file per scenario
 the default matcher ignores request bodies, so a scenario that needs multiple
 distinct calls should embed them in one batch (as the embeddings feature does).
 
-To (re)record after changing a scenario, delete its cassette and run:
+To refresh a cassette after changing a scenario, re-record against a live
+Ollama:
 
 ```sh
 make test-bdd-live            # uses http://localhost:11434
 OLLAMA_HOST=http://host:11434 make test-bdd-live
 ```
 
-Record-once leaves an existing cassette untouched, so deleting first is
-required to refresh one. Recorded requests are scrubbed of secrets before they
-touch disk; the Ollama embedding endpoint carries none.
+`make test-bdd-live` removes the scenario cassettes before recording, because
+record-once leaves an existing cassette untouched; recording therefore always
+hits the live model and fails fast if Ollama is unreachable. Commit the
+refreshed cassettes afterwards so the fake lane can replay them. Recorded
+requests are scrubbed of secrets before they touch disk; the Ollama embedding
+endpoint carries none.
 
 ### First feature — Ollama embeddings
 

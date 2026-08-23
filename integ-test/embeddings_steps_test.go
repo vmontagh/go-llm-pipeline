@@ -41,6 +41,7 @@ const (
 var (
 	errEmptyTable     = errors.New("empty data table")
 	errBadTableHeader = errors.New("data table needs id and text columns")
+	errShortTableRow  = errors.New("data table row has too few cells")
 	errEmptyModel     = errors.New("empty model")
 	errBatchCount     = errors.New("unexpected embedding count")
 	errUnknownID      = errors.New("unknown id")
@@ -225,7 +226,15 @@ func parseTextsTable(table *godog.Table) (ids, texts []string, err error) {
 	rows := table.Rows[1:]
 	ids = make([]string, 0, len(rows))
 	texts = make([]string, 0, len(rows))
-	for _, row := range rows {
+	// A pickle row may carry fewer cells than the header, so bound-check each
+	// row against the resolved columns and fail as a normal step error rather
+	// than panicking on an out-of-range index.
+	minCells := max(idCol, textCol) + 1
+	for i, row := range rows {
+		if len(row.Cells) < minCells {
+			return nil, nil, fmt.Errorf("%w: row %d has %d cells, need at least %d",
+				errShortTableRow, i+1, len(row.Cells), minCells)
+		}
 		ids = append(ids, row.Cells[idCol].Value)
 		texts = append(texts, row.Cells[textCol].Value)
 	}

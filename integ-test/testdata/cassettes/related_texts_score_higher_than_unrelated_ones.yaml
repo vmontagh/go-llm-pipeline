@@ -34,7 +34,7 @@ interactions:
         transfer_encoding:
             - chunked
         trailer: {}
-        content_length: 44853
+        content_length: 44851
         uncompressed: false
         body: |-
             {
@@ -2351,15 +2351,15 @@ interactions:
                   -0.04666457
                 ]
               ],
-              "total_duration": 1088043750,
-              "load_duration": 1055369375,
+              "total_duration": 322264833,
+              "load_duration": 293518541,
               "prompt_eval_count": 29
             }
         headers:
             Content-Type:
                 - application/json; charset=utf-8
             Date:
-                - Sun, 23 Aug 2026 15:39:46 GMT
+                - Sun, 23 Aug 2026 16:03:34 GMT
         status: 200 OK
         code: 200
-        duration: 1.096554208s
+        duration: 330.980875ms

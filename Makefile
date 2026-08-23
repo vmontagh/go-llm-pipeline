@@ -14,9 +14,13 @@ test-unit-cover:
 test-bdd:
 	go test ./integ-test/... -v -count=1
 
-# test-bdd-live runs the @live-local lane against a real Ollama and records any
-# missing cassette once. Developer-only. Override the endpoint with OLLAMA_HOST.
+# test-bdd-live runs the @live-local lane against a real Ollama. It first removes
+# the scenario cassettes so record-once genuinely records live interactions
+# instead of replaying an existing cassette; the target therefore fails fast if
+# Ollama is unreachable. Developer-only: commit the refreshed cassettes so the
+# @fake lane can replay them. Override the endpoint with OLLAMA_HOST.
 test-bdd-live:
+	rm -f integ-test/testdata/cassettes/*.yaml
 	VCR_MODE=record go test -tags=live ./integ-test/... -v -count=1 -godog.tags="@live-local"
 
 lint:
