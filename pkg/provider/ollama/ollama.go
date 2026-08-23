@@ -346,6 +346,22 @@ func WithTracer(tr Tracer) ProviderOption {
 	return func(c *providerConfig) { c.tracer = tr }
 }
 
+// clientWithTimeout returns the HTTP client to use for requests. A caller-
+// supplied client is shallow-copied before a timeout is applied so the caller's
+// (often shared) client is never mutated; a nil client yields a fresh one.
+func clientWithTimeout(client *http.Client, timeout time.Duration) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	} else {
+		clone := *client
+		client = &clone
+	}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	return client
+}
+
 func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[struct{}] {
 	cfg := providerConfig{}
 	for _, opt := range opts {
@@ -359,13 +375,7 @@ func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[st
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := cfg.client
-	if client == nil {
-		client = &http.Client{}
-	}
-	if cfg.httpTimeout > 0 {
-		client.Timeout = cfg.httpTimeout
-	}
+	client := clientWithTimeout(cfg.client, cfg.httpTimeout)
 	return &transport{
 		host:           host,
 		model:          model,

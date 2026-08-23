@@ -91,13 +91,7 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := cfg.client
-	if client == nil {
-		client = &http.Client{}
-	}
-	if cfg.httpTimeout > 0 {
-		client.Timeout = cfg.httpTimeout
-	}
+	client := clientWithTimeout(cfg.client, cfg.httpTimeout)
 	maxRetries := cfg.maxRetries
 	if maxRetries < 0 {
 		maxRetries = 0

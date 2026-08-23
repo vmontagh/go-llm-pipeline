@@ -306,6 +306,28 @@ func TestEmbedder_HTTPTestServer(t *testing.T) {
 	}
 }
 
+func TestEmbedder_DoesNotMutateCallerClient(t *testing.T) {
+	t.Parallel()
+	shared := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"embeddings":[[1]]}`), nil
+	})}
+	e := NewEmbedder("http://ollama.test", "m",
+		WithHTTPClient(shared), WithHTTPClientTimeout(5*time.Second))
+
+	if shared.Timeout != 0 {
+		t.Errorf("caller client Timeout = %v, want 0 (must not be mutated)", shared.Timeout)
+	}
+	if e.client == shared {
+		t.Error("embedder reused the caller's client pointer; want a defensive copy")
+	}
+	if e.client.Timeout != 5*time.Second {
+		t.Errorf("embedder client Timeout = %v, want 5s", e.client.Timeout)
+	}
+	if e.client.Transport == nil {
+		t.Error("embedder client copy lost the caller's Transport")
+	}
+}
+
 func TestEmbedder_ConcurrentUse(t *testing.T) {
 	t.Parallel()
 	e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
