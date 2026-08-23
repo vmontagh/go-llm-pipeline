@@ -204,18 +204,32 @@ func TestEmbedder_InconsistentBatchDimensions(t *testing.T) {
 
 func TestEmbedder_TransientRetriesThenExhausts(t *testing.T) {
 	t.Parallel()
-	var attempts int
-	e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
-		attempts++
-		return jsonResponse(http.StatusInternalServerError, `boom`), nil
-	}, WithMaxRetries(2))
-
-	_, err := e.Embed(t.Context(), "x")
-	if !errors.Is(err, provpkg.ErrUnexpectedStatus) {
-		t.Errorf("error = %v, want errors.Is ErrUnexpectedStatus", err)
+	tests := []struct {
+		name         string
+		maxRetries   int
+		wantAttempts int
+	}{
+		{name: "default budget", maxRetries: 2, wantAttempts: 3},
+		{name: "zero budget disables retries", maxRetries: 0, wantAttempts: 1},
+		{name: "single retry", maxRetries: 1, wantAttempts: 2},
 	}
-	if want := 3; attempts != want {
-		t.Errorf("attempts = %d, want %d (initial + 2 retries)", attempts, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var attempts int
+			e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
+				attempts++
+				return jsonResponse(http.StatusInternalServerError, `boom`), nil
+			}, WithMaxRetries(tt.maxRetries))
+
+			_, err := e.Embed(t.Context(), "x")
+			if !errors.Is(err, provpkg.ErrUnexpectedStatus) {
+				t.Errorf("error = %v, want errors.Is ErrUnexpectedStatus", err)
+			}
+			if attempts != tt.wantAttempts {
+				t.Errorf("attempts = %d, want %d", attempts, tt.wantAttempts)
+			}
+		})
 	}
 }
 

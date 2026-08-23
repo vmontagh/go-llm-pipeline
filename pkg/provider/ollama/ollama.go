@@ -318,8 +318,9 @@ func WithNumPredict(numPredict int) ProviderOption {
 }
 
 // WithMaxRetries caps how many times the Embedder retries a transient or
-// rate-limited /api/embed response before giving up. It is ignored by the
-// generation transport, whose retries are governed by the analyzer engine.
+// rate-limited /api/embed response before giving up. Zero disables retries
+// (a single attempt); negative values are treated as zero. It is ignored by
+// the generation transport, whose retries are governed by the analyzer engine.
 func WithMaxRetries(maxRetries int) ProviderOption {
 	return func(c *providerConfig) { c.maxRetries = maxRetries }
 }

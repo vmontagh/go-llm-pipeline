@@ -119,6 +119,25 @@ func TestEmbedderVectorStoreWiring(t *testing.T) {
 	if diff := cmp.Diff([]string{"cat", "kitten"}, gotPair); diff != "" {
 		t.Errorf("duplicate pair mismatch (-want +got):\n%s", diff)
 	}
+
+	clusters, err := vectorstore.ClusterItems(items, 0.9)
+	if err != nil {
+		t.Fatalf("ClusterItems error = %v, want nil", err)
+	}
+	gotClusters := make([][]string, len(clusters))
+	for i, c := range clusters {
+		ids := make([]string, len(c.Items))
+		for j, item := range c.Items {
+			ids[j] = item.ID
+		}
+		gotClusters[i] = ids
+	}
+	// Clusters are sorted by their first member's ID, so the airplane singleton
+	// precedes the cat/kitten group.
+	wantClusters := [][]string{{"airplane"}, {"cat", "kitten"}}
+	if diff := cmp.Diff(wantClusters, gotClusters); diff != "" {
+		t.Errorf("clusters mismatch (-want +got):\n%s", diff)
+	}
 }
 
 // Example wires the Ollama embedder into an in-memory vector store to find the

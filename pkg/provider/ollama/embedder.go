@@ -79,7 +79,7 @@ type Embedder struct {
 // generation-only options (num_ctx, num_predict, response schema, keep-alive)
 // are ignored.
 func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
-	cfg := providerConfig{}
+	cfg := providerConfig{maxRetries: defaultEmbedMaxRetries}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -98,9 +98,9 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 	if cfg.httpTimeout > 0 {
 		client.Timeout = cfg.httpTimeout
 	}
-	maxRetries := defaultEmbedMaxRetries
-	if cfg.maxRetries > 0 {
-		maxRetries = cfg.maxRetries
+	maxRetries := cfg.maxRetries
+	if maxRetries < 0 {
+		maxRetries = 0
 	}
 	return &Embedder{
 		host:        host,
