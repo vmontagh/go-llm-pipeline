@@ -193,12 +193,137 @@ func TestEmbedder_ResponseErrors(t *testing.T) {
 
 func TestEmbedder_InconsistentBatchDimensions(t *testing.T) {
 	t.Parallel()
-	e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
-		return jsonResponse(http.StatusOK, `{"embeddings":[[1,2,3],[1,2]]}`), nil
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "shorter trailing vector", body: `{"embeddings":[[1,2,3],[1,2]]}`},
+		{name: "zero-length first vector", body: `{"embeddings":[[],[1]]}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
+				return jsonResponse(http.StatusOK, tt.body), nil
+			})
+			_, err := e.EmbedBatch(t.Context(), []string{"a", "b"})
+			if !errors.Is(err, ErrDimensionMismatch) {
+				t.Errorf("error = %v, want errors.Is ErrDimensionMismatch", err)
+			}
+		})
+	}
+}
+
+// TestEmbedder_ValidationJoinsAllFailures verifies that independent validation
+// failures are reported together so callers can fix them in one pass (§1.5).
+func TestEmbedder_ValidationJoinsAllFailures(t *testing.T) {
+	t.Parallel()
+	e := newTestEmbedder("", func(*http.Request) (*http.Response, error) {
+		t.Error("transport called; validation should short-circuit")
+		return jsonResponse(http.StatusOK, `{"embeddings":[[1]]}`), nil
 	})
-	_, err := e.EmbedBatch(t.Context(), []string{"a", "b"})
-	if !errors.Is(err, ErrDimensionMismatch) {
-		t.Errorf("error = %v, want errors.Is ErrDimensionMismatch", err)
+	_, err := e.EmbedBatch(t.Context(), []string{"a", ""})
+	if !errors.Is(err, ErrEmptyInput) {
+		t.Errorf("error = %v, want errors.Is ErrEmptyInput", err)
+	}
+	if !errors.Is(err, ErrEmptyModel) {
+		t.Errorf("error = %v, want errors.Is ErrEmptyModel", err)
+	}
+}
+
+// TestEmbedder_RetryTiming verifies the retry loop's delay schedule using a
+// logical clock: the injected sleep records the durations it is asked to wait
+// instead of touching the wall clock, so the test asserts on backoff logic
+// rather than elapsed real time.
+func TestEmbedder_RetryTiming(t *testing.T) {
+	t.Parallel()
+	const okBody = `{"embeddings":[[0.5]]}`
+	type stubResp struct {
+		status     int
+		body       string
+		retryAfter string
+	}
+	tests := []struct {
+		name       string
+		opts       []ProviderOption
+		responses  []stubResp
+		wantDelays []time.Duration
+		wantErrIs  error
+		wantVec    []float64
+	}{
+		{
+			name: "exponential backoff capped by max",
+			opts: []ProviderOption{
+				WithMaxRetries(4),
+				WithRetryBackoff(100*time.Millisecond, 250*time.Millisecond),
+			},
+			responses: []stubResp{{status: http.StatusInternalServerError, body: "boom"}},
+			wantDelays: []time.Duration{
+				100 * time.Millisecond,
+				200 * time.Millisecond,
+				250 * time.Millisecond,
+				250 * time.Millisecond,
+			},
+			wantErrIs: provpkg.ErrUnexpectedStatus,
+		},
+		{
+			name: "retry-after overrides base backoff then succeeds",
+			opts: []ProviderOption{
+				WithMaxRetries(3),
+				WithRetryBackoff(50*time.Millisecond, 0),
+			},
+			responses: []stubResp{
+				{status: http.StatusTooManyRequests, body: "slow down", retryAfter: "2"},
+				{status: http.StatusOK, body: okBody},
+			},
+			wantDelays: []time.Duration{2 * time.Second},
+			wantVec:    []float64{0.5},
+		},
+		{
+			name:      "success on first attempt never sleeps",
+			opts:      []ProviderOption{WithMaxRetries(2)},
+			responses: []stubResp{{status: http.StatusOK, body: okBody}},
+			wantVec:   []float64{0.5},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var attempt int
+			rt := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				r := tt.responses[min(attempt, len(tt.responses)-1)]
+				attempt++
+				resp := jsonResponse(r.status, r.body)
+				if r.retryAfter != "" {
+					resp.Header.Set("Retry-After", r.retryAfter)
+				}
+				return resp, nil
+			})
+			opts := append([]ProviderOption{WithHTTPClient(&http.Client{Transport: rt})}, tt.opts...)
+			e := NewEmbedder("http://ollama.test", "m", opts...)
+
+			var delays []time.Duration
+			e.sleep = func(_ context.Context, d time.Duration) error {
+				delays = append(delays, d)
+				return nil
+			}
+
+			got, err := e.Embed(t.Context(), "x")
+			if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
+				t.Errorf("Embed error = %v, want errors.Is %v", err, tt.wantErrIs)
+			}
+			if tt.wantErrIs == nil && err != nil {
+				t.Fatalf("Embed error = %v, want nil", err)
+			}
+			if tt.wantVec != nil {
+				if diff := cmp.Diff(tt.wantVec, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
+					t.Errorf("Embed vector mismatch (-want +got):\n%s", diff)
+				}
+			}
+			if diff := cmp.Diff(tt.wantDelays, delays, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("backoff delays mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
@@ -230,40 +355,6 @@ func TestEmbedder_TransientRetriesThenExhausts(t *testing.T) {
 				t.Errorf("attempts = %d, want %d", attempts, tt.wantAttempts)
 			}
 		})
-	}
-}
-
-func TestEmbedder_RateLimitRetriesThenSucceeds(t *testing.T) {
-	t.Parallel()
-	var gotWaits []time.Duration
-	var attempts int
-	e := newTestEmbedder("m", func(*http.Request) (*http.Response, error) {
-		attempts++
-		if attempts == 1 {
-			resp := jsonResponse(http.StatusTooManyRequests, `slow down`)
-			resp.Header.Set("Retry-After", "2")
-			return resp, nil
-		}
-		return jsonResponse(http.StatusOK, `{"embeddings":[[0.5]]}`), nil
-	}, WithMaxRetries(3))
-	e.sleep = func(ctx context.Context, d time.Duration) error {
-		gotWaits = append(gotWaits, d)
-		return ctx.Err()
-	}
-
-	got, err := e.Embed(t.Context(), "x")
-	if err != nil {
-		t.Fatalf("Embed error = %v, want nil", err)
-	}
-	if diff := cmp.Diff([]float64{0.5}, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
-		t.Errorf("vector mismatch (-want +got):\n%s", diff)
-	}
-	if len(gotWaits) != 1 {
-		t.Fatalf("sleep calls = %d, want 1", len(gotWaits))
-	}
-	// Retry-After (2s) overrides the zero base backoff for the next attempt.
-	if want := 2 * time.Second; gotWaits[0] != want {
-		t.Errorf("retry wait = %v, want %v (from Retry-After)", gotWaits[0], want)
 	}
 }
 

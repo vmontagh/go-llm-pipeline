@@ -16,9 +16,6 @@ concurrency:
 
 jobs:
   golangci:
-    strategy:
-      matrix:
-        go: [stable]
     name: lint
     runs-on: self-hosted
     steps:

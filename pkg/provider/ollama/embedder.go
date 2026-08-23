@@ -23,6 +23,7 @@ const embedRegionName = "Embed_Ollama"
 const (
 	defaultEmbedMaxRetries  = 2
 	defaultEmbedBaseBackoff = 200 * time.Millisecond
+	defaultEmbedMaxBackoff  = 5 * time.Second
 )
 
 // Sentinel errors returned by the Embedder. Callers use errors.Is to detect a
@@ -68,8 +69,10 @@ type Embedder struct {
 	tracer      Tracer
 	maxRetries  int
 	baseBackoff time.Duration
-	// sleep waits for d or until ctx is cancelled. It is a field so tests can
-	// inject a no-op clock instead of sleeping for real.
+	maxBackoff  time.Duration
+	// sleep waits for d or until ctx is cancelled. Injecting it decouples the
+	// retry loop from the wall clock so callers (including tests) can supply a
+	// fake clock.
 	sleep func(ctx context.Context, d time.Duration) error
 }
 
@@ -79,7 +82,11 @@ type Embedder struct {
 // generation-only options (num_ctx, num_predict, response schema, keep-alive)
 // are ignored.
 func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
-	cfg := providerConfig{maxRetries: defaultEmbedMaxRetries}
+	cfg := providerConfig{
+		maxRetries:       defaultEmbedMaxRetries,
+		retryBaseBackoff: defaultEmbedBaseBackoff,
+		retryMaxBackoff:  defaultEmbedMaxBackoff,
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -96,6 +103,10 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 	if maxRetries < 0 {
 		maxRetries = 0
 	}
+	baseBackoff := cfg.retryBaseBackoff
+	if baseBackoff <= 0 {
+		baseBackoff = defaultEmbedBaseBackoff
+	}
 	return &Embedder{
 		host:        host,
 		model:       model,
@@ -103,7 +114,8 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 		logger:      cfg.logger,
 		tracer:      cfg.tracer,
 		maxRetries:  maxRetries,
-		baseBackoff: defaultEmbedBaseBackoff,
+		baseBackoff: baseBackoff,
+		maxBackoff:  cfg.retryMaxBackoff,
 		sleep:       sleepCtx,
 	}
 }
@@ -113,11 +125,15 @@ func (e *Embedder) Model() string { return e.model }
 
 // Embed returns the embedding vector for a single input string.
 func (e *Embedder) Embed(ctx context.Context, input string) ([]float64, error) {
+	var verr error
 	if input == "" {
-		return nil, ErrEmptyInput
+		verr = errors.Join(verr, ErrEmptyInput)
 	}
 	if e.model == "" {
-		return nil, ErrEmptyModel
+		verr = errors.Join(verr, ErrEmptyModel)
+	}
+	if verr != nil {
+		return nil, verr
 	}
 	embs, err := e.embed(ctx, input, 1)
 	if err != nil {
@@ -131,16 +147,20 @@ func (e *Embedder) Embed(ctx context.Context, input string) ([]float64, error) {
 // dimension; a batch that returns mismatched dimensions yields
 // ErrDimensionMismatch.
 func (e *Embedder) EmbedBatch(ctx context.Context, inputs []string) ([][]float64, error) {
+	var verr error
 	if len(inputs) == 0 {
-		return nil, ErrEmptyInput
+		verr = errors.Join(verr, ErrEmptyInput)
 	}
 	for i, in := range inputs {
 		if in == "" {
-			return nil, fmt.Errorf("%w: input at index %d", ErrEmptyInput, i)
+			verr = errors.Join(verr, fmt.Errorf("%w: input at index %d", ErrEmptyInput, i))
 		}
 	}
 	if e.model == "" {
-		return nil, ErrEmptyModel
+		verr = errors.Join(verr, ErrEmptyModel)
+	}
+	if verr != nil {
+		return nil, verr
 	}
 	return e.embed(ctx, inputs, len(inputs))
 }
@@ -158,6 +178,9 @@ func (e *Embedder) embed(ctx context.Context, input any, wantN int) ([][]float64
 				return nil, fmt.Errorf("embed: %w", err)
 			}
 			backoff *= 2
+			if e.maxBackoff > 0 && backoff > e.maxBackoff {
+				backoff = e.maxBackoff
+			}
 		}
 		res := e.doEmbed(ctx, input)
 		if res.err == nil {
@@ -233,13 +256,13 @@ func validateEmbeddings(embeddings [][]float64, wantN int) ([][]float64, error) 
 		return nil, fmt.Errorf("%w: got %d embeddings, want %d", provpkg.ErrInvalidResponsePart, len(embeddings), wantN)
 	}
 	dim := len(embeddings[0])
-	if dim == 0 {
-		return nil, fmt.Errorf("%w: empty embedding vector", provpkg.ErrInvalidResponsePart)
-	}
 	for i, v := range embeddings {
 		if len(v) != dim {
 			return nil, fmt.Errorf("%w: embedding %d has dimension %d, want %d", ErrDimensionMismatch, i, len(v), dim)
 		}
+	}
+	if dim == 0 {
+		return nil, fmt.Errorf("%w: empty embedding vector", provpkg.ErrInvalidResponsePart)
 	}
 	return embeddings, nil
 }

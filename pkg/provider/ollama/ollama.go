@@ -294,15 +294,17 @@ func (t *transport) String() string {
 type ProviderOption func(*providerConfig)
 
 type providerConfig struct {
-	keepAlive      string
-	numCtx         int
-	numPredict     int
-	maxRetries     int
-	responseSchema any
-	client         *http.Client
-	httpTimeout    time.Duration
-	logger         *slog.Logger
-	tracer         Tracer
+	keepAlive        string
+	numCtx           int
+	numPredict       int
+	maxRetries       int
+	retryBaseBackoff time.Duration
+	retryMaxBackoff  time.Duration
+	responseSchema   any
+	client           *http.Client
+	httpTimeout      time.Duration
+	logger           *slog.Logger
+	tracer           Tracer
 }
 
 func WithKeepAlive(keepAlive string) ProviderOption {
@@ -323,6 +325,19 @@ func WithNumPredict(numPredict int) ProviderOption {
 // the generation transport, whose retries are governed by the analyzer engine.
 func WithMaxRetries(maxRetries int) ProviderOption {
 	return func(c *providerConfig) { c.maxRetries = maxRetries }
+}
+
+// WithRetryBackoff tunes the Embedder's exponential backoff between retries of
+// a transient or rate-limited /api/embed response. base is the delay before the
+// first retry and doubles each attempt; maxDelay caps the delay (maxDelay <= 0
+// means uncapped). A non-positive base falls back to the default. A server-
+// supplied Retry-After still takes precedence when it is longer. It is ignored
+// by the generation transport.
+func WithRetryBackoff(base, maxDelay time.Duration) ProviderOption {
+	return func(c *providerConfig) {
+		c.retryBaseBackoff = base
+		c.retryMaxBackoff = maxDelay
+	}
 }
 
 func WithResponseSchema(schema any) ProviderOption {
