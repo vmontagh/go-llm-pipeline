@@ -26,6 +26,10 @@ var errNoVector = errors.New("no vector for input")
 type fakeEmbedder struct {
 	vectors map[string][]float64
 	err     error
+	// onEmbed, when non-nil, runs after the vector is resolved but before Embed
+	// returns. Tests use it to cancel the context mid-call so the failure
+	// surfaces from the downstream store query rather than the embed step.
+	onEmbed func()
 }
 
 func (f *fakeEmbedder) Embed(_ context.Context, input string) ([]float64, error) {
@@ -35,6 +39,9 @@ func (f *fakeEmbedder) Embed(_ context.Context, input string) ([]float64, error)
 	v, ok := f.vectors[input]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", errNoVector, input)
+	}
+	if f.onEmbed != nil {
+		f.onEmbed()
 	}
 	return v, nil
 }
@@ -414,10 +421,11 @@ func TestSemanticDimensionMismatchIsMiss(t *testing.T) {
 
 func TestSemanticGetPropagatesCancellation(t *testing.T) {
 	t.Parallel()
-	// A valid embedder isolates the failure to the store query, so a cancelled
-	// context must surface as an error rather than being masked as a miss. The
-	// query prompt is not stored exactly, so the lookup falls through the exact
-	// fast path to the semantic path where the store is consulted.
+	// The context stays live past getExact so the lookup reaches the semantic
+	// path; the embedder then cancels it while returning a valid vector, so the
+	// cancellation surfaces from the store query (MemoryStore.Nearest), proving
+	// the semantic path propagates cancellation rather than masking it as a
+	// miss.
 	emb := &fakeEmbedder{vectors: map[string][]float64{
 		"cat":    {1, 0, 0},
 		"kitten": {0.9, 0.1, 0},
@@ -429,7 +437,7 @@ func TestSemanticGetPropagatesCancellation(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+	emb.onEmbed = cancel
 
 	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "kitten"}); !errors.Is(err, context.Canceled) {
 		t.Errorf("Get(cancelled) error = %v, want %v", err, context.Canceled)
@@ -724,15 +732,21 @@ func TestConcurrentSemanticPutEviction(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	// A bounded semantic cache under concurrent replacement, eviction, and reads
-	// must keep the exact and semantic paths consistent and never race. Run with
-	// -race to catch interleavings between the index update and the map commit.
+	// must keep the exact and semantic paths consistent and never race. Each Get
+	// queries a near-neighbor prompt (qN shares pN's vector but hashes
+	// differently), so it misses the exact path and genuinely exercises
+	// getSemantic/Nearest under -race. Run with -race to catch interleavings
+	// between the index update and the map commit.
 	const prompts = 24
-	vectors := make(map[string][]float64, prompts)
+	vectors := make(map[string][]float64, prompts*2)
 	for i := range prompts {
-		vectors[fmt.Sprintf("p%d", i)] = []float64{float64(i + 1), 1, 0}
+		v := []float64{float64(i + 1), 1, 0}
+		vectors[fmt.Sprintf("p%d", i)] = v
+		vectors[fmt.Sprintf("q%d", i)] = v // same vector, different prompt string
 	}
 	emb := &fakeEmbedder{vectors: vectors}
-	c := mustNew(t, semcache.WithSemantic(emb, 0.5), semcache.WithMaxEntries(16))
+	recorder := newFakeRecorder()
+	c := mustNew(t, semcache.WithSemantic(emb, 0.5), semcache.WithMaxEntries(16), semcache.WithMetrics(recorder))
 
 	const (
 		goroutines = 24
@@ -745,15 +759,14 @@ func TestConcurrentSemanticPutEviction(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := range iterations {
-				key := semcache.Key{
-					Model:  models[(g+i)%len(models)],
-					Prompt: fmt.Sprintf("p%d", (g*iterations+i)%prompts),
-				}
-				if err := c.Put(ctx, key, "r"); err != nil {
+				n := (g*iterations + i) % prompts
+				model := models[(g+i)%len(models)]
+				if err := c.Put(ctx, semcache.Key{Model: model, Prompt: fmt.Sprintf("p%d", n)}, "r"); err != nil {
 					t.Errorf("Put() = %v", err)
 					return
 				}
-				if _, _, err := c.Get(ctx, key); err != nil {
+				// Query the near-neighbor prompt to force the semantic fallback.
+				if _, _, err := c.Get(ctx, semcache.Key{Model: model, Prompt: fmt.Sprintf("q%d", n)}); err != nil {
 					t.Errorf("Get() = %v", err)
 					return
 				}
@@ -767,5 +780,13 @@ func TestConcurrentSemanticPutEviction(t *testing.T) {
 	}
 	if got := c.PartitionCount(); got > 16 {
 		t.Errorf("PartitionCount() = %d, want <= 16", got)
+	}
+	// Prove the semantic path actually ran rather than being short-circuited by
+	// the exact fast path.
+	if got := c.Stats().SemanticHits; got == 0 {
+		t.Error("Stats().SemanticHits = 0, want > 0: semantic path was never exercised")
+	}
+	if got := recorder.snapshot()[semcache.MetricSemanticHits]; got == 0 {
+		t.Error("recorder MetricSemanticHits = 0, want > 0: semantic path was never exercised")
 	}
 }
