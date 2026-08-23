@@ -195,6 +195,24 @@ func normalizeItems(items []Item) ([]Vector, error) {
 	return normalized, nil
 }
 
+// validateUniqueIDs enforces that every item has a non-empty ID and that no ID
+// repeats — the ID guarantees shared by all batch helpers. Unlike
+// normalizeItems it does not inspect vectors, so metric-generic helpers such as
+// [ClusterByDistance] can validate IDs without assuming items carry embeddings.
+func validateUniqueIDs(items []Item) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.ID == "" {
+			return ErrEmptyID
+		}
+		if _, ok := seen[item.ID]; ok {
+			return fmt.Errorf("%w: %q", ErrDuplicateID, item.ID)
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
+}
+
 // validateThreshold rejects thresholds that are NaN or outside the cosine
 // range [-1, 1].
 func validateThreshold(threshold float64) error {
