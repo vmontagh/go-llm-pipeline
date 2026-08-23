@@ -31,6 +31,7 @@ import (
 	"path"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -251,6 +252,15 @@ func strictIndex(item any, keys ...any) (any, error) {
 			switch {
 			case kv.Type().AssignableTo(keyType):
 			case kv.Type().ConvertibleTo(keyType):
+				// Convert silently wraps or truncates numeric keys that are not
+				// exactly representable in the destination key type
+				// (256 -> int8(0), -1 -> uint8(255), 1.5 -> int(1)), which would
+				// return the wrong entry instead of failing closed. Reject any
+				// numeric key not exactly representable in an integer destination
+				// before converting.
+				if isIntKind(keyType.Kind()) && !numericRepresentableAsInt(kv, keyType) {
+					return nil, fmt.Errorf("%w: key %v is not representable as map key type %s", errStrictIndex, key, keyType)
+				}
 				kv = kv.Convert(keyType)
 			default:
 				return nil, fmt.Errorf("%w: cannot index map[%s] with key of type %T", errStrictIndex, keyType, key)
@@ -285,6 +295,85 @@ func indexInt(key any) (int, error) {
 	default:
 		return 0, fmt.Errorf("%w: cannot index sequence with key of type %T", errStrictIndex, key)
 	}
+}
+
+// isIntKind reports whether k is one of the signed or unsigned integer kinds.
+func isIntKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		return true
+	default:
+		return false
+	}
+}
+
+// isSignedKind reports whether k is one of the signed integer kinds.
+func isSignedKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return true
+	default:
+		return false
+	}
+}
+
+// isFloatKind reports whether k is one of the floating-point kinds.
+func isFloatKind(k reflect.Kind) bool {
+	return k == reflect.Float32 || k == reflect.Float64
+}
+
+// numericRepresentableAsInt reports whether the numeric value in kv is exactly
+// representable as the integer type keyType. Non-numeric source kinds are
+// treated as representable so this guard only narrows numeric map keys.
+func numericRepresentableAsInt(kv reflect.Value, keyType reflect.Type) bool {
+	switch {
+	case isIntKind(kv.Kind()):
+		return intRepresentableAs(kv, keyType)
+	case isFloatKind(kv.Kind()):
+		return floatRepresentableAsInt(kv, keyType)
+	default:
+		return true
+	}
+}
+
+// intRepresentableAs reports whether the integer value in kv is exactly
+// representable as the integer type keyType, with no overflow or sign change.
+func intRepresentableAs(kv reflect.Value, keyType reflect.Type) bool {
+	dst := reflect.New(keyType).Elem()
+	if isSignedKind(kv.Kind()) {
+		n := kv.Int()
+		if isSignedKind(keyType.Kind()) {
+			return !dst.OverflowInt(n)
+		}
+		return n >= 0 && !dst.OverflowUint(uint64(n)) // negative never fits an unsigned key
+	}
+	u := kv.Uint()
+	if isSignedKind(keyType.Kind()) {
+		return u <= uint64(math.MaxInt64) && !dst.OverflowInt(int64(u))
+	}
+	return !dst.OverflowUint(u)
+}
+
+// floatRepresentableAsInt reports whether the floating-point value in kv is a
+// finite whole number within the range of the integer type keyType, so
+// converting it neither truncates a fraction nor wraps out of range. The
+// power-of-two bounds are exactly representable as float64 for widths up to 64
+// bits, making the comparisons precise.
+func floatRepresentableAsInt(kv reflect.Value, keyType reflect.Type) bool {
+	f := kv.Float()
+	if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f {
+		return false
+	}
+	bits := keyType.Bits()
+	if isSignedKind(keyType.Kind()) {
+		bound := math.Ldexp(1, bits-1) // 2^(bits-1)
+		return f >= -bound && f < bound
+	}
+	if f < 0 {
+		return false
+	}
+	return f < math.Ldexp(1, bits) // 2^bits
 }
 
 // validateFuncs verifies a caller-supplied FuncMap up front. It rejects the
@@ -351,14 +440,21 @@ var missingKeyMarkers = []string{
 // caused by a missing map key or struct field. It inspects the inner execution
 // error from a [text/template.ExecError] but first removes only the two
 // name-bearing wrapper tokens text/template emits — the "template: <name>:"
-// location prefix and the quoted name in `executing "<name>"` — each exactly
-// once. Stripping just the wrapper (rather than every occurrence of the name)
-// keeps the cause intact, so a template whose name collides with a marker
-// payload (for example a template literally named "map", whose missing-key
-// cause is `map has no entry for key ...`) is still classified correctly. A
-// failure returned by a registered function is prefixed with "error calling "
-// and is treated as ErrRenderFailed even when its message contains a
-// missing-key marker.
+// location prefix (formatted with %s) and the quoted name in `executing %q` —
+// each exactly once. The executing token is matched with [strconv.Quote] so a
+// name containing a quote or backslash still matches; the location prefix uses
+// the raw name because text/template formats it with %s. Stripping just the
+// wrapper (rather than every occurrence of the name) keeps the cause intact, so
+// a template whose name collides with a marker payload (for example a template
+// literally named "map", whose missing-key cause is `map has no entry for key
+// ...`) is still classified correctly.
+//
+// A registered function's failure is wrapped by text/template as
+// "error calling <name>: ...", so the wrapper precedes the cause. The result is
+// classified as a missing key only when a marker appears and no function-call
+// wrapper precedes it, so a genuine missing field whose reflected type merely
+// contains the substring "error calling " (for example via a struct tag) is not
+// misclassified as ErrRenderFailed.
 func isMissingKeyError(err error) bool {
 	var execErr template.ExecError
 	if !errors.As(err, &execErr) {
@@ -367,17 +463,19 @@ func isMissingKeyError(err error) bool {
 	msg := execErr.Err.Error()
 	if execErr.Name != "" {
 		msg = strings.Replace(msg, "template: "+execErr.Name+":", "", 1)
-		msg = strings.Replace(msg, `executing "`+execErr.Name+`"`, "", 1)
+		msg = strings.Replace(msg, "executing "+strconv.Quote(execErr.Name), "", 1)
 	}
-	if strings.Contains(msg, "error calling ") {
-		return false
-	}
+	markerIdx := -1
 	for _, marker := range missingKeyMarkers {
-		if strings.Contains(msg, marker) {
-			return true
+		if mi := strings.Index(msg, marker); mi >= 0 && (markerIdx < 0 || mi < markerIdx) {
+			markerIdx = mi
 		}
 	}
-	return false
+	if markerIdx < 0 {
+		return false
+	}
+	callIdx := strings.Index(msg, "error calling ")
+	return callIdx < 0 || callIdx > markerIdx
 }
 
 // Names returns the distinct template names in the registry, sorted

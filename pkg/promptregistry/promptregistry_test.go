@@ -261,6 +261,99 @@ func TestRenderStrictIndex(t *testing.T) {
 	}
 }
 
+// TestRenderStrictIndexIntegerKey verifies that indexing an integer-keyed map
+// with an out-of-range or sign-mismatched key fails closed (ErrRenderFailed)
+// rather than silently wrapping to a valid-but-wrong entry, while in-range and
+// non-integer keys keep working.
+func TestRenderStrictIndexIntegerKey(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"int8over/v1.tmpl":   "{{index . 256}}",
+		"uint8neg/v1.tmpl":   "{{index . -1}}",
+		"uintneg/v1.tmpl":    "{{index . -1}}",
+		"int8ok/v1.tmpl":     "{{index . 5}}",
+		"floattrunc/v1.tmpl": "{{index . 1.5}}",
+		"floatexact/v1.tmpl": "{{index . 2.0}}",
+		"stringkey/v1.tmpl":  `{{index . "k"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		tmpl    string
+		data    any
+		want    string
+		wantErr error
+	}{
+		{
+			name:    "int8 key overflow fails closed",
+			tmpl:    "int8over",
+			data:    map[int8]string{0: "zero"},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+		{
+			name:    "uint8 key negative fails closed",
+			tmpl:    "uint8neg",
+			data:    map[uint8]string{1: "one"},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+		{
+			name:    "uint key same-width sign flip fails closed",
+			tmpl:    "uintneg",
+			data:    map[uint]string{2: "two"},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+		{
+			name: "in-range int8 key renders",
+			tmpl: "int8ok",
+			data: map[int8]string{5: "five"},
+			want: "five",
+		},
+		{
+			name:    "fractional float key fails closed",
+			tmpl:    "floattrunc",
+			data:    map[int]string{1: "one"},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+		{
+			name: "whole float key renders",
+			tmpl: "floatexact",
+			data: map[int]string{2: "two"},
+			want: "two",
+		},
+		{
+			name: "string key unaffected",
+			tmpl: "stringkey",
+			data: map[string]string{"k": "v"},
+			want: "v",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := reg.Render(context.Background(), tt.tmpl, "v1", tt.data)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Render() error = %v, want %v", err, tt.wantErr)
+				}
+				if errors.Is(err, promptregistry.ErrMissingField) {
+					t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render() unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Render() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 // TestWithFuncs verifies caller-supplied functions render.
 func TestWithFuncs(t *testing.T) {
 	t.Parallel()
@@ -380,15 +473,39 @@ func TestRenderMissingFieldNameCollidesWithCause(t *testing.T) {
 	}
 }
 
-// Synthetic text/template.ExecError inner messages for the white-box classifier
+// TestRenderMissingFieldQuotedNameWithPhrase guards the quoted-name wrapper
+// scrub. text/template formats the "executing %q" token with strconv.Quote, so
+// a template whose name contains a quote (and the "error calling " phrase) is
+// escaped there. Matching that token with strconv.Quote strips it, leaving no
+// function-call wrapper before the marker, so a genuine missing key still
+// classifies as ErrMissingField instead of ErrRenderFailed.
+func TestRenderMissingFieldQuotedNameWithPhrase(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		`error calling "x/v1.tmpl`: "{{.Missing}}",
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	_, err = reg.Render(context.Background(), `error calling "x`, "v1", map[string]string{})
+	if !errors.Is(err, promptregistry.ErrMissingField) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrMissingField)
+	}
+	if errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrRenderFailed", err)
+	}
+}
+
 // test. text/template formats a data-eval failure as
 // `template: <name>:<line>:<col>: executing "<name>" at <ctx>: <cause>`, so the
 // name appears only in the two wrapper tokens; these fixtures let the test
 // exercise a name that also matches the cause payload.
 var (
-	errExecNameCollidesCause = errors.New(`template: map:1:11: executing "map" at <.Missing>: map has no entry for key "Missing"`)
-	errExecFuncCall          = errors.New(`template: t:1:5: executing "t" at <fail>: error calling fail: map has no entry for key "x"`)
-	errExecPlainField        = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct {}`)
+	errExecNameCollidesCause  = errors.New(`template: map:1:11: executing "map" at <.Missing>: map has no entry for key "Missing"`)
+	errExecFuncCall           = errors.New(`template: t:1:5: executing "t" at <fail>: error calling fail: map has no entry for key "x"`)
+	errExecPlainField         = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct {}`)
+	errExecFieldTypeHasPhrase = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct { F string "error calling x" }`)
+	errExecMarkerHasPhrase    = errors.New(`template: t:1:11: executing "t" at <.Missing>: map has no entry for key "error calling "`)
 )
 
 // TestIsMissingKeyErrorNameCollision is the white-box guard for the wrapper-only
@@ -417,6 +534,16 @@ func TestIsMissingKeyErrorNameCollision(t *testing.T) {
 		{
 			name: "plain missing field",
 			err:  template.ExecError{Name: "t", Err: errExecPlainField},
+			want: true,
+		},
+		{
+			name: "missing field whose type contains error-calling phrase",
+			err:  template.ExecError{Name: "t", Err: errExecFieldTypeHasPhrase},
+			want: true,
+		},
+		{
+			name: "missing key whose payload contains error-calling phrase after marker",
+			err:  template.ExecError{Name: "t", Err: errExecMarkerHasPhrase},
 			want: true,
 		},
 	}
