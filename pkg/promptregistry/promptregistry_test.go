@@ -356,6 +356,29 @@ func TestRenderMissingFieldTemplateNameCollision(t *testing.T) {
 	}
 }
 
+// TestRenderMissingFieldNameCollidesWithCause locks the classification of a
+// genuine missing map key for a template whose name shares the "map" prefix of
+// text/template's cause payload (`map has no entry for key ...`). It guards the
+// wrapper-only name scrub in isMissingKeyError: only the two name-bearing
+// wrapper tokens are stripped, so the cause is never corrupted and the error
+// still classifies as ErrMissingField.
+func TestRenderMissingFieldNameCollidesWithCause(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"map/v1.tmpl": "{{.Missing}}",
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	_, err = reg.Render(context.Background(), "map", "v1", map[string]string{})
+	if !errors.Is(err, promptregistry.ErrMissingField) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrMissingField)
+	}
+	if errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrRenderFailed", err)
+	}
+}
+
 func TestNames(t *testing.T) {
 	t.Parallel()
 	reg, err := promptregistry.New(mapFS(map[string]string{

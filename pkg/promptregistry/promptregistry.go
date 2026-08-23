@@ -348,24 +348,26 @@ var missingKeyMarkers = []string{
 }
 
 // isMissingKeyError reports whether err is a text/template execution failure
-// caused by a missing map key or struct field. It inspects only the inner
-// execution error from a [text/template.ExecError] and first strips the
-// template name, which text/template repeats in the wrapper message. Without
-// that scrub a template whose name itself contains a marker substring — such as
-// "error calling " — could flip the classification. A failure returned by a
-// registered function is prefixed by text/template with "error calling " and is
-// treated as ErrRenderFailed even when its message contains a missing-key
-// marker.
+// caused by a missing map key or struct field. It inspects the inner execution
+// error from a [text/template.ExecError] but first removes only the two
+// name-bearing wrapper tokens text/template emits — the "template: <name>:"
+// location prefix and the quoted name in `executing "<name>"` — each exactly
+// once. Stripping just the wrapper (rather than every occurrence of the name)
+// keeps the cause intact, so a template whose name collides with a marker
+// payload (for example a template literally named "map", whose missing-key
+// cause is `map has no entry for key ...`) is still classified correctly. A
+// failure returned by a registered function is prefixed with "error calling "
+// and is treated as ErrRenderFailed even when its message contains a
+// missing-key marker.
 func isMissingKeyError(err error) bool {
 	var execErr template.ExecError
 	if !errors.As(err, &execErr) {
 		return false
 	}
 	msg := execErr.Err.Error()
-	// The empty-string guard matters: strings.ReplaceAll with an empty old
-	// value inserts the replacement between every byte, corrupting the message.
 	if execErr.Name != "" {
-		msg = strings.ReplaceAll(msg, execErr.Name, "")
+		msg = strings.Replace(msg, "template: "+execErr.Name+":", "", 1)
+		msg = strings.Replace(msg, `executing "`+execErr.Name+`"`, "", 1)
 	}
 	if strings.Contains(msg, "error calling ") {
 		return false
