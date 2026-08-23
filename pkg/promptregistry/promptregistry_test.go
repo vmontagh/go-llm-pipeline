@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 	"testing/fstest"
+	"text/template"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/vmontagh/go-llm-pipeline/pkg/promptregistry"
@@ -376,6 +377,56 @@ func TestRenderMissingFieldNameCollidesWithCause(t *testing.T) {
 	}
 	if errors.Is(err, promptregistry.ErrRenderFailed) {
 		t.Errorf("Render() error = %v, unexpectedly matched ErrRenderFailed", err)
+	}
+}
+
+// Synthetic text/template.ExecError inner messages for the white-box classifier
+// test. text/template formats a data-eval failure as
+// `template: <name>:<line>:<col>: executing "<name>" at <ctx>: <cause>`, so the
+// name appears only in the two wrapper tokens; these fixtures let the test
+// exercise a name that also matches the cause payload.
+var (
+	errExecNameCollidesCause = errors.New(`template: map:1:11: executing "map" at <.Missing>: map has no entry for key "Missing"`)
+	errExecFuncCall          = errors.New(`template: t:1:5: executing "t" at <fail>: error calling fail: map has no entry for key "x"`)
+	errExecPlainField        = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct {}`)
+)
+
+// TestIsMissingKeyErrorNameCollision is the white-box guard for the wrapper-only
+// name scrub. The public Render API cannot produce a bare template name (names
+// are full file paths), so a collision between the name and a cause payload is
+// only reachable by constructing a synthetic ExecError here. The first case
+// fails on the previous global-ReplaceAll scrub, which strips "map" from the
+// cause and drops the marker.
+func TestIsMissingKeyErrorNameCollision(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "name collides with missing-key cause",
+			err:  template.ExecError{Name: "map", Err: errExecNameCollidesCause},
+			want: true,
+		},
+		{
+			name: "function-call failure stays render-failed",
+			err:  template.ExecError{Name: "t", Err: errExecFuncCall},
+			want: false,
+		},
+		{
+			name: "plain missing field",
+			err:  template.ExecError{Name: "t", Err: errExecPlainField},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := promptregistry.IsMissingKeyError(tt.err); got != tt.want {
+				t.Errorf("IsMissingKeyError(%v) = %t, want %t", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 
