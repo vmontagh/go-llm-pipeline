@@ -41,6 +41,8 @@ components:
     in: pkg/vcrtest/**
   vectorstore:
     in: pkg/vectorstore/**
+  promptregistry:
+    in: pkg/promptregistry/**
   examples:
     in: examples/**
   integtest:
@@ -185,6 +187,12 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - vectorstore
+
+  promptregistry:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - promptregistry
 
   examples:
     anyProjectDeps: false
