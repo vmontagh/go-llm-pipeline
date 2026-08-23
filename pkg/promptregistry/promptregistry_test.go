@@ -3,6 +3,7 @@ package promptregistry_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"testing/fstest"
@@ -261,10 +262,13 @@ func TestRenderStrictIndex(t *testing.T) {
 	}
 }
 
-// TestRenderStrictIndexIntegerKey verifies that indexing an integer-keyed map
-// with an out-of-range or sign-mismatched key fails closed (ErrRenderFailed)
-// rather than silently wrapping to a valid-but-wrong entry, while in-range and
-// non-integer keys keep working.
+// TestRenderStrictIndexIntegerKey verifies that indexing a map with a key that
+// text/template's index would adapt lossily fails closed (ErrRenderFailed)
+// rather than silently selecting a valid-but-wrong entry. The strict index
+// admits only assignable keys and exactly-representable integer-to-integer
+// conversions, so out-of-range integers, sign flips, int-to-string rune
+// conversions, and float-to-int truncation are all rejected, while assignable
+// keys keep working.
 func TestRenderStrictIndexIntegerKey(t *testing.T) {
 	t.Parallel()
 	reg, err := promptregistry.New(mapFS(map[string]string{
@@ -273,7 +277,9 @@ func TestRenderStrictIndexIntegerKey(t *testing.T) {
 		"uintneg/v1.tmpl":    "{{index . -1}}",
 		"int8ok/v1.tmpl":     "{{index . 5}}",
 		"floattrunc/v1.tmpl": "{{index . 1.5}}",
-		"floatexact/v1.tmpl": "{{index . 2.0}}",
+		"floatint/v1.tmpl":   "{{index . 2.0}}",
+		"float64key/v1.tmpl": "{{index . 1.5}}",
+		"intstring/v1.tmpl":  "{{index . 65}}",
 		"stringkey/v1.tmpl":  `{{index . "k"}}`,
 	}))
 	if err != nil {
@@ -318,10 +324,22 @@ func TestRenderStrictIndexIntegerKey(t *testing.T) {
 			wantErr: promptregistry.ErrRenderFailed,
 		},
 		{
-			name: "whole float key renders",
-			tmpl: "floatexact",
-			data: map[int]string{2: "two"},
-			want: "two",
+			name:    "whole float key against int map fails closed",
+			tmpl:    "floatint",
+			data:    map[int]string{2: "two"},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+		{
+			name: "float key against float map renders",
+			tmpl: "float64key",
+			data: map[float64]string{1.5: "x"},
+			want: "x",
+		},
+		{
+			name:    "int key against string map fails closed",
+			tmpl:    "intstring",
+			data:    map[string]string{"A": "value"},
+			wantErr: promptregistry.ErrRenderFailed,
 		},
 		{
 			name: "string key unaffected",
@@ -496,13 +514,17 @@ func TestRenderMissingFieldQuotedNameWithPhrase(t *testing.T) {
 	}
 }
 
-// test. text/template formats a data-eval failure as
+// text/template formats a data-eval failure as
 // `template: <name>:<line>:<col>: executing "<name>" at <ctx>: <cause>`, so the
 // name appears only in the two wrapper tokens; these fixtures let the test
-// exercise a name that also matches the cause payload.
+// exercise a name that also matches the cause payload. A genuine missing key or
+// field is a leaf error, whereas a function-call failure is %w-wrapped
+// (errExecFuncCall wraps errExecFuncCallCause), which is what the leaf gate in
+// isMissingKeyError keys on.
 var (
 	errExecNameCollidesCause  = errors.New(`template: map:1:11: executing "map" at <.Missing>: map has no entry for key "Missing"`)
-	errExecFuncCall           = errors.New(`template: t:1:5: executing "t" at <fail>: error calling fail: map has no entry for key "x"`)
+	errExecFuncCallCause      = errors.New(`map has no entry for key "x"`)
+	errExecFuncCall           = fmt.Errorf(`template: t:1:5: executing "t" at <fail>: error calling fail: %w`, errExecFuncCallCause)
 	errExecPlainField         = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct {}`)
 	errExecFieldTypeHasPhrase = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct { F string "error calling x" }`)
 	errExecMarkerHasPhrase    = errors.New(`template: t:1:11: executing "t" at <.Missing>: map has no entry for key "error calling "`)
@@ -554,6 +576,37 @@ func TestIsMissingKeyErrorNameCollision(t *testing.T) {
 				t.Errorf("IsMissingKeyError(%v) = %t, want %t", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// errBoom is a registered function's failure whose message contains a
+// missing-key marker; text/template wraps it as "error calling fail: ...".
+var errBoom = errors.New("map has no entry for key")
+
+// TestRenderFuncErrorMarkerInMessage guards the leaf-vs-wrapped classification:
+// a registered function that fails with a message containing a missing-key
+// marker (or whose argument does) must classify as ErrRenderFailed, not
+// ErrMissingField, because text/template %w-wraps the function failure so its
+// execution error is non-leaf.
+func TestRenderFuncErrorMarkerInMessage(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(
+		mapFS(map[string]string{
+			"boom/v1.tmpl": `{{fail "map has no entry for key"}}`,
+		}),
+		promptregistry.WithFuncs(template.FuncMap{
+			"fail": func(string) (string, error) { return "", errBoom },
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	_, err = reg.Render(context.Background(), "boom", "v1", nil)
+	if !errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrRenderFailed)
+	}
+	if errors.Is(err, promptregistry.ErrMissingField) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
 	}
 }
 

@@ -105,6 +105,9 @@ func WithRoot(dir string) Option {
 // fail-closed index function (a missing map key surfaces as [ErrMissingField]),
 // and a FuncMap that supplies "index" is rejected by New with
 // [ErrInvalidTemplate].
+//
+// Supplied functions must be safe for concurrent use: rendering the registry
+// concurrently invokes them concurrently.
 func WithFuncs(funcs template.FuncMap) Option {
 	return func(c *config) {
 		if c.funcs == nil {
@@ -251,18 +254,15 @@ func strictIndex(item any, keys ...any) (any, error) {
 			keyType := v.Type().Key()
 			switch {
 			case kv.Type().AssignableTo(keyType):
-			case kv.Type().ConvertibleTo(keyType):
-				// Convert silently wraps or truncates numeric keys that are not
-				// exactly representable in the destination key type
-				// (256 -> int8(0), -1 -> uint8(255), 1.5 -> int(1)), which would
-				// return the wrong entry instead of failing closed. Reject any
-				// numeric key not exactly representable in an integer destination
-				// before converting.
-				if isIntKind(keyType.Kind()) && !numericRepresentableAsInt(kv, keyType) {
-					return nil, fmt.Errorf("%w: key %v is not representable as map key type %s", errStrictIndex, key, keyType)
-				}
+			case isIntKind(kv.Kind()) && isIntKind(keyType.Kind()) && intRepresentableAs(kv, keyType):
 				kv = kv.Convert(keyType)
 			default:
+				// Mirror text/template's index, which adapts only assignable keys
+				// and integer-to-integer conversions. Anything else — int->string
+				// rune conversion, float->int truncation, and other lossy
+				// conversions — would silently select the wrong entry, so fail
+				// closed. An integer key not exactly representable in an integer
+				// destination key type also lands here.
 				return nil, fmt.Errorf("%w: cannot index map[%s] with key of type %T", errStrictIndex, keyType, key)
 			}
 			elem := v.MapIndex(kv)
@@ -318,25 +318,6 @@ func isSignedKind(k reflect.Kind) bool {
 	}
 }
 
-// isFloatKind reports whether k is one of the floating-point kinds.
-func isFloatKind(k reflect.Kind) bool {
-	return k == reflect.Float32 || k == reflect.Float64
-}
-
-// numericRepresentableAsInt reports whether the numeric value in kv is exactly
-// representable as the integer type keyType. Non-numeric source kinds are
-// treated as representable so this guard only narrows numeric map keys.
-func numericRepresentableAsInt(kv reflect.Value, keyType reflect.Type) bool {
-	switch {
-	case isIntKind(kv.Kind()):
-		return intRepresentableAs(kv, keyType)
-	case isFloatKind(kv.Kind()):
-		return floatRepresentableAsInt(kv, keyType)
-	default:
-		return true
-	}
-}
-
 // intRepresentableAs reports whether the integer value in kv is exactly
 // representable as the integer type keyType, with no overflow or sign change.
 func intRepresentableAs(kv reflect.Value, keyType reflect.Type) bool {
@@ -353,27 +334,6 @@ func intRepresentableAs(kv reflect.Value, keyType reflect.Type) bool {
 		return u <= uint64(math.MaxInt64) && !dst.OverflowInt(int64(u))
 	}
 	return !dst.OverflowUint(u)
-}
-
-// floatRepresentableAsInt reports whether the floating-point value in kv is a
-// finite whole number within the range of the integer type keyType, so
-// converting it neither truncates a fraction nor wraps out of range. The
-// power-of-two bounds are exactly representable as float64 for widths up to 64
-// bits, making the comparisons precise.
-func floatRepresentableAsInt(kv reflect.Value, keyType reflect.Type) bool {
-	f := kv.Float()
-	if math.IsNaN(f) || math.IsInf(f, 0) || math.Trunc(f) != f {
-		return false
-	}
-	bits := keyType.Bits()
-	if isSignedKind(keyType.Kind()) {
-		bound := math.Ldexp(1, bits-1) // 2^(bits-1)
-		return f >= -bound && f < bound
-	}
-	if f < 0 {
-		return false
-	}
-	return f < math.Ldexp(1, bits) // 2^bits
 }
 
 // validateFuncs verifies a caller-supplied FuncMap up front. It rejects the
@@ -437,27 +397,32 @@ var missingKeyMarkers = []string{
 }
 
 // isMissingKeyError reports whether err is a text/template execution failure
-// caused by a missing map key or struct field. It inspects the inner execution
-// error from a [text/template.ExecError] but first removes only the two
-// name-bearing wrapper tokens text/template emits — the "template: <name>:"
-// location prefix (formatted with %s) and the quoted name in `executing %q` —
-// each exactly once. The executing token is matched with [strconv.Quote] so a
-// name containing a quote or backslash still matches; the location prefix uses
-// the raw name because text/template formats it with %s. Stripping just the
-// wrapper (rather than every occurrence of the name) keeps the cause intact, so
-// a template whose name collides with a marker payload (for example a template
+// caused by a missing map key or struct field, rather than a failed function or
+// method call.
+//
+// text/template wraps a function or method failure with %w
+// ("error calling <name>: %w"), so its [text/template.ExecError] cause has an
+// unwrappable inner error, whereas a missing map key or struct field is a leaf
+// error. Gating on leaf-ness classifies by the true failure kind and cannot be
+// fooled by a marker that merely appears in the rendered command or in a
+// function's returned message (for example {{fail "map has no entry for key"}}).
+//
+// For a leaf cause, the two name-bearing wrapper tokens text/template emits —
+// the "template: <name>:" location prefix (formatted with %s) and the quoted
+// name in `executing %q` — are stripped exactly once each before scanning for a
+// marker. The executing token is matched with [strconv.Quote] so a name
+// containing a quote or backslash still matches; the location prefix uses the
+// raw name because text/template formats it with %s. Stripping just the wrapper
+// (rather than every occurrence of the name) keeps the cause intact, so a
+// template whose name collides with a marker payload (for example a template
 // literally named "map", whose missing-key cause is `map has no entry for key
 // ...`) is still classified correctly.
-//
-// A registered function's failure is wrapped by text/template as
-// "error calling <name>: ...", so the wrapper precedes the cause. The result is
-// classified as a missing key only when a marker appears and no function-call
-// wrapper precedes it, so a genuine missing field whose reflected type merely
-// contains the substring "error calling " (for example via a struct tag) is not
-// misclassified as ErrRenderFailed.
 func isMissingKeyError(err error) bool {
 	var execErr template.ExecError
 	if !errors.As(err, &execErr) {
+		return false
+	}
+	if errors.Unwrap(execErr.Err) != nil {
 		return false
 	}
 	msg := execErr.Err.Error()
@@ -465,17 +430,12 @@ func isMissingKeyError(err error) bool {
 		msg = strings.Replace(msg, "template: "+execErr.Name+":", "", 1)
 		msg = strings.Replace(msg, "executing "+strconv.Quote(execErr.Name), "", 1)
 	}
-	markerIdx := -1
 	for _, marker := range missingKeyMarkers {
-		if mi := strings.Index(msg, marker); mi >= 0 && (markerIdx < 0 || mi < markerIdx) {
-			markerIdx = mi
+		if strings.Contains(msg, marker) {
+			return true
 		}
 	}
-	if markerIdx < 0 {
-		return false
-	}
-	callIdx := strings.Index(msg, "error calling ")
-	return callIdx < 0 || callIdx > markerIdx
+	return false
 }
 
 // Names returns the distinct template names in the registry, sorted
