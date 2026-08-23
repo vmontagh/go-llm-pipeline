@@ -220,7 +220,7 @@ func (e *Embedder) doEmbed(ctx context.Context, input any) embedResult {
 		if errors.Is(err, errRequestNotSent) {
 			return embedResult{tier: provpkg.TierTerminal, err: err}
 		}
-		return embedResult{tier: provpkg.TierShortTransient, err: err}
+		return embedResult{tier: provpkg.TierShortTransient, err: fmt.Errorf("embed: %w", err)}
 	}
 
 	if res.statusCode != http.StatusOK {
