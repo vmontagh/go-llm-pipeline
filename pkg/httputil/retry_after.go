@@ -28,6 +28,13 @@ import (
 // as "no server-suggested delay" and fall back to their configured
 // cooldown / backoff floor.
 func ParseRetryAfter(h string) time.Duration {
+	return parseRetryAfter(h, time.Now())
+}
+
+// parseRetryAfter is the clock-injected implementation of ParseRetryAfter.
+// HTTP-date values are measured relative to now instead of the wall clock so
+// callers (and tests) can supply a fixed reference instant.
+func parseRetryAfter(h string, now time.Time) time.Duration {
 	if h == "" {
 		return 0
 	}
@@ -38,7 +45,7 @@ func ParseRetryAfter(h string) time.Duration {
 		return time.Duration(secs) * time.Second
 	}
 	if t, err := http.ParseTime(h); err == nil {
-		d := time.Until(t)
+		d := t.Sub(now)
 		if d < 0 {
 			return 0
 		}

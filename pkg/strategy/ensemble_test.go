@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -27,7 +26,7 @@ type fakeAnalyzer struct {
 	name   string
 	result dummyAnalysisResult
 	err    error
-	delay  time.Duration
+	block  bool
 }
 
 func (m *fakeAnalyzer) Name() string {
@@ -35,12 +34,9 @@ func (m *fakeAnalyzer) Name() string {
 }
 
 func (m *fakeAnalyzer) Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish func(eventType, itemID, message string, isError bool)) (dummyAnalysisResult, error) {
-	if m.delay > 0 {
-		select {
-		case <-time.After(m.delay):
-		case <-ctx.Done():
-			return dummyAnalysisResult{}, ctx.Err()
-		}
+	if m.block {
+		<-ctx.Done()
+		return dummyAnalysisResult{}, ctx.Err()
 	}
 	return m.result, m.err
 }
@@ -212,8 +208,8 @@ func TestEnsembleAnalyzer_ContextCancellation(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	a1 := &fakeAnalyzer{name: "a1", delay: 50 * time.Millisecond}
-	a2 := &fakeAnalyzer{name: "a2", delay: 50 * time.Millisecond}
+	a1 := &fakeAnalyzer{name: "a1", block: true}
+	a2 := &fakeAnalyzer{name: "a2", block: true}
 
 	ens, err := NewEnsembleAnalyzer([]Generator[dummyAnalysisResult]{a1, a2}, testMerger)
 	if err != nil {

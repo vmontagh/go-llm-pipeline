@@ -5,7 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -24,18 +23,15 @@ type fakeJudgeAnalyzer struct {
 	name   string
 	result *JudgeResponse
 	err    error
-	delay  time.Duration
+	block  bool
 }
 
 func (m *fakeJudgeAnalyzer) Name() string { return m.name }
 
 func (m *fakeJudgeAnalyzer) Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish func(string, string, string, bool)) (*JudgeResponse, error) {
-	if m.delay > 0 {
-		select {
-		case <-time.After(m.delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	if m.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	return m.result, m.err
 }
@@ -44,7 +40,7 @@ type fakePointerAnalyzer struct {
 	name   string
 	result *dummyAnalysisResult
 	err    error
-	delay  time.Duration
+	block  bool
 }
 
 func (m *fakePointerAnalyzer) Name() string {
@@ -52,12 +48,9 @@ func (m *fakePointerAnalyzer) Name() string {
 }
 
 func (m *fakePointerAnalyzer) Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish func(eventType, itemID, message string, isError bool)) (*dummyAnalysisResult, error) {
-	if m.delay > 0 {
-		select {
-		case <-time.After(m.delay):
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	if m.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 	return m.result, m.err
 }
@@ -299,8 +292,8 @@ func TestJudgeAnalyzer_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	j := &fakeJudgeAnalyzer{name: "j"}
-	g1 := &fakePointerAnalyzer{name: "g1", delay: 10 * time.Millisecond}
-	g2 := &fakePointerAnalyzer{name: "g2", delay: 10 * time.Millisecond}
+	g1 := &fakePointerAnalyzer{name: "g1", block: true}
+	g2 := &fakePointerAnalyzer{name: "g2", block: true}
 
 	ja, err := NewJudgeAnalyzer[*dummyAnalysisResult](j, []Generator[*dummyAnalysisResult]{g1, g2}, dummyPromptBuilder)
 	if err != nil {
