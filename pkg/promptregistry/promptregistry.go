@@ -122,6 +122,9 @@ func New(fsys fs.FS, opts ...Option) (*Registry, error) {
 			opt(&cfg)
 		}
 	}
+	if err := validateFuncs(cfg.funcs); err != nil {
+		return nil, err
+	}
 	if cfg.root != "." {
 		sub, err := fs.Sub(fsys, cfg.root)
 		if err != nil {
@@ -185,7 +188,23 @@ func refFromPath(p string) (Ref, error) {
 	return Ref{Name: name, Version: version}, nil
 }
 
-// Render executes the template registered for (name, version) against data and
+// validateFuncs verifies a caller-supplied FuncMap up front so a bad function
+// map surfaces as ErrInvalidTemplate instead of a panic from text/template's
+// Funcs (which panics on an invalid name, a non-function value, or an
+// unsupported signature) while parsing individual templates.
+func validateFuncs(funcs template.FuncMap) (err error) {
+	if len(funcs) == 0 {
+		return nil
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%w: invalid template funcs: %v", ErrInvalidTemplate, r)
+		}
+	}()
+	template.New("").Funcs(funcs)
+	return nil
+}
+
 // returns the fully rendered string. It returns ErrTemplateNotFound when no
 // such template exists, ErrMissingField when data omits a referenced field or
 // key, and ErrRenderFailed for any other execution failure. The context is
@@ -221,9 +240,15 @@ var missingKeyMarkers = []string{
 }
 
 // isMissingKeyError reports whether err is a text/template execution failure
-// caused by a missing map key or struct field.
+// caused by a missing map key or struct field. A failure returned by a
+// registered function is prefixed by text/template with "error calling " and is
+// treated as a render failure even if its message happens to contain a
+// missing-key marker, so function errors stay classified as ErrRenderFailed.
 func isMissingKeyError(err error) bool {
 	msg := err.Error()
+	if strings.Contains(msg, "error calling ") {
+		return false
+	}
 	for _, marker := range missingKeyMarkers {
 		if strings.Contains(msg, marker) {
 			return true

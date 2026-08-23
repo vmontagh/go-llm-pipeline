@@ -206,6 +206,61 @@ func TestWithFuncs(t *testing.T) {
 	}
 }
 
+func TestWithFuncsInvalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		funcs map[string]any
+	}{
+		{name: "non-function value", funcs: map[string]any{"upper": 42}},
+		{name: "invalid name", funcs: map[string]any{"not a name": func() string { return "" }}},
+		{name: "too many return values", funcs: map[string]any{"bad": func() (string, string, error) { return "", "", nil }}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := promptregistry.New(
+				mapFS(map[string]string{"t/v1.tmpl": "x"}),
+				promptregistry.WithFuncs(tt.funcs),
+			)
+			if !errors.Is(err, promptregistry.ErrInvalidTemplate) {
+				t.Fatalf("New() error = %v, want %v", err, promptregistry.ErrInvalidTemplate)
+			}
+		})
+	}
+}
+
+// errFuncBoom is returned by a test func whose message deliberately contains a
+// missing-key marker to prove function errors classify as ErrRenderFailed.
+var errFuncBoom = errors.New("map has no entry for key \"x\"")
+
+// TestRenderFuncError guards that a failure returned by a registered function
+// is classified as ErrRenderFailed even when its message contains a
+// missing-key marker, rather than being misreported as ErrMissingField.
+func TestRenderFuncError(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(
+		mapFS(map[string]string{"boom/v1.tmpl": "{{explode}}"}),
+		promptregistry.WithFuncs(map[string]any{
+			"explode": func() (string, error) {
+				return "", errFuncBoom
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	_, err = reg.Render(context.Background(), "boom", "v1", nil)
+	if !errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrRenderFailed)
+	}
+	if errors.Is(err, promptregistry.ErrMissingField) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
+	}
+}
+
 func TestNames(t *testing.T) {
 	t.Parallel()
 	reg, err := promptregistry.New(mapFS(map[string]string{

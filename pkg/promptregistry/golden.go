@@ -1,13 +1,9 @@
 package promptregistry
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-
-	"github.com/google/go-cmp/cmp"
 )
 
 // goldenExt is the file extension for golden fixture files.
@@ -77,25 +73,22 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 		byRef[c.Ref] = c.Data
 	}
 
-	if cfg.update {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			t.Fatalf("AssertGolden: creating %q: %v", dir, err)
-		}
-	}
-
 	for _, ref := range r.List() {
 		data, ok := byRef[ref]
 		if !ok {
 			t.Errorf("AssertGolden: no case for registered template %s/%s", ref.Name, ref.Version)
 			continue
 		}
-		got, err := r.Render(context.Background(), ref.Name, ref.Version, data)
+		got, err := r.Render(t.Context(), ref.Name, ref.Version, data)
 		if err != nil {
 			t.Errorf("Render(%s/%s) error: %v", ref.Name, ref.Version, err)
 			continue
 		}
-		file := filepath.Join(dir, goldenFileName(ref))
+		file := goldenFilePath(dir, ref)
 		if cfg.update {
+			if err := os.MkdirAll(filepath.Dir(file), 0o750); err != nil {
+				t.Fatalf("AssertGolden: creating %q: %v", filepath.Dir(file), err)
+			}
 			if err := os.WriteFile(file, []byte(got), 0o600); err != nil {
 				t.Fatalf("AssertGolden: writing %q: %v", file, err)
 			}
@@ -106,15 +99,15 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 			t.Errorf("AssertGolden: reading golden %q: %v (run with %s=1 to create it)", file, err, updateEnv)
 			continue
 		}
-		if diff := cmp.Diff(string(wantBytes), got); diff != "" {
-			t.Errorf("Render(%s/%s) golden mismatch (-want +got):\n%s", ref.Name, ref.Version, diff)
+		if want := string(wantBytes); got != want {
+			t.Errorf("Render(%s/%s) golden mismatch:\n want: %q\n got:  %q", ref.Name, ref.Version, want, got)
 		}
 	}
 }
 
-// goldenFileName builds the golden file name for ref, flattening any path
-// separators in the template name so nested names map to a single file.
-func goldenFileName(ref Ref) string {
-	name := strings.ReplaceAll(ref.Name, "/", "_")
-	return name + "_" + ref.Version + goldenExt
+// goldenFilePath builds the golden file path for ref. It preserves the
+// template's directory hierarchy (<dir>/<name>/<version>.golden) so distinct
+// names cannot collide onto a single file.
+func goldenFilePath(dir string, ref Ref) string {
+	return filepath.Join(dir, filepath.FromSlash(ref.Name), ref.Version+goldenExt)
 }
