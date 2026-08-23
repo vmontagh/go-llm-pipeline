@@ -6,8 +6,11 @@ import (
 )
 
 // Cluster is a group of items connected, directly or transitively, by
-// single-linkage clustering: each item is joined to every other item within a
-// distance threshold, and the transitive closure of those links is one cluster.
+// single-linkage clustering: two items share an edge when they are similar
+// enough, and the transitive closure of those edges forms one cluster. The edge
+// rule is defined by the clustering function that produced the Cluster — see
+// [ClusterItems] (cosine similarity at or above a threshold) and
+// [ClusterByDistance] (a caller-supplied metric within a maximum distance).
 type Cluster struct {
 	// Items are the cluster members, sorted by ascending ID.
 	Items []Item
@@ -32,12 +35,16 @@ type Metric func(a, b Item) float64
 // particular distance (cosine, time gap, geographic distance, ...). It does not
 // assume items carry vectors: only IDs are validated here — they must be
 // non-empty and unique (see the package errors) — and any metric-specific
-// validation is the caller's responsibility.
+// validation is the caller's responsibility. A nil metric returns
+// [ErrNilMetric] regardless of item count.
 //
 // Items within a cluster are sorted by ID, and clusters are sorted by their
 // first member's ID, so output is stable regardless of input order. An item
 // within maxDistance of no other item forms a singleton cluster.
 func ClusterByDistance(items []Item, metric Metric, maxDistance float64) ([]Cluster, error) {
+	if metric == nil {
+		return nil, fmt.Errorf("clustering items: %w", ErrNilMetric)
+	}
 	if err := validateUniqueIDs(items); err != nil {
 		return nil, fmt.Errorf("clustering items: %w", err)
 	}

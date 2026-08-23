@@ -48,6 +48,9 @@ var (
 	// ErrInvalidThreshold is returned when a similarity threshold is NaN or
 	// falls outside the cosine range [-1, 1].
 	ErrInvalidThreshold = errors.New("invalid threshold")
+	// ErrNilMetric is returned when [ClusterByDistance] is called with a nil
+	// metric, which has no distance to evaluate.
+	ErrNilMetric = errors.New("nil metric")
 )
 
 // Vector is an embedding vector. Callers pass raw vectors; stores and helpers

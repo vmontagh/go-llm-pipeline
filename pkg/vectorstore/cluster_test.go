@@ -290,26 +290,47 @@ func TestClusterByDistanceErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name  string
-		items []vectorstore.Item
-		want  error
+		name   string
+		items  []vectorstore.Item
+		metric vectorstore.Metric
+		want   error
 	}{
 		{
-			name:  "empty id",
-			items: []vectorstore.Item{axis("", 0)},
-			want:  vectorstore.ErrEmptyID,
+			name:   "empty id",
+			items:  []vectorstore.Item{axis("", 0)},
+			metric: axisDistance,
+			want:   vectorstore.ErrEmptyID,
 		},
 		{
-			name:  "duplicate id",
-			items: []vectorstore.Item{axis("a", 0), axis("a", 1)},
-			want:  vectorstore.ErrDuplicateID,
+			name:   "duplicate id",
+			items:  []vectorstore.Item{axis("a", 0), axis("a", 1)},
+			metric: axisDistance,
+			want:   vectorstore.ErrDuplicateID,
+		},
+		{
+			name:   "nil metric with multiple items",
+			items:  []vectorstore.Item{axis("a", 0), axis("b", 1)},
+			metric: nil,
+			want:   vectorstore.ErrNilMetric,
+		},
+		{
+			name:   "nil metric with single item",
+			items:  []vectorstore.Item{axis("a", 0)},
+			metric: nil,
+			want:   vectorstore.ErrNilMetric,
+		},
+		{
+			name:   "nil metric with no items",
+			items:  nil,
+			metric: nil,
+			want:   vectorstore.ErrNilMetric,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := vectorstore.ClusterByDistance(tc.items, axisDistance, 1)
+			_, err := vectorstore.ClusterByDistance(tc.items, tc.metric, 1)
 			if !errors.Is(err, tc.want) {
 				t.Errorf("ClusterByDistance(%s) = %v, want %v", tc.name, err, tc.want)
 			}
