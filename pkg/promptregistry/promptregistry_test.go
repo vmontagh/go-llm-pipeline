@@ -516,11 +516,12 @@ func TestRenderMissingFieldQuotedNameWithPhrase(t *testing.T) {
 
 // text/template formats a data-eval failure as
 // `template: <name>:<line>:<col>: executing "<name>" at <ctx>: <cause>`, so the
-// name appears only in the two wrapper tokens; these fixtures let the test
-// exercise a name that also matches the cause payload. A genuine missing key or
-// field is a leaf error, whereas a function-call failure is %w-wrapped
-// (errExecFuncCall wraps errExecFuncCallCause), which is what the leaf gate in
-// isMissingKeyError keys on.
+// name lives in the wrapper before " at <" and the cause follows the "<ctx>: "
+// separator; these fixtures let the test exercise a name or a reflected type
+// that also contains a marker. A genuine missing key or field is a leaf error
+// whose cause starts with a marker, whereas a function-call failure is
+// %w-wrapped (errExecFuncCall wraps errExecFuncCallCause), which is what the
+// leaf gate in isMissingKeyError keys on.
 var (
 	errExecNameCollidesCause  = errors.New(`template: map:1:11: executing "map" at <.Missing>: map has no entry for key "Missing"`)
 	errExecFuncCallCause      = errors.New(`map has no entry for key "x"`)
@@ -528,14 +529,15 @@ var (
 	errExecPlainField         = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct {}`)
 	errExecFieldTypeHasPhrase = errors.New(`template: t:1:2: executing "t" at <.Missing>: can't evaluate field Missing in type struct { F string "error calling x" }`)
 	errExecMarkerHasPhrase    = errors.New(`template: t:1:11: executing "t" at <.Missing>: map has no entry for key "error calling "`)
+	errExecNilPointerTag      = errors.New(`template: np:1:4: executing "np" at <.Q.X>: nil pointer evaluating *struct { X int "can't evaluate field" }.X`)
 )
 
-// TestIsMissingKeyErrorNameCollision is the white-box guard for the wrapper-only
-// name scrub. The public Render API cannot produce a bare template name (names
-// are full file paths), so a collision between the name and a cause payload is
-// only reachable by constructing a synthetic ExecError here. The first case
-// fails on the previous global-ReplaceAll scrub, which strips "map" from the
-// cause and drops the marker.
+// TestIsMissingKeyErrorNameCollision is the white-box guard for the structural
+// cause extraction. The public Render API cannot produce a bare template name
+// (names are full file paths), so a collision between the name and a cause
+// payload is only reachable by constructing a synthetic ExecError here. The
+// classifier inspects only the cause after the "<ctx>: " separator, so a name in
+// the wrapper prefix or a marker embedded in a reflected type does not fool it.
 func TestIsMissingKeyErrorNameCollision(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -567,6 +569,11 @@ func TestIsMissingKeyErrorNameCollision(t *testing.T) {
 			name: "missing key whose payload contains error-calling phrase after marker",
 			err:  template.ExecError{Name: "t", Err: errExecMarkerHasPhrase},
 			want: true,
+		},
+		{
+			name: "nil pointer whose reflected type embeds a marker",
+			err:  template.ExecError{Name: "np", Err: errExecNilPointerTag},
+			want: false,
 		},
 	}
 	for _, tt := range tests {
@@ -607,6 +614,88 @@ func TestRenderFuncErrorMarkerInMessage(t *testing.T) {
 	}
 	if errors.Is(err, promptregistry.ErrMissingField) {
 		t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
+	}
+}
+
+// TestRenderNilPointerWithMarkerTag guards the structural cause extraction: a
+// nil-pointer dereference whose reflected struct-tag text embeds a missing-key
+// marker is a render failure, not a missing field, because its cause starts with
+// "nil pointer evaluating" rather than a marker.
+func TestRenderNilPointerWithMarkerTag(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"np/v1.tmpl": "{{.Q.X}}",
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	data := struct {
+		Q *struct {
+			X int `note:"can't evaluate field"`
+		}
+	}{}
+	_, err = reg.Render(context.Background(), "np", "v1", data)
+	if !errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrRenderFailed)
+	}
+	if errors.Is(err, promptregistry.ErrMissingField) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
+	}
+}
+
+// TestRenderStrictIndexNilKey verifies the strict index mirrors text/template's
+// index for a nil key argument: a nilable key type uses the zero value (so a
+// present nil entry is found and an absent one is a missing key), while a
+// non-nilable key type fails closed instead of panicking.
+func TestRenderStrictIndexNilKey(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"nilkey/v1.tmpl": "{{index .M nil}}",
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		data    any
+		want    string
+		wantErr error
+	}{
+		{
+			name: "nil key hits present nil entry",
+			data: map[string]any{"M": map[any]string{nil: "fallback"}},
+			want: "fallback",
+		},
+		{
+			name:    "nil key absent is missing",
+			data:    map[string]any{"M": map[any]string{"x": "y"}},
+			wantErr: promptregistry.ErrMissingField,
+		},
+		{
+			name:    "nil key against non-nilable key type fails closed",
+			data:    map[string]any{"M": map[string]string{"a": "b"}},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := reg.Render(context.Background(), "nilkey", "v1", tt.data)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Render() error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render() unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Render() mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

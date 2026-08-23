@@ -34,12 +34,14 @@ type goldenConfig struct {
 type GoldenOption func(*goldenConfig)
 
 // WithUpdate controls whether AssertGolden rewrites golden files instead of
-// comparing against them. It takes precedence only when true; the
-// PROMPTREGISTRY_UPDATE_GOLDEN environment variable can enable updating without
-// changing the call site.
+// comparing against them. Passing false is a no-op: it never disables updating
+// enabled via the PROMPTREGISTRY_UPDATE_GOLDEN environment variable; only true
+// forces updating.
 func WithUpdate(update bool) GoldenOption {
 	return func(c *goldenConfig) {
-		c.update = update
+		if update {
+			c.update = true
+		}
 	}
 }
 

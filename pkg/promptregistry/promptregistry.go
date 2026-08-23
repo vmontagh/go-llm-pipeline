@@ -31,7 +31,6 @@ import (
 	"path"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"text/template"
 )
@@ -252,18 +251,29 @@ func strictIndex(item any, keys ...any) (any, error) {
 		case reflect.Map:
 			kv := reflect.ValueOf(key)
 			keyType := v.Type().Key()
-			switch {
-			case kv.Type().AssignableTo(keyType):
-			case isIntKind(kv.Kind()) && isIntKind(keyType.Kind()) && intRepresentableAs(kv, keyType):
-				kv = kv.Convert(keyType)
-			default:
-				// Mirror text/template's index, which adapts only assignable keys
-				// and integer-to-integer conversions. Anything else — int->string
-				// rune conversion, float->int truncation, and other lossy
-				// conversions — would silently select the wrong entry, so fail
-				// closed. An integer key not exactly representable in an integer
-				// destination key type also lands here.
-				return nil, fmt.Errorf("%w: cannot index map[%s] with key of type %T", errStrictIndex, keyType, key)
+			if !kv.IsValid() {
+				// Template nil argument. Mirror text/template's index: use the
+				// zero value for a nilable key type; reject a non-nilable key
+				// type.
+				if !canBeNil(keyType) {
+					return nil, fmt.Errorf("%w: cannot index map[%s] with nil key", errStrictIndex, keyType)
+				}
+				kv = reflect.Zero(keyType)
+			} else {
+				switch {
+				case kv.Type().AssignableTo(keyType):
+				case isIntKind(kv.Kind()) && isIntKind(keyType.Kind()) && intRepresentableAs(kv, keyType):
+					kv = kv.Convert(keyType)
+				default:
+					// Mirror text/template's index, which adapts only assignable
+					// keys and integer-to-integer conversions. Anything else —
+					// int->string rune conversion, float->int truncation, and
+					// other lossy conversions — would silently select the wrong
+					// entry, so fail closed. An integer key not exactly
+					// representable in an integer destination key type also lands
+					// here.
+					return nil, fmt.Errorf("%w: cannot index map[%s] with key of type %T", errStrictIndex, keyType, key)
+				}
 			}
 			elem := v.MapIndex(kv)
 			if !elem.IsValid() {
@@ -294,6 +304,17 @@ func indexInt(key any) (int, error) {
 		return 0, fmt.Errorf("%w: index out of range: %d", errStrictIndex, key)
 	default:
 		return 0, fmt.Errorf("%w: cannot index sequence with key of type %T", errStrictIndex, key)
+	}
+}
+
+// canBeNil reports whether a value of type t can be nil, matching
+// text/template's index builtin for nil key arguments.
+func canBeNil(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -407,16 +428,12 @@ var missingKeyMarkers = []string{
 // fooled by a marker that merely appears in the rendered command or in a
 // function's returned message (for example {{fail "map has no entry for key"}}).
 //
-// For a leaf cause, the two name-bearing wrapper tokens text/template emits —
-// the "template: <name>:" location prefix (formatted with %s) and the quoted
-// name in `executing %q` — are stripped exactly once each before scanning for a
-// marker. The executing token is matched with [strconv.Quote] so a name
-// containing a quote or backslash still matches; the location prefix uses the
-// raw name because text/template formats it with %s. Stripping just the wrapper
-// (rather than every occurrence of the name) keeps the cause intact, so a
-// template whose name collides with a marker payload (for example a template
-// literally named "map", whose missing-key cause is `map has no entry for key
-// ...`) is still classified correctly.
+// For a leaf cause, only the failure text after the wrapper is inspected, and it
+// must start with a marker. Extracting the cause structurally (rather than
+// scanning the whole message) keeps the template name and the reflected type
+// text out of classification, so a template literally named after a marker, or a
+// nil-pointer failure whose reflected struct tag embeds a marker, is not
+// misclassified.
 func isMissingKeyError(err error) bool {
 	var execErr template.ExecError
 	if !errors.As(err, &execErr) {
@@ -425,17 +442,28 @@ func isMissingKeyError(err error) bool {
 	if errors.Unwrap(execErr.Err) != nil {
 		return false
 	}
-	msg := execErr.Err.Error()
-	if execErr.Name != "" {
-		msg = strings.Replace(msg, "template: "+execErr.Name+":", "", 1)
-		msg = strings.Replace(msg, "executing "+strconv.Quote(execErr.Name), "", 1)
-	}
+	cause := executionCause(execErr.Err.Error())
 	for _, marker := range missingKeyMarkers {
-		if strings.Contains(msg, marker) {
+		if strings.HasPrefix(cause, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+// executionCause returns the failure message from a leaf text/template
+// execution error, stripping the "template: <loc>: executing <name> at
+// <context>: " wrapper so classification inspects only the cause and not the
+// reflected type text or the template name in the wrapper. The node context is a
+// dotted field/index path, so the first ">: " after " at <" is the wrapper's
+// separator.
+func executionCause(msg string) string {
+	if i := strings.Index(msg, " at <"); i >= 0 {
+		if j := strings.Index(msg[i:], ">: "); j >= 0 {
+			return msg[i+j+len(">: "):]
+		}
+	}
+	return msg
 }
 
 // Names returns the distinct template names in the registry, sorted
