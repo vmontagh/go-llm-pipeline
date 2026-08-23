@@ -43,6 +43,8 @@ components:
     in: pkg/vectorstore/**
   semcache:
     in: pkg/semcache/**
+  promptregistry:
+    in: pkg/promptregistry/**
   examples:
     in: examples/**
   integtest:
@@ -195,6 +197,12 @@ deps:
     mayDependOn:
       - vectorstore
       - semcache
+
+  promptregistry:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - promptregistry
 
   examples:
     anyProjectDeps: false

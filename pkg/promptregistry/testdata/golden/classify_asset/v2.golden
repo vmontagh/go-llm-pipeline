@@ -1,0 +1,7 @@
+Classify the following asset into exactly one category.
+
+Name:  invoices-2024
+Kind:  dataset
+Owner: finance
+
+Return the category label only, with no explanation.
