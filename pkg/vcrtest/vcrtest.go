@@ -34,6 +34,8 @@
 package vcrtest
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,6 +43,14 @@ import (
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/llmvcr"
 )
+
+// errInvalidCassetteName indicates a cassette name that is not a local path and
+// would escape the testdata/cassettes directory (for example "../escape" or an
+// absolute path).
+var errInvalidCassetteName = errors.New("vcrtest: invalid cassette name")
+
+// errCassetteNotFound indicates a replay-mode cassette is absent on disk.
+var errCassetteNotFound = errors.New("vcrtest: cassette not found")
 
 // EnvVCRMode is the environment variable that opts into recording. Set it to
 // "record" to record missing cassettes; any other value replays.
@@ -73,10 +83,33 @@ func modeFromEnv() llmvcr.Mode {
 	return llmvcr.ModeReplayOnly
 }
 
-// cassettePath resolves a cassette name to its path (without extension) under
-// the test package's testdata/cassettes directory.
-func cassettePath(name string) string {
-	return filepath.Join(cassetteDir, filepath.FromSlash(name))
+// resolveCassettePath validates name and resolves it to a cassette path (without
+// extension) under the test package's testdata/cassettes directory. It rejects
+// names that are not local — such as "../escape" or an absolute path — with
+// errInvalidCassetteName, so a cassette can never be read from or written
+// outside testdata/cassettes.
+func resolveCassettePath(name string) (string, error) {
+	local := filepath.FromSlash(name)
+	if !filepath.IsLocal(local) {
+		return "", fmt.Errorf("%w: %q escapes %s", errInvalidCassetteName, name, cassetteDir)
+	}
+	return filepath.Join(cassetteDir, local), nil
+}
+
+// checkReplayCassette verifies that a replay-mode cassette exists on disk,
+// returning a wrapped errCassetteNotFound that names the file and the VCR_MODE
+// override to record it when it does not. In record mode a missing cassette is
+// expected, so it returns nil.
+func checkReplayCassette(path string, mode llmvcr.Mode) error {
+	if mode != llmvcr.ModeReplayOnly {
+		return nil
+	}
+	file := path + cassetteExt
+	if _, err := os.Stat(file); err != nil {
+		return fmt.Errorf("%w: %s (%w); run the test with %s=%s to record it",
+			errCassetteNotFound, file, err, EnvVCRMode, recordValue)
+	}
+	return nil
 }
 
 // Client returns an *http.Client whose transport is backed by the cassette at
@@ -87,19 +120,18 @@ func cassettePath(name string) string {
 // which flushes a freshly recorded cassette to disk.
 //
 // Additional llmvcr.Options (extra scrub rules, a custom matcher, and so on) are
-// forwarded to the underlying recorder. On replay, a missing cassette fails the
-// test with guidance to re-record.
+// forwarded to the underlying recorder. A name that escapes testdata/cassettes,
+// or a missing cassette on replay, fails the test with a diagnostic.
 func Client(t *testing.T, name string, opts ...llmvcr.Option) *http.Client {
 	t.Helper()
 
+	path, err := resolveCassettePath(name)
+	if err != nil {
+		t.Fatalf("vcrtest: %v", err)
+	}
 	mode := modeFromEnv()
-	path := cassettePath(name)
-
-	if mode == llmvcr.ModeReplayOnly {
-		if _, err := os.Stat(path + cassetteExt); err != nil {
-			t.Fatalf("vcrtest: cassette %q not found: %v; run the test with %s=%s against a real backend to record it",
-				path+cassetteExt, err, EnvVCRMode, recordValue)
-		}
+	if err := checkReplayCassette(path, mode); err != nil {
+		t.Fatalf("vcrtest: %v", err)
 	}
 
 	rec, err := llmvcr.New(path, mode, opts...)
