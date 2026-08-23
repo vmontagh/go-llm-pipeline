@@ -8,9 +8,13 @@
 // ([MemoryStore]); a persistent implementation can be added later behind the
 // same method set.
 //
-// All operations run fully offline. Similarity is cosine similarity over
-// normalized vectors, so scores lie in the range [-1, 1] where 1 is identical
-// direction, 0 is orthogonal, and -1 is opposite.
+// All operations run fully offline. The cosine-based APIs — [MemoryStore.Nearest],
+// [FindDuplicates], and [ClusterItems] — score similarity as cosine similarity
+// over normalized vectors, so scores lie in the range [-1, 1] where 1 is
+// identical direction, 0 is orthogonal, and -1 is opposite. [ClusterByDistance]
+// generalizes the clustering core to any caller-supplied [Metric] (time, geo,
+// or other distances), so it is not limited to cosine or to items that carry
+// vectors.
 package vectorstore
 
 import (
@@ -44,6 +48,9 @@ var (
 	// ErrInvalidThreshold is returned when a similarity threshold is NaN or
 	// falls outside the cosine range [-1, 1].
 	ErrInvalidThreshold = errors.New("invalid threshold")
+	// ErrNilMetric is returned when [ClusterByDistance] is called with a nil
+	// metric, which has no distance to evaluate.
+	ErrNilMetric = errors.New("nil metric")
 )
 
 // Vector is an embedding vector. Callers pass raw vectors; stores and helpers
@@ -193,6 +200,24 @@ func normalizeItems(items []Item) ([]Vector, error) {
 		normalized[i] = nv
 	}
 	return normalized, nil
+}
+
+// validateUniqueIDs enforces that every item has a non-empty ID and that no ID
+// repeats — the ID guarantees shared by all batch helpers. Unlike
+// normalizeItems it does not inspect vectors, so metric-generic helpers such as
+// [ClusterByDistance] can validate IDs without assuming items carry embeddings.
+func validateUniqueIDs(items []Item) error {
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if item.ID == "" {
+			return ErrEmptyID
+		}
+		if _, ok := seen[item.ID]; ok {
+			return fmt.Errorf("%w: %q", ErrDuplicateID, item.ID)
+		}
+		seen[item.ID] = struct{}{}
+	}
+	return nil
 }
 
 // validateThreshold rejects thresholds that are NaN or outside the cosine
