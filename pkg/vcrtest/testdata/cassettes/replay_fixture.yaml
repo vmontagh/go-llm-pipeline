@@ -1,0 +1,44 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 20
+        transfer_encoding: []
+        trailer: {}
+        host: api.example.com
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "prompt": "hi"
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: https://api.example.com/v1/echo
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 30
+        uncompressed: false
+        body: |-
+            {
+              "reply": "deterministic"
+            }
+        headers:
+            Content-Length:
+                - "30"
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 6.133125ms
