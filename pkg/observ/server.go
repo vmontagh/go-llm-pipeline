@@ -14,6 +14,7 @@ import (
 // Server encapsulates the observability HTTP server.
 type Server struct {
 	addr   string
+	mux    *http.ServeMux
 	server *http.Server
 }
 
@@ -33,12 +34,22 @@ func NewServer(addr string) *Server {
 
 	return &Server{
 		addr: addr,
+		mux:  mux,
 		server: &http.Server{
 			Addr:              addr,
 			Handler:           mux,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}
+}
+
+// Handle registers handler for pattern on the server's mux, alongside the
+// built-in pprof endpoints. It must be called before Start or StartListener,
+// because the mux is fixed once the server begins serving. Use it to expose
+// additional observability handlers such as the JSON counters from
+// Metrics.Handler.
+func (s *Server) Handle(pattern string, handler http.Handler) {
+	s.mux.Handle(pattern, handler)
 }
 
 // Start runs the HTTP server. This is a blocking call.

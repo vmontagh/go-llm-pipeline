@@ -335,3 +335,96 @@ func TestMemoryStoreDefensiveCopy(t *testing.T) {
 		})
 	}
 }
+
+func TestMemoryStoreGet(t *testing.T) {
+	t.Parallel()
+
+	item := vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}, Metadata: map[string]string{"k": "v"}}
+
+	tests := []struct {
+		name    string
+		id      string
+		ctx     func(t *testing.T) context.Context
+		want    vectorstore.Item
+		wantOK  bool
+		wantErr error
+	}{
+		{
+			name:   "present id",
+			id:     "a",
+			want:   item,
+			wantOK: true,
+		},
+		{
+			name:   "unknown id is not an error",
+			id:     "missing",
+			want:   vectorstore.Item{},
+			wantOK: false,
+		},
+		{
+			name:    "empty id",
+			id:      "",
+			wantErr: vectorstore.ErrEmptyID,
+		},
+		{
+			name: "cancelled context",
+			id:   "a",
+			ctx: func(t *testing.T) context.Context {
+				t.Helper()
+				ctx, cancel := context.WithCancel(t.Context())
+				cancel()
+				return ctx
+			},
+			wantErr: context.Canceled,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := vectorstore.NewMemoryStore()
+			mustAdd(t, s, item)
+
+			ctx := t.Context()
+			if tc.ctx != nil {
+				ctx = tc.ctx(t)
+			}
+
+			got, ok, err := s.Get(ctx, tc.id)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Get(%q) error = %v, want %v", tc.id, err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				return
+			}
+			if ok != tc.wantOK {
+				t.Errorf("Get(%q) ok = %t, want %t", tc.id, ok, tc.wantOK)
+			}
+			if diff := cmp.Diff(tc.want, got); diff != "" {
+				t.Errorf("Get(%q) item mismatch (-want +got):\n%s", tc.id, diff)
+			}
+		})
+	}
+}
+
+func TestMemoryStoreGetDefensiveCopy(t *testing.T) {
+	t.Parallel()
+	s := vectorstore.NewMemoryStore()
+	want := vectorstore.Item{ID: "a", Vector: vectorstore.Vector{1, 0}, Metadata: map[string]string{"k": "v"}}
+	mustAdd(t, s, want)
+
+	got, ok, err := s.Get(t.Context(), "a")
+	if err != nil || !ok {
+		t.Fatalf("Get() = (ok %t, err %v), want (true, nil)", ok, err)
+	}
+	got.Vector[0] = 999
+	got.Metadata["k"] = "mutated"
+
+	again, ok, err := s.Get(t.Context(), "a")
+	if err != nil || !ok {
+		t.Fatalf("Get() = (ok %t, err %v), want (true, nil)", ok, err)
+	}
+	if diff := cmp.Diff(want, again); diff != "" {
+		t.Errorf("stored item mutated via returned alias (-want +got):\n%s", diff)
+	}
+}

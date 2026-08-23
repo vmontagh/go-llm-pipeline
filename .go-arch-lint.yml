@@ -41,6 +41,8 @@ components:
     in: pkg/vcrtest/**
   vectorstore:
     in: pkg/vectorstore/**
+  semcache:
+    in: pkg/semcache/**
   promptregistry:
     in: pkg/promptregistry/**
   examples:
@@ -69,6 +71,7 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - logger
+      - observ
 
   policy:
     anyProjectDeps: false
@@ -187,6 +190,13 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - vectorstore
+
+  semcache:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vectorstore
+      - semcache
 
   promptregistry:
     anyProjectDeps: false
