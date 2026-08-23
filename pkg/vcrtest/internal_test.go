@@ -53,6 +53,9 @@ func TestResolveCassettePath(t *testing.T) {
 	}{
 		{name: "flat name", in: "embed_single", want: filepath.Join(cassetteDir, "embed_single")},
 		{name: "nested name", in: "ollama/embed_single", want: filepath.Join(cassetteDir, "ollama", "embed_single")},
+		{name: "current directory rejected", in: ".", wantErrIs: errInvalidCassetteName},
+		{name: "empty name rejected", in: "", wantErrIs: errInvalidCassetteName},
+		{name: "collapsing traversal rejected", in: "nested/..", wantErrIs: errInvalidCassetteName},
 		{name: "parent traversal rejected", in: "../escape", wantErrIs: errInvalidCassetteName},
 		{name: "deep traversal rejected", in: "../../outside", wantErrIs: errInvalidCassetteName},
 		{name: "absolute path rejected", in: "/etc/passwd", wantErrIs: errInvalidCassetteName},
@@ -64,6 +67,9 @@ func TestResolveCassettePath(t *testing.T) {
 			if tt.wantErrIs != nil {
 				if !errors.Is(err, tt.wantErrIs) {
 					t.Errorf("resolveCassettePath(%q) error = %v, want errors.Is(_, %v)", tt.in, err, tt.wantErrIs)
+				}
+				if got != "" {
+					t.Errorf("resolveCassettePath(%q) = %q, want empty path on error", tt.in, got)
 				}
 				return
 			}

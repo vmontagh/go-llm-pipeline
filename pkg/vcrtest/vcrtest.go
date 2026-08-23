@@ -84,16 +84,22 @@ func modeFromEnv() llmvcr.Mode {
 }
 
 // resolveCassettePath validates name and resolves it to a cassette path (without
-// extension) under the test package's testdata/cassettes directory. It rejects
-// names that are not local — such as "../escape" or an absolute path — with
-// errInvalidCassetteName, so a cassette can never be read from or written
-// outside testdata/cassettes.
+// extension) under the test package's testdata/cassettes directory. It rejects,
+// with errInvalidCassetteName, any name that escapes the directory ("../x", an
+// absolute path) or that resolves to the directory itself ("", ".", "nested/.."),
+// so a cassette is always a file strictly inside testdata/cassettes.
 func resolveCassettePath(name string) (string, error) {
-	local := filepath.FromSlash(name)
-	if !filepath.IsLocal(local) {
-		return "", fmt.Errorf("%w: %q escapes %s", errInvalidCassetteName, name, cassetteDir)
+	// Clean first so forms like "nested/.." collapse before validation.
+	clean := filepath.Clean(filepath.FromSlash(name))
+	// A cassette name must be a file strictly under cassetteDir. Reject anything
+	// that escapes it ("../x", absolute paths) via IsLocal, and anything that
+	// resolves to the directory itself ("", ".", "nested/.."); the latter would
+	// make go-vcr read/write testdata/cassettes.yaml beside the directory
+	// instead of a cassette inside it.
+	if clean == "." || !filepath.IsLocal(clean) {
+		return "", fmt.Errorf("%w: %q must name a cassette file under %s", errInvalidCassetteName, name, cassetteDir)
 	}
-	return filepath.Join(cassetteDir, local), nil
+	return filepath.Join(cassetteDir, clean), nil
 }
 
 // checkReplayCassette verifies that a replay-mode cassette exists on disk,
