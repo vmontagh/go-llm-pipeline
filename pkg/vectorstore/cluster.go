@@ -49,9 +49,9 @@ func ClusterByDistance(items []Item, metric Metric, maxDistance float64) ([]Clus
 // ClusterItems groups items into clusters using single-linkage connected
 // components over cosine similarity: an edge exists between two items when their
 // cosine similarity is at least threshold, and each connected component becomes
-// one Cluster. It is a cosine convenience wrapper over [ClusterByDistance] using
-// cosine distance (1 - cosine similarity) and maxDistance = 1 - threshold, so it
-// shares that function's deterministic ordering.
+// one Cluster. It shares the [ClusterByDistance] union-find core but keeps its
+// own exact `cosine >= threshold` comparison rather than a subtractive distance,
+// so its boundary behavior is identical to earlier releases.
 //
 // Items within a cluster are sorted by ID, and clusters are sorted by their
 // first member's ID. Every item is validated first: IDs must be non-empty and
@@ -67,17 +67,14 @@ func ClusterItems(items []Item, threshold float64) ([]Cluster, error) {
 		return nil, fmt.Errorf("clustering items: %w", err)
 	}
 
-	// Index the pre-normalized unit vectors by ID so the cosine-distance metric
-	// avoids re-normalizing on every pairwise comparison. IDs are unique here
-	// because normalizeItems has already validated them.
-	unit := make(map[string]Vector, len(items))
-	for i, item := range items {
-		unit[item.ID] = normalized[i]
+	// Compare the pre-normalized unit vectors directly with the original
+	// `>= threshold` predicate. Routing through a `1 - cosine <= 1 - threshold`
+	// distance would round differently at floating-point boundaries and could
+	// merge pairs the strict comparison keeps apart.
+	connected := func(i, j int) bool {
+		return cosine(normalized[i], normalized[j]) >= threshold
 	}
-	cosineDistance := func(a, b Item) float64 {
-		return 1 - cosine(unit[a.ID], unit[b.ID])
-	}
-	return ClusterByDistance(items, cosineDistance, 1-threshold)
+	return clusterComponents(items, connected), nil
 }
 
 // clusterComponents groups items into single-linkage connected components with a

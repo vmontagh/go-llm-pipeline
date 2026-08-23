@@ -8,9 +8,13 @@
 // ([MemoryStore]); a persistent implementation can be added later behind the
 // same method set.
 //
-// All operations run fully offline. Similarity is cosine similarity over
-// normalized vectors, so scores lie in the range [-1, 1] where 1 is identical
-// direction, 0 is orthogonal, and -1 is opposite.
+// All operations run fully offline. The cosine-based APIs — [MemoryStore.Nearest],
+// [FindDuplicates], and [ClusterItems] — score similarity as cosine similarity
+// over normalized vectors, so scores lie in the range [-1, 1] where 1 is
+// identical direction, 0 is orthogonal, and -1 is opposite. [ClusterByDistance]
+// generalizes the clustering core to any caller-supplied [Metric] (time, geo,
+// or other distances), so it is not limited to cosine or to items that carry
+// vectors.
 package vectorstore
 
 import (

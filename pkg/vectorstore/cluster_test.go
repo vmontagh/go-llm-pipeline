@@ -79,6 +79,19 @@ func TestClusterItems(t *testing.T) {
 			threshold: 0.5,
 			want:      nil,
 		},
+		{
+			name: "orthogonal vectors stay split at subnormal threshold",
+			// Regression: cosine of orthogonal unit vectors is exactly 0, which
+			// is below the smallest positive threshold, so they must remain
+			// separate. A subtractive `1-cosine <= 1-threshold` form would round
+			// 1-threshold up to 1.0 and wrongly merge them.
+			items: []vectorstore.Item{
+				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				{ID: "b", Vector: vectorstore.Vector{0, 1}},
+			},
+			threshold: math.SmallestNonzeroFloat64,
+			want:      [][]string{{"a"}, {"b"}},
+		},
 	}
 
 	for _, tc := range tests {
