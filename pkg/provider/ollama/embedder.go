@@ -1,18 +1,15 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
@@ -212,43 +209,30 @@ type embedResult struct {
 }
 
 func (e *Embedder) doEmbed(ctx context.Context, input any) embedResult {
-	reqBytes, err := json.Marshal(embedRequest{Model: e.model, Input: input})
+	res, err := doJSONPost(ctx, jsonPostRequest{
+		client: e.client,
+		logger: e.logger,
+		host:   e.host,
+		path:   embedEndpoint,
+		body:   embedRequest{Model: e.model, Input: input},
+	})
 	if err != nil {
-		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("marshaling embed request: %w", err)}
-	}
-
-	url := strings.TrimRight(e.host, "/") + embedEndpoint
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
-	if err != nil {
-		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("creating embed request: %w", err)}
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := e.client.Do(req)
-	if err != nil {
-		return embedResult{tier: classifyTier(0, err), err: fmt.Errorf("embed request: %w", err)}
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			e.logger.WarnContext(ctx, "ollama embed: close error", "err", cerr)
+		if errors.Is(err, errRequestNotSent) {
+			return embedResult{tier: provpkg.TierTerminal, err: err}
 		}
-	}()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return embedResult{tier: provpkg.TierShortTransient, err: fmt.Errorf("reading embed response body: %w", err)}
+		return embedResult{tier: provpkg.TierShortTransient, err: fmt.Errorf("embed: %w", err)}
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if res.statusCode != http.StatusOK {
 		return embedResult{
-			tier:       classifyTier(resp.StatusCode, nil),
-			retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
-			err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, strings.TrimSpace(string(bodyBytes))),
+			tier:       classifyTier(res.statusCode, nil),
+			retryAfter: res.retryAfter,
+			err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, strings.TrimSpace(string(res.body))),
 		}
 	}
 
 	var er embedResponse
-	if err := json.Unmarshal(bodyBytes, &er); err != nil {
+	if err := json.Unmarshal(res.body, &er); err != nil {
 		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("%w: parsing embed response: %w", provpkg.ErrInvalidResponsePart, err)}
 	}
 	return embedResult{embeddings: er.Embeddings}

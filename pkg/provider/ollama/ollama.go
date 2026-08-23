@@ -5,21 +5,17 @@
 package ollama
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
 
-	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
@@ -128,59 +124,42 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 		responseSchema: t.responseSchema,
 	})
 
-	reqBytes, err := json.Marshal(reqData)
+	res, err := doJSONPost(ctx, jsonPostRequest{
+		client: t.client,
+		logger: t.logger,
+		host:   t.host,
+		path:   "/api/generate",
+		body:   reqData,
+	})
 	if err != nil {
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("marshaling request: %w", err)),
+		if errors.Is(err, errRequestNotSent) {
+			return provpkg.CallResult{
+				Outcome: provpkg.OutcomeTerminal,
+				Err:     backoff.Permanent(err),
+			}
 		}
-	}
-
-	url := strings.TrimRight(t.host, "/") + "/api/generate"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
-	if err != nil {
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("creating request: %w", err)),
-		}
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err}
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warn("close error", "err", cerr)
-		}
-	}()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
 		return provpkg.CallResult{
 			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("reading response body: %w", err),
-			StatusCode: resp.StatusCode,
+			Err:        err,
+			StatusCode: res.statusCode,
 		}
 	}
+	bodyBytes := res.body
 
-	retryAfter := httputil.ParseRetryAfter(resp.Header.Get("Retry-After"))
-
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+	if res.statusCode == http.StatusTooManyRequests || res.statusCode >= http.StatusInternalServerError {
 		return provpkg.CallResult{
 			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, string(bodyBytes)),
-			StatusCode: resp.StatusCode,
+			Err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(bodyBytes)),
+			StatusCode: res.statusCode,
 			Body:       bodyBytes,
-			RetryAfter: retryAfter,
+			RetryAfter: res.retryAfter,
 		}
 	}
 
-	if resp.StatusCode != http.StatusOK {
+	if res.statusCode != http.StatusOK {
 		return provpkg.CallResult{
 			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, string(bodyBytes))),
+			Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(bodyBytes))),
 		}
 	}
 
