@@ -470,6 +470,64 @@ for _, tt := range tests {
 }
 ```
 
+Corollary: don't repeat `t.Run`. Copy-pasted subtests that share the same
+assertion logic are a table struggling to get out — collapse them into one
+`for _, tt := range tests` loop with a single `t.Run(tt.name, ...)`. Repeated
+`t.Run` blocks drift out of sync, hide which inputs are covered, and make adding
+a case a copy-paste chore instead of a one-line table row.
+
+```go
+// WRONG — three near-identical t.Run blocks with duplicated assertion logic
+func TestProcess(t *testing.T) {
+    t.Run("valid input", func(t *testing.T) {
+        got, err := process("hello")
+        if err != nil {
+            t.Fatalf("process(%q) error = %v, want nil", "hello", err)
+        }
+        if diff := cmp.Diff(Result{Value: "hello"}, got); diff != "" {
+            t.Errorf("process(%q) mismatch (-want +got):\n%s", "hello", diff)
+        }
+    })
+    t.Run("empty input", func(t *testing.T) {
+        _, err := process("")
+        if !errors.Is(err, ErrEmpty) {
+            t.Fatalf("process(%q) error = %v, want %v", "", err, ErrEmpty)
+        }
+    })
+    t.Run("whitespace input", func(t *testing.T) {
+        _, err := process("  ")
+        if !errors.Is(err, ErrEmpty) {
+            t.Fatalf("process(%q) error = %v, want %v", "  ", err, ErrEmpty)
+        }
+    })
+}
+
+// RIGHT — one table, one t.Run; new cases are one row each
+func TestProcess(t *testing.T) {
+    tests := []struct {
+        name    string
+        input   string
+        want    Result
+        wantErr error
+    }{
+        {name: "valid input", input: "hello", want: Result{Value: "hello"}},
+        {name: "empty input", input: "", wantErr: ErrEmpty},
+        {name: "whitespace input", input: "  ", wantErr: ErrEmpty},
+    }
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := process(tt.input)
+            if got, want := err, tt.wantErr; !cmp.Equal(got, want, cmpopts.EquateErrors()) {
+                t.Fatalf("process(%q) error = %v, want %v", tt.input, got, want)
+            }
+            if diff := cmp.Diff(tt.want, got); diff != "" {
+                t.Errorf("process(%q) mismatch (-want +got):\n%s", tt.input, diff)
+            }
+        })
+    }
+}
+```
+
 ### 3.3 Don't initialize test struct fields to zero values
 
 Go zero-value semantics mean `false`, `0`, `""`, and `nil` are the defaults. Never set them explicitly — it adds noise.
