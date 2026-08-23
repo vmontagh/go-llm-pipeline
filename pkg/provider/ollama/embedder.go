@@ -1,0 +1,266 @@
+package ollama
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
+	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
+	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
+)
+
+const embedEndpoint = "/api/embed"
+const embedRegionName = "Embed_Ollama"
+
+const (
+	defaultEmbedMaxRetries  = 2
+	defaultEmbedBaseBackoff = 200 * time.Millisecond
+)
+
+// Sentinel errors returned by the Embedder. Callers use errors.Is to detect a
+// category without inspecting error text.
+var (
+	// ErrEmptyInput is returned when an input string is empty or a batch has
+	// no inputs.
+	ErrEmptyInput = errors.New("empty input")
+	// ErrEmptyModel is returned when the embedder was constructed without a
+	// model name.
+	ErrEmptyModel = errors.New("empty model")
+	// ErrDimensionMismatch is returned when a batch response contains
+	// embeddings of differing lengths, which would make similarity scoring
+	// undefined downstream.
+	ErrDimensionMismatch = errors.New("dimension mismatch")
+)
+
+// embedRequest is the JSON body sent to Ollama's /api/embed endpoint. Input is
+// a string for a single embedding or a []string for native batch embedding.
+type embedRequest struct {
+	Model string `json:"model"`
+	Input any    `json:"input"`
+}
+
+// embedResponse is the JSON body returned by /api/embed. Embeddings is aligned
+// positionally with the request inputs.
+type embedResponse struct {
+	Embeddings [][]float64 `json:"embeddings"`
+}
+
+// Embedder produces embedding vectors from a locally running Ollama instance
+// via the /api/embed endpoint. It returns plain [][]float64 / []float64 so it
+// stays decoupled from any vector store; callers convert the result into their
+// own vector type (for example vectorstore.Vector, which is defined as
+// []float64) for free.
+//
+// An Embedder is safe for concurrent use by multiple goroutines.
+type Embedder struct {
+	host        string
+	model       string
+	client      *http.Client
+	logger      *slog.Logger
+	tracer      Tracer
+	maxRetries  int
+	baseBackoff time.Duration
+	// sleep waits for d or until ctx is cancelled. It is a field so tests can
+	// inject a no-op clock instead of sleeping for real.
+	sleep func(ctx context.Context, d time.Duration) error
+}
+
+// NewEmbedder returns an Embedder targeting the Ollama server at host using the
+// given embedding model. It accepts the same options as NewProvider; the
+// HTTP client, logger, tracer, timeout, and retry budget are honored, while
+// generation-only options (num_ctx, num_predict, response schema, keep-alive)
+// are ignored.
+func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
+	cfg := providerConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.logger == nil {
+		cfg.logger = slog.New(slog.DiscardHandler)
+	}
+	if cfg.tracer == nil {
+		cfg.tracer = trace.NewNoOpTracer()
+	}
+	client := cfg.client
+	if client == nil {
+		client = &http.Client{}
+	}
+	if cfg.httpTimeout > 0 {
+		client.Timeout = cfg.httpTimeout
+	}
+	maxRetries := defaultEmbedMaxRetries
+	if cfg.maxRetries > 0 {
+		maxRetries = cfg.maxRetries
+	}
+	return &Embedder{
+		host:        host,
+		model:       model,
+		client:      client,
+		logger:      cfg.logger,
+		tracer:      cfg.tracer,
+		maxRetries:  maxRetries,
+		baseBackoff: defaultEmbedBaseBackoff,
+		sleep:       sleepCtx,
+	}
+}
+
+// Model returns the embedding model this Embedder was constructed with.
+func (e *Embedder) Model() string { return e.model }
+
+// Embed returns the embedding vector for a single input string.
+func (e *Embedder) Embed(ctx context.Context, input string) ([]float64, error) {
+	if input == "" {
+		return nil, ErrEmptyInput
+	}
+	if e.model == "" {
+		return nil, ErrEmptyModel
+	}
+	embs, err := e.embed(ctx, input, 1)
+	if err != nil {
+		return nil, err
+	}
+	return embs[0], nil
+}
+
+// EmbedBatch returns embedding vectors for inputs in a single round-trip,
+// positionally aligned with inputs. All returned vectors share the same
+// dimension; a batch that returns mismatched dimensions yields
+// ErrDimensionMismatch.
+func (e *Embedder) EmbedBatch(ctx context.Context, inputs []string) ([][]float64, error) {
+	if len(inputs) == 0 {
+		return nil, ErrEmptyInput
+	}
+	for i, in := range inputs {
+		if in == "" {
+			return nil, fmt.Errorf("%w: input at index %d", ErrEmptyInput, i)
+		}
+	}
+	if e.model == "" {
+		return nil, ErrEmptyModel
+	}
+	return e.embed(ctx, inputs, len(inputs))
+}
+
+// embed performs the request with bounded retries and validates that the
+// response contains wantN embeddings of a single, consistent dimension.
+func (e *Embedder) embed(ctx context.Context, input any, wantN int) ([][]float64, error) {
+	defer e.tracer.StartRegion(ctx, embedRegionName).End()
+
+	var lastErr error
+	backoff := e.baseBackoff
+	for attempt := 0; attempt <= e.maxRetries; attempt++ {
+		if attempt > 0 {
+			if err := e.sleep(ctx, backoff); err != nil {
+				return nil, fmt.Errorf("embed: %w", err)
+			}
+			backoff *= 2
+		}
+		res := e.doEmbed(ctx, input)
+		if res.err == nil {
+			return validateEmbeddings(res.embeddings, wantN)
+		}
+		lastErr = res.err
+		if res.tier != provpkg.TierShortTransient && res.tier != provpkg.TierShortRateLimit {
+			return nil, res.err
+		}
+		if res.retryAfter > backoff {
+			backoff = res.retryAfter
+		}
+	}
+	return nil, fmt.Errorf("embed: retry budget exhausted after %d attempts: %w", e.maxRetries+1, lastErr)
+}
+
+// embedResult carries one attempt's outcome so embed can decide whether to
+// retry without re-reading the response.
+type embedResult struct {
+	embeddings [][]float64
+	tier       provpkg.ErrorTier
+	retryAfter time.Duration
+	err        error
+}
+
+func (e *Embedder) doEmbed(ctx context.Context, input any) embedResult {
+	reqBytes, err := json.Marshal(embedRequest{Model: e.model, Input: input})
+	if err != nil {
+		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("marshaling embed request: %w", err)}
+	}
+
+	url := strings.TrimRight(e.host, "/") + embedEndpoint
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
+	if err != nil {
+		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("creating embed request: %w", err)}
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return embedResult{tier: classifyTier(0, err), err: fmt.Errorf("embed request: %w", err)}
+	}
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			e.logger.WarnContext(ctx, "ollama embed: close error", "err", cerr)
+		}
+	}()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return embedResult{tier: provpkg.TierShortTransient, err: fmt.Errorf("reading embed response body: %w", err)}
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return embedResult{
+			tier:       classifyTier(resp.StatusCode, nil),
+			retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, strings.TrimSpace(string(bodyBytes))),
+		}
+	}
+
+	var er embedResponse
+	if err := json.Unmarshal(bodyBytes, &er); err != nil {
+		return embedResult{tier: provpkg.TierTerminal, err: fmt.Errorf("%w: parsing embed response: %w", provpkg.ErrInvalidResponsePart, err)}
+	}
+	return embedResult{embeddings: er.Embeddings}
+}
+
+// validateEmbeddings enforces that the response holds exactly wantN vectors of
+// a single non-zero dimension.
+func validateEmbeddings(embeddings [][]float64, wantN int) ([][]float64, error) {
+	if len(embeddings) != wantN {
+		return nil, fmt.Errorf("%w: got %d embeddings, want %d", provpkg.ErrInvalidResponsePart, len(embeddings), wantN)
+	}
+	dim := len(embeddings[0])
+	if dim == 0 {
+		return nil, fmt.Errorf("%w: empty embedding vector", provpkg.ErrInvalidResponsePart)
+	}
+	for i, v := range embeddings {
+		if len(v) != dim {
+			return nil, fmt.Errorf("%w: embedding %d has dimension %d, want %d", ErrDimensionMismatch, i, len(v), dim)
+		}
+	}
+	return embeddings, nil
+}
+
+// sleepCtx waits for d or until ctx is cancelled, whichever comes first.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}

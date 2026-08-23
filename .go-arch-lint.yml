@@ -39,6 +39,8 @@ components:
     in: pkg/llmvcr/**
   vectorstore:
     in: pkg/vectorstore/**
+  examples:
+    in: examples/**
 
 deps:
   logger:
@@ -169,4 +171,11 @@ deps:
     anyProjectDeps: false
     anyVendorDeps: true
     mayDependOn:
+      - vectorstore
+
+  examples:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - ollama
       - vectorstore

@@ -86,14 +86,21 @@ func (t *transport) Keys() *endpointKeyPool  { return t.endpoint }
 func (t *transport) ContextLength() int      { return t.contextLength }
 
 func (t *transport) ClassifyError(in provpkg.ClassifyInput, _ provpkg.RetryContext) provpkg.ErrorTier {
+	return classifyTier(in.StatusCode, in.Err)
+}
+
+// classifyTier maps an HTTP status code (0 when no response was received) and
+// an optional transport error to the retry tier shared by the analyzer
+// transport and the Embedder.
+func classifyTier(statusCode int, err error) provpkg.ErrorTier {
 	switch {
-	case in.StatusCode == 0 && in.Err != nil:
+	case statusCode == 0 && err != nil:
 		return provpkg.TierShortTransient
-	case in.StatusCode == 0:
+	case statusCode == 0:
 		return provpkg.TierTerminal
-	case in.StatusCode == http.StatusTooManyRequests:
+	case statusCode == http.StatusTooManyRequests:
 		return provpkg.TierShortRateLimit
-	case in.StatusCode >= http.StatusInternalServerError:
+	case statusCode >= http.StatusInternalServerError:
 		return provpkg.TierShortTransient
 	default:
 		return provpkg.TierTerminal
@@ -290,6 +297,7 @@ type providerConfig struct {
 	keepAlive      string
 	numCtx         int
 	numPredict     int
+	maxRetries     int
 	responseSchema any
 	client         *http.Client
 	httpTimeout    time.Duration
@@ -307,6 +315,13 @@ func WithNumCtx(numCtx int) ProviderOption {
 
 func WithNumPredict(numPredict int) ProviderOption {
 	return func(c *providerConfig) { c.numPredict = numPredict }
+}
+
+// WithMaxRetries caps how many times the Embedder retries a transient or
+// rate-limited /api/embed response before giving up. It is ignored by the
+// generation transport, whose retries are governed by the analyzer engine.
+func WithMaxRetries(maxRetries int) ProviderOption {
+	return func(c *providerConfig) { c.maxRetries = maxRetries }
 }
 
 func WithResponseSchema(schema any) ProviderOption {
