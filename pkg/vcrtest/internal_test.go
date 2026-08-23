@@ -86,25 +86,53 @@ func TestResolveCassettePath(t *testing.T) {
 func TestCheckReplayCassette(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name      string
-		mode      llmvcr.Mode
-		create    bool
-		wantErrIs error
+		name         string
+		mode         llmvcr.Mode
+		create       bool  // create the cassette file before checking
+		parentIsFile bool  // nest the cassette under a regular file (forces ENOTDIR)
+		wantErrIs    error // sentinel the error must match
+		wantOpaque   bool  // expect a preserved stat error, not errCassetteNotFound
 	}{
-		{name: "replay missing errors", mode: llmvcr.ModeReplayOnly, create: false, wantErrIs: errCassetteNotFound},
+		{name: "replay missing errors", mode: llmvcr.ModeReplayOnly, wantErrIs: errCassetteNotFound},
 		{name: "replay present is nil", mode: llmvcr.ModeReplayOnly, create: true},
-		{name: "record missing is nil", mode: llmvcr.ModeRecordOnce, create: false},
+		{name: "record missing is nil", mode: llmvcr.ModeRecordOnce},
+		{name: "replay unreadable preserves stat error", mode: llmvcr.ModeReplayOnly, parentIsFile: true, wantOpaque: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), "cass")
-			if tt.create {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "cass")
+			switch {
+			case tt.parentIsFile:
+				// Nest the cassette path under a regular file so
+				// os.Stat("<file>/cass.yaml") fails with ENOTDIR — a stat
+				// error that is not os.ErrNotExist.
+				blocker := filepath.Join(dir, "blocker")
+				if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+					t.Fatalf("WriteFile() = %v", err)
+				}
+				path = filepath.Join(blocker, "cass")
+			case tt.create:
 				if err := os.WriteFile(path+cassetteExt, []byte("---\n"), 0o644); err != nil {
 					t.Fatalf("WriteFile() = %v", err)
 				}
 			}
+
 			err := checkReplayCassette(path, tt.mode)
+
+			if tt.wantOpaque {
+				if err == nil {
+					t.Fatalf("checkReplayCassette() = nil, want a preserved stat error")
+				}
+				if errors.Is(err, errCassetteNotFound) {
+					t.Errorf("checkReplayCassette() error = %v, must not be errCassetteNotFound", err)
+				}
+				if errors.Is(err, os.ErrNotExist) {
+					t.Errorf("checkReplayCassette() error = %v, must not be os.ErrNotExist", err)
+				}
+				return
+			}
 			if tt.wantErrIs == nil {
 				if err != nil {
 					t.Errorf("checkReplayCassette() = %v, want nil", err)

@@ -102,20 +102,26 @@ func resolveCassettePath(name string) (string, error) {
 	return filepath.Join(cassetteDir, clean), nil
 }
 
-// checkReplayCassette verifies that a replay-mode cassette exists on disk,
-// returning a wrapped errCassetteNotFound that names the file and the VCR_MODE
-// override to record it when it does not. In record mode a missing cassette is
-// expected, so it returns nil.
+// checkReplayCassette verifies that a replay-mode cassette exists on disk. It
+// returns a wrapped errCassetteNotFound — naming the file and the VCR_MODE
+// override to record it — only when the cassette is absent; any other stat
+// failure (permissions, I/O, a non-directory parent) is preserved as-is, since
+// recording cannot fix a present-but-unreadable cassette. In record mode a
+// missing cassette is expected, so it returns nil.
 func checkReplayCassette(path string, mode llmvcr.Mode) error {
 	if mode != llmvcr.ModeReplayOnly {
 		return nil
 	}
 	file := path + cassetteExt
-	if _, err := os.Stat(file); err != nil {
-		return fmt.Errorf("%w: %s (%w); run the test with %s=%s to record it",
-			errCassetteNotFound, file, err, EnvVCRMode, recordValue)
+	switch _, err := os.Stat(file); {
+	case err == nil:
+		return nil
+	case errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("%w: %s; run the test with %s=%s to record it",
+			errCassetteNotFound, file, EnvVCRMode, recordValue)
+	default:
+		return fmt.Errorf("checking replay cassette %s: %w", file, err)
 	}
-	return nil
 }
 
 // Client returns an *http.Client whose transport is backed by the cassette at
