@@ -407,6 +407,31 @@ func TestSemanticGetPropagatesCancellation(t *testing.T) {
 	}
 }
 
+func TestExactGetPropagatesCancellation(t *testing.T) {
+	t.Parallel()
+	// In exact-only mode a context cancelled before the lookup must surface as
+	// an error instead of returning a hit and mutating recency.
+	c := mustNew(t)
+	key := semcache.Key{Model: "m", Prompt: "cat"}
+	if err := c.Put(t.Context(), key, "feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	resp, hit, err := c.Get(ctx, key)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Get(cancelled) error = %v, want %v", err, context.Canceled)
+	}
+	if hit {
+		t.Errorf("Get(cancelled) hit = true, want false")
+	}
+	if resp != "" {
+		t.Errorf("Get(cancelled) response = %q, want empty", resp)
+	}
+}
+
 func TestSemanticEmbedError(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

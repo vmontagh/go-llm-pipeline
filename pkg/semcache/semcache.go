@@ -334,6 +334,9 @@ func (c *Cache) Get(ctx context.Context, key Key) (response string, hit bool, er
 func (c *Cache) getExact(ctx context.Context, hash string) (response string, hit bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return "", false, fmt.Errorf("cache get: %w", err)
+	}
 	v, ok := c.index.get(hash)
 	if !ok {
 		return "", false, nil
@@ -399,13 +402,13 @@ func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit 
 	// Promote the matched entry's recency; if it was concurrently evicted the
 	// lookup is a no-op and the already-read response is still returned.
 	c.index.get(top.Item.ID)
+	c.mu.Unlock()
 	if c.logger != nil {
 		c.logger.Debug("semcache semantic hit",
 			slog.String("model", key.Model),
 			slog.String("match_hash", top.Item.ID),
 			slog.Float64("score", top.Score))
 	}
-	c.mu.Unlock()
 	return response, true, nil
 }
 
