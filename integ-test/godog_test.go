@@ -1,3 +1,9 @@
+// Package integtest is the test-only godog BDD integration suite for the
+// Ollama embeddings feature. It runs the Gherkin specs under features/ in two
+// lanes selected by build tag: the default build is @fake, which replays
+// pkg/vcrtest cassettes fully offline (safe for pre-submit CI), while -tags=live
+// is @live-local, which records/executes against a real local Ollama on a
+// developer machine.
 package integtest
 
 import (
@@ -27,8 +33,8 @@ func init() {
 // initializer so step definitions can build cassette-backed HTTP clients with
 // pkg/vcrtest.
 func TestFeatures(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping BDD integration suite in short mode")
+	if !isFakeMode && testing.Short() {
+		t.Skip("skipping live BDD lane in short mode")
 	}
 	flag.Parse()
 	opts.TestingT = t
