@@ -107,6 +107,11 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 	if baseBackoff <= 0 {
 		baseBackoff = defaultEmbedBaseBackoff
 	}
+	// Clamp the base to the cap so even the first retry honors maxDelay; a
+	// longer server-provided Retry-After can still override it per attempt.
+	if cfg.retryMaxBackoff > 0 && baseBackoff > cfg.retryMaxBackoff {
+		baseBackoff = cfg.retryMaxBackoff
+	}
 	return &Embedder{
 		host:        host,
 		model:       model,

@@ -267,6 +267,16 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 			wantErrIs: provpkg.ErrUnexpectedStatus,
 		},
 		{
+			name: "base larger than max is clamped on the first retry",
+			opts: []ProviderOption{
+				WithMaxRetries(2),
+				WithRetryBackoff(10*time.Second, time.Second),
+			},
+			responses:  []stubResp{{status: http.StatusInternalServerError, body: "boom"}},
+			wantDelays: []time.Duration{time.Second, time.Second},
+			wantErrIs:  provpkg.ErrUnexpectedStatus,
+		},
+		{
 			name: "retry-after overrides base backoff then succeeds",
 			opts: []ProviderOption{
 				WithMaxRetries(3),
