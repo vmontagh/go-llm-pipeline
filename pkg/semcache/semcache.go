@@ -79,7 +79,8 @@ const (
 // Embedder converts prompt text into an embedding vector. It is declared here,
 // at the consumer, so the cache stays decoupled from any concrete embedding
 // provider; callers inject an implementation (for example an Ollama-backed
-// embedder) through [WithSemantic].
+// embedder) through [WithSemantic]. Implementations must be safe for concurrent
+// use.
 type Embedder interface {
 	// Embed returns the embedding for input.
 	Embed(ctx context.Context, input string) ([]float64, error)
@@ -89,6 +90,7 @@ type Embedder interface {
 // minimal consumer-side seam so the cache can report to an external registry
 // (such as *observ.Metrics) without importing it. A nil recorder disables
 // external reporting; the cache always maintains its own [Stats] regardless.
+// Implementations must be safe for concurrent use.
 type MetricsRecorder interface {
 	// Inc increments the counter identified by name by one.
 	Inc(name string)
@@ -224,7 +226,10 @@ func WithLogger(logger *slog.Logger) Option {
 }
 
 // Cache is a concurrency-safe semantic response cache. The zero value is not
-// usable; construct one with [New].
+// usable; construct one with [New]. The injected [Embedder] and
+// [MetricsRecorder] are invoked without holding the cache lock and may be
+// called concurrently, so their implementations must be safe for concurrent
+// use.
 type Cache struct {
 	embedder   Embedder
 	threshold  float64
@@ -254,16 +259,20 @@ func New(opts ...Option) (*Cache, error) {
 		}
 	}
 
+	var errs []error
 	if cfg.semantic {
 		if cfg.embedder == nil {
-			return nil, fmt.Errorf("configuring semantic cache: %w", ErrNoEmbedder)
+			errs = append(errs, ErrNoEmbedder)
 		}
 		if math.IsNaN(cfg.threshold) || cfg.threshold < -1 || cfg.threshold > 1 {
-			return nil, fmt.Errorf("configuring semantic cache: %w: %v", ErrInvalidThreshold, cfg.threshold)
+			errs = append(errs, fmt.Errorf("%w: %v", ErrInvalidThreshold, cfg.threshold))
 		}
 	}
 	if cfg.maxEntries < 0 {
-		return nil, fmt.Errorf("configuring cache: %w: %d", ErrInvalidMaxEntries, cfg.maxEntries)
+		errs = append(errs, fmt.Errorf("%w: %d", ErrInvalidMaxEntries, cfg.maxEntries))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, fmt.Errorf("configuring cache: %w", err)
 	}
 
 	c := &Cache{
@@ -335,7 +344,7 @@ func (c *Cache) getExact(ctx context.Context, hash string) (response string, hit
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := ctx.Err(); err != nil {
-		return "", false, fmt.Errorf("cache get: %w", err)
+		return "", false, fmt.Errorf("checking context: %w", err)
 	}
 	v, ok := c.index.get(hash)
 	if !ok {
@@ -616,11 +625,15 @@ func encodeModelParams(b *strings.Builder, key Key) {
 // prompt. Every field is length-prefixed so no combination of field contents
 // can collide with another.
 func hashKey(key Key) (string, error) {
+	var errs []error
 	if key.Model == "" {
-		return "", ErrEmptyModel
+		errs = append(errs, ErrEmptyModel)
 	}
 	if key.Prompt == "" {
-		return "", ErrEmptyPrompt
+		errs = append(errs, ErrEmptyPrompt)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return "", err
 	}
 
 	var b strings.Builder

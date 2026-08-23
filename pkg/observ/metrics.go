@@ -73,8 +73,12 @@ func (m *Metrics) Value(name string) int64 {
 	return c.Load()
 }
 
-// Snapshot returns a point-in-time copy of every counter keyed by name. The
-// returned map is owned by the caller and safe to mutate.
+// Snapshot returns a copy of every counter keyed by name. It is weakly
+// consistent: the set of counter names is captured under the lock, but each
+// value is read with an atomic load and may reflect an increment from a
+// different instant, so cross-counter totals are not guaranteed to represent a
+// single consistent moment. The returned map is owned by the caller and safe to
+// mutate.
 func (m *Metrics) Snapshot() map[string]int64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

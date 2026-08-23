@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -125,6 +126,23 @@ func TestNewValidation(t *testing.T) {
 	}
 }
 
+func TestNewAggregatesConfigErrors(t *testing.T) {
+	t.Parallel()
+	_, err := semcache.New(semcache.WithSemantic(nil, 9.0), semcache.WithMaxEntries(-1))
+	if err == nil {
+		t.Fatal("New() error = nil, want aggregated config error")
+	}
+	for _, want := range []error{
+		semcache.ErrNoEmbedder,
+		semcache.ErrInvalidThreshold,
+		semcache.ErrInvalidMaxEntries,
+	} {
+		if !errors.Is(err, want) {
+			t.Errorf("New() error = %v, missing %v", err, want)
+		}
+	}
+}
+
 func TestExactMatch(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -196,30 +214,41 @@ func TestGetInvalidKey(t *testing.T) {
 	c := mustNew(t)
 
 	tests := []struct {
-		name    string
-		key     semcache.Key
-		wantErr error
+		name     string
+		key      semcache.Key
+		wantErrs []error
 	}{
 		{
-			name:    "empty model",
-			key:     semcache.Key{Prompt: "hello"},
-			wantErr: semcache.ErrEmptyModel,
+			name:     "empty model",
+			key:      semcache.Key{Prompt: "hello"},
+			wantErrs: []error{semcache.ErrEmptyModel},
 		},
 		{
-			name:    "empty prompt",
-			key:     semcache.Key{Model: "llama3"},
-			wantErr: semcache.ErrEmptyPrompt,
+			name:     "empty prompt",
+			key:      semcache.Key{Model: "llama3"},
+			wantErrs: []error{semcache.ErrEmptyPrompt},
+		},
+		{
+			name:     "empty model and prompt",
+			key:      semcache.Key{},
+			wantErrs: []error{semcache.ErrEmptyModel, semcache.ErrEmptyPrompt},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, _, err := c.Get(ctx, tt.key); !errors.Is(err, tt.wantErr) {
-				t.Errorf("Get() error = %v, want %v", err, tt.wantErr)
+			_, _, err := c.Get(ctx, tt.key)
+			for _, want := range tt.wantErrs {
+				if !errors.Is(err, want) {
+					t.Errorf("Get() error = %v, missing %v", err, want)
+				}
 			}
-			if err := c.Put(ctx, tt.key, "x"); !errors.Is(err, tt.wantErr) {
-				t.Errorf("Put() error = %v, want %v", err, tt.wantErr)
+			putErr := c.Put(ctx, tt.key, "x")
+			for _, want := range tt.wantErrs {
+				if !errors.Is(putErr, want) {
+					t.Errorf("Put() error = %v, missing %v", putErr, want)
+				}
 			}
 		})
 	}
@@ -423,6 +452,11 @@ func TestExactGetPropagatesCancellation(t *testing.T) {
 	resp, hit, err := c.Get(ctx, key)
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Get(cancelled) error = %v, want %v", err, context.Canceled)
+	}
+	if err != nil {
+		if got := strings.Count(err.Error(), "cache get:"); got != 1 {
+			t.Errorf("Get(cancelled) error = %q, %q count = %d, want 1", err, "cache get:", got)
+		}
 	}
 	if hit {
 		t.Errorf("Get(cancelled) hit = true, want false")
