@@ -116,6 +116,29 @@ func (s *MemoryStore) Delete(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
+// Get returns the stored item with the given ID and reports whether it was
+// present. The returned Item is a deep copy, so mutating it does not affect the
+// store. Getting an unknown ID is not an error and returns false.
+func (s *MemoryStore) Get(ctx context.Context, id string) (Item, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Item{}, false, fmt.Errorf("vectorstore: get cancelled: %w", err)
+	}
+	if id == "" {
+		return Item{}, false, fmt.Errorf("getting item: %w", ErrEmptyID)
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if err := ctx.Err(); err != nil {
+		return Item{}, false, fmt.Errorf("vectorstore: get cancelled: %w", err)
+	}
+	e, ok := s.items[id]
+	if !ok {
+		return Item{}, false, nil
+	}
+	return copyItem(e.item), true, nil
+}
+
 // Nearest returns up to limit neighbors ordered by descending cosine
 // similarity, breaking ties by ascending Item.ID. Returned items are deep
 // copies. It returns ErrInvalidLimit when limit is not positive.

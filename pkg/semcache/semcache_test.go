@@ -108,16 +108,6 @@ func TestNewValidation(t *testing.T) {
 			wantErr: semcache.ErrInvalidMaxEntries,
 		},
 		{
-			name:    "unknown eviction policy",
-			opts:    []semcache.Option{semcache.WithEviction(semcache.Eviction(99))},
-			wantErr: semcache.ErrInvalidEviction,
-		},
-		{
-			name:    "zero eviction policy is invalid",
-			opts:    []semcache.Option{semcache.WithEviction(semcache.EvictInvalid)},
-			wantErr: semcache.ErrInvalidEviction,
-		},
-		{
 			name:    "valid semantic config",
 			opts:    []semcache.Option{semcache.WithSemantic(emb, 0.8), semcache.WithMaxEntries(10)},
 			wantErr: nil,
@@ -466,64 +456,35 @@ func TestEviction(t *testing.T) {
 	ctx := t.Context()
 	key := func(p string) semcache.Key { return semcache.Key{Model: "m", Prompt: p} }
 
-	tests := []struct {
-		name      string
-		policy    semcache.Eviction
-		promote   string // prompt read before inserting the overflow entry
-		wantGone  string // prompt expected to be evicted
-		wantKept  []string
-		wantEvict int64
-	}{
-		{
-			name:      "LRU evicts least recently used",
-			policy:    semcache.EvictLRU,
-			promote:   "A", // read A so B becomes the LRU victim
-			wantGone:  "B",
-			wantKept:  []string{"A", "C"},
-			wantEvict: 1,
-		},
-		{
-			name:      "FIFO evicts oldest inserted",
-			policy:    semcache.EvictFIFO,
-			promote:   "A", // reads do not protect under FIFO
-			wantGone:  "A",
-			wantKept:  []string{"B", "C"},
-			wantEvict: 1,
-		},
+	// Reading A before the overflow Put makes B the least recently used, so the
+	// LRU policy evicts B while A and C survive.
+	c := mustNew(t, semcache.WithMaxEntries(2))
+	if err := c.Put(ctx, key("A"), "ra"); err != nil {
+		t.Fatalf("Put(A) = %v", err)
+	}
+	if err := c.Put(ctx, key("B"), "rb"); err != nil {
+		t.Fatalf("Put(B) = %v", err)
+	}
+	if _, _, err := c.Get(ctx, key("A")); err != nil {
+		t.Fatalf("Get(A) = %v", err)
+	}
+	if err := c.Put(ctx, key("C"), "rc"); err != nil {
+		t.Fatalf("Put(C) = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			c := mustNew(t, semcache.WithMaxEntries(2), semcache.WithEviction(tt.policy))
-			if err := c.Put(ctx, key("A"), "ra"); err != nil {
-				t.Fatalf("Put(A) = %v", err)
-			}
-			if err := c.Put(ctx, key("B"), "rb"); err != nil {
-				t.Fatalf("Put(B) = %v", err)
-			}
-			if _, _, err := c.Get(ctx, key(tt.promote)); err != nil {
-				t.Fatalf("Get(%s) = %v", tt.promote, err)
-			}
-			if err := c.Put(ctx, key("C"), "rc"); err != nil {
-				t.Fatalf("Put(C) = %v", err)
-			}
-
-			if got := c.Len(); got != 2 {
-				t.Errorf("Len() = %d, want 2", got)
-			}
-			if _, hit, err := c.Get(ctx, key(tt.wantGone)); err != nil || hit {
-				t.Errorf("Get(%s) = (hit %t, err %v), want evicted", tt.wantGone, hit, err)
-			}
-			for _, p := range tt.wantKept {
-				if _, hit, err := c.Get(ctx, key(p)); err != nil || !hit {
-					t.Errorf("Get(%s) = (hit %t, err %v), want retained", p, hit, err)
-				}
-			}
-			if got := c.Stats().Evictions; got != tt.wantEvict {
-				t.Errorf("Stats().Evictions = %d, want %d", got, tt.wantEvict)
-			}
-		})
+	if got := c.Len(); got != 2 {
+		t.Errorf("Len() = %d, want 2", got)
+	}
+	if _, hit, err := c.Get(ctx, key("B")); err != nil || hit {
+		t.Errorf("Get(B) = (hit %t, err %v), want evicted", hit, err)
+	}
+	for _, p := range []string{"A", "C"} {
+		if _, hit, err := c.Get(ctx, key(p)); err != nil || !hit {
+			t.Errorf("Get(%s) = (hit %t, err %v), want retained", p, hit, err)
+		}
+	}
+	if got := c.Stats().Evictions; got != 1 {
+		t.Errorf("Stats().Evictions = %d, want 1", got)
 	}
 }
 
@@ -625,37 +586,31 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestSemanticSkipsStaleVector(t *testing.T) {
+func TestSemanticHitReturnsStoredResponse(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	// "stale" scores highest for the query but its entry is dropped from the key
-	// map while its vector remains indexed, so getSemantic must skip it and
-	// return the live "valid" neighbor rather than reporting a false miss.
+	// The vector store is the single source of truth for the cached response in
+	// semantic mode: a near-neighbour hit must return the response read straight
+	// from the stored Item metadata.
 	emb := &fakeEmbedder{vectors: map[string][]float64{
-		"stale": {1, 0, 0},
-		"valid": {0.9, 0.1, 0}, // cosine with the query ~0.994, above threshold
-		"query": {1, 0, 0},
+		"hello world": {1, 0, 0},
+		"hello there": {0.9, 0.1, 0}, // cosine with the entry ~0.994, above threshold
 	}}
 	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
 
-	staleKey := semcache.Key{Model: "m", Prompt: "stale"}
-	if err := c.Put(ctx, staleKey, "resp-stale"); err != nil {
-		t.Fatalf("Put(stale) = %v", err)
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "hello world"}, "resp-stored"); err != nil {
+		t.Fatalf("Put() = %v", err)
 	}
-	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "valid"}, "resp-valid"); err != nil {
-		t.Fatalf("Put(valid) = %v", err)
-	}
-	c.DropEntryKeepVector(staleKey)
 
-	resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "query"})
+	resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "hello there"})
 	if err != nil {
 		t.Fatalf("Get() = %v, want nil", err)
 	}
 	if !hit {
-		t.Errorf("Get() hit = false, want true (must skip the stale vector)")
+		t.Errorf("Get() hit = false, want true")
 	}
-	if resp != "resp-valid" {
-		t.Errorf("Get() response = %q, want %q", resp, "resp-valid")
+	if resp != "resp-stored" {
+		t.Errorf("Get() response = %q, want %q", resp, "resp-stored")
 	}
 }
 

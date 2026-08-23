@@ -12,13 +12,15 @@
 // reuse is therefore strictly opt-in.
 //
 // Entries are keyed on model, params, and prompt together, so responses from
-// different models or parameter sets never collide. The cache never computes
-// embeddings itself: callers own the embedding model and inject it through the
-// [Embedder] seam. The cache is safe for concurrent use.
+// different models or parameter sets never collide. In semantic mode the vector
+// store is the single source of truth for a cached response: the response is
+// carried in the indexed item's metadata and the recency index holds only
+// bookkeeping. The cache never computes embeddings itself: callers own the
+// embedding model and inject it through the [Embedder] seam. The cache is safe
+// for concurrent use.
 package semcache
 
 import (
-	"container/list"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -29,6 +31,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/vectorstore"
 )
@@ -48,9 +52,6 @@ var (
 	ErrInvalidThreshold = errors.New("invalid threshold")
 	// ErrInvalidMaxEntries is returned when a maximum entry count is negative.
 	ErrInvalidMaxEntries = errors.New("invalid max entries")
-	// ErrInvalidEviction is returned when an unknown eviction policy is
-	// configured.
-	ErrInvalidEviction = errors.New("invalid eviction policy")
 )
 
 // Metric names reported through a [MetricsRecorder].
@@ -67,17 +68,13 @@ const (
 	MetricEvictions = "semcache_evictions"
 )
 
-// Metadata keys carried on each indexed vectorstore.Item.
+// Metadata keys carried on each indexed vectorstore.Item. In semantic mode
+// metaResponse holds the authoritative cached response.
 const (
 	metaHash     = "hash"
 	metaModel    = "model"
 	metaResponse = "response"
 )
-
-// semanticNeighborFanout is how many nearest neighbors getSemantic requests so
-// it can skip stale vectors whose entries were already evicted and still find a
-// live neighbor beneath them.
-const semanticNeighborFanout = 8
 
 // Embedder converts prompt text into an embedding vector. It is declared here,
 // at the consumer, so the cache stays decoupled from any concrete embedding
@@ -96,21 +93,6 @@ type MetricsRecorder interface {
 	// Inc increments the counter identified by name by one.
 	Inc(name string)
 }
-
-// Eviction selects which entry is discarded when the cache is full. The zero
-// value is [EvictInvalid] and is rejected by [New]; omitting [WithEviction]
-// defaults to [EvictLRU].
-type Eviction int
-
-const (
-	// EvictInvalid is the zero value and is not a usable policy, so an
-	// unset Eviction is rejected rather than silently treated as valid.
-	EvictInvalid Eviction = iota
-	// EvictLRU discards the least recently used entry, accounting for reads.
-	EvictLRU
-	// EvictFIFO discards the oldest inserted entry regardless of reads.
-	EvictFIFO
-)
 
 // Key identifies a cached response. Entries are keyed on all three fields
 // together, so responses from different models or parameter sets never collide.
@@ -140,24 +122,62 @@ type Stats struct {
 	Evictions int64
 }
 
-// entry is one cached response together with its normalized key hash and the
-// semantic partition it belongs to. The hash doubles as the ID under which the
-// entry is indexed in its partition's semantic store.
-type entry struct {
-	hash      string
+// indexValue is the per-hash payload kept in the eviction index. In exact-only
+// mode response holds the cached response and partition is empty. In semantic
+// mode partition names the vector store that owns the response (the single
+// source of truth) and response is empty.
+type indexValue struct {
 	partition string
 	response  string
 }
 
-// entryOf recovers the *entry stored in a list element. The list holds only
-// *entry values, so a failed assertion is an unreachable invariant violation.
-func entryOf(el *list.Element) *entry {
-	ent, ok := el.Value.(*entry)
-	if !ok {
-		panic("semcache: list element does not hold *entry")
-	}
-	return ent
+// cacheIndex maps a key hash to its indexValue with recency-aware eviction. get
+// promotes recency; add reports whether inserting evicted an entry. Both
+// implementations are used only while the caller holds Cache.mu.
+type cacheIndex interface {
+	get(hash string) (indexValue, bool)
+	contains(hash string) bool
+	add(hash string, v indexValue) (evicted bool)
+	len() int
 }
+
+// boundedIndex is an LRU-bounded cacheIndex backed by golang-lru. Its eviction
+// callback runs synchronously inside add.
+type boundedIndex struct {
+	lru *lru.Cache[string, indexValue]
+}
+
+func (b *boundedIndex) get(hash string) (indexValue, bool) { return b.lru.Get(hash) }
+func (b *boundedIndex) contains(hash string) bool          { return b.lru.Contains(hash) }
+func (b *boundedIndex) add(hash string, v indexValue) bool { return b.lru.Add(hash, v) }
+func (b *boundedIndex) len() int                           { return b.lru.Len() }
+
+// unboundedIndex is an unbounded cacheIndex backed by a plain map. It never
+// evicts, so golang-lru's positive-size requirement does not apply.
+type unboundedIndex struct {
+	items map[string]indexValue
+}
+
+func newUnboundedIndex() *unboundedIndex {
+	return &unboundedIndex{items: make(map[string]indexValue)}
+}
+
+func (u *unboundedIndex) get(hash string) (indexValue, bool) {
+	v, ok := u.items[hash]
+	return v, ok
+}
+
+func (u *unboundedIndex) contains(hash string) bool {
+	_, ok := u.items[hash]
+	return ok
+}
+
+func (u *unboundedIndex) add(hash string, v indexValue) bool {
+	u.items[hash] = v
+	return false
+}
+
+func (u *unboundedIndex) len() int { return len(u.items) }
 
 // config accumulates option values before New validates them.
 type config struct {
@@ -165,7 +185,6 @@ type config struct {
 	threshold  float64
 	semantic   bool
 	maxEntries int
-	eviction   Eviction
 	metrics    MetricsRecorder
 	logger     *slog.Logger
 }
@@ -185,17 +204,11 @@ func WithSemantic(embedder Embedder, threshold float64) Option {
 	}
 }
 
-// WithMaxEntries bounds the cache to at most n entries, evicting per the
-// configured [Eviction] policy once full. n must not be negative; zero leaves
-// the cache unbounded, as does omitting this option.
+// WithMaxEntries bounds the cache to at most n entries, evicting the least
+// recently used entry once full. n must not be negative; zero leaves the cache
+// unbounded, as does omitting this option.
 func WithMaxEntries(n int) Option {
 	return func(c *config) { c.maxEntries = n }
-}
-
-// WithEviction selects the policy used to choose a victim when the cache is
-// full. It has no effect unless [WithMaxEntries] is also set.
-func WithEviction(policy Eviction) Option {
-	return func(c *config) { c.eviction = policy }
 }
 
 // WithMetrics reports hit, miss, and eviction counters to recorder in addition
@@ -217,13 +230,11 @@ type Cache struct {
 	threshold  float64
 	semantic   bool
 	maxEntries int
-	eviction   Eviction
 	metrics    MetricsRecorder
 	logger     *slog.Logger
 
 	mu        sync.Mutex
-	byKey     map[string]*list.Element            // hash -> element holding *entry
-	order     *list.List                          // front = most recently used, back = eviction victim
+	index     cacheIndex
 	stores    map[string]*vectorstore.MemoryStore // partitionKey -> semantic index; nil unless semantic is enabled
 	partCount map[string]int                      // partitionKey -> live entry count; nil unless semantic is enabled
 
@@ -231,11 +242,12 @@ type Cache struct {
 }
 
 // New returns a Cache configured by opts. By default the cache is
-// exact-match-only and unbounded. It returns an error when semantic mode is
-// requested without an embedder or with an out-of-range threshold, or when an
-// invalid max-entries or eviction policy is supplied.
+// exact-match-only and unbounded, discarding the least recently used entry once
+// a configured maximum is reached. It returns an error when semantic mode is
+// requested without an embedder or with an out-of-range threshold, or when a
+// negative max-entries value is supplied.
 func New(opts ...Option) (*Cache, error) {
-	cfg := config{eviction: EvictLRU}
+	var cfg config
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
@@ -253,24 +265,27 @@ func New(opts ...Option) (*Cache, error) {
 	if cfg.maxEntries < 0 {
 		return nil, fmt.Errorf("configuring cache: %w: %d", ErrInvalidMaxEntries, cfg.maxEntries)
 	}
-	if cfg.eviction != EvictLRU && cfg.eviction != EvictFIFO {
-		return nil, fmt.Errorf("configuring cache: %w: %d", ErrInvalidEviction, cfg.eviction)
-	}
 
 	c := &Cache{
 		embedder:   cfg.embedder,
 		threshold:  cfg.threshold,
 		semantic:   cfg.semantic,
 		maxEntries: cfg.maxEntries,
-		eviction:   cfg.eviction,
 		metrics:    cfg.metrics,
 		logger:     cfg.logger,
-		byKey:      make(map[string]*list.Element),
-		order:      list.New(),
 	}
 	if cfg.semantic {
 		c.stores = make(map[string]*vectorstore.MemoryStore)
 		c.partCount = make(map[string]int)
+	}
+	if cfg.maxEntries > 0 {
+		l, err := lru.NewWithEvict[string, indexValue](cfg.maxEntries, c.onEvict)
+		if err != nil {
+			return nil, fmt.Errorf("configuring cache index: %w", err)
+		}
+		c.index = &boundedIndex{lru: l}
+	} else {
+		c.index = newUnboundedIndex()
 	}
 	return c, nil
 }
@@ -278,15 +293,19 @@ func New(opts ...Option) (*Cache, error) {
 // Get returns a cached response for key. It first tries the exact-match fast
 // path, then, when semantic mode is enabled, the embedding nearest-neighbor
 // fallback. The boolean reports whether a usable response was found; a miss is
-// not an error. An error is returned only for an invalid key or an embedding
-// failure on the semantic path.
+// not an error. An error is returned only for an invalid key, a cancelled
+// context, or an embedding failure on the semantic path.
 func (c *Cache) Get(ctx context.Context, key Key) (response string, hit bool, err error) {
 	hash, err := hashKey(key)
 	if err != nil {
 		return "", false, fmt.Errorf("cache get: %w", err)
 	}
 
-	if response, ok := c.getExact(hash); ok {
+	response, ok, err := c.getExact(ctx, hash)
+	if err != nil {
+		return "", false, fmt.Errorf("cache get: %w", err)
+	}
+	if ok {
 		c.record(true, MetricExactHits)
 		return response, true, nil
 	}
@@ -296,7 +315,7 @@ func (c *Cache) Get(ctx context.Context, key Key) (response string, hit bool, er
 		return "", false, nil
 	}
 
-	response, ok, err := c.getSemantic(ctx, key)
+	response, ok, err = c.getSemantic(ctx, key)
 	if err != nil {
 		return "", false, fmt.Errorf("cache get: %w", err)
 	}
@@ -308,27 +327,40 @@ func (c *Cache) Get(ctx context.Context, key Key) (response string, hit bool, er
 	return "", false, nil
 }
 
-// getExact returns the response stored under hash, promoting it on the LRU
-// ordering when found.
-func (c *Cache) getExact(hash string) (string, bool) {
+// getExact returns the response stored under hash via the exact-match fast
+// path, promoting its recency. In semantic mode the response is read from the
+// partition's vector store, the single source of truth; in exact-only mode it
+// comes straight from the index value.
+func (c *Cache) getExact(ctx context.Context, hash string) (response string, hit bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	el, ok := c.byKey[hash]
+	v, ok := c.index.get(hash)
 	if !ok {
-		return "", false
+		return "", false, nil
 	}
-	if c.eviction == EvictLRU {
-		c.order.MoveToFront(el)
+	if !c.semantic {
+		return v.response, true, nil
 	}
-	return entryOf(el).response, true
+	store := c.stores[v.partition]
+	if store == nil {
+		return "", false, nil
+	}
+	item, ok, err := store.Get(ctx, hash)
+	if err != nil {
+		return "", false, fmt.Errorf("reading cached response: %w", err)
+	}
+	if !ok {
+		return "", false, nil
+	}
+	return item.Metadata[metaResponse], true, nil
 }
 
 // getSemantic embeds key.Prompt and returns the nearest stored response within
 // the key's model+params partition whose cosine similarity meets the threshold.
 // Partitioning by model and params keeps semantic matches from crossing model
 // or parameter boundaries, so a match never returns another model's response.
-// It requests several neighbors so a stale vector whose entry was already
-// evicted is skipped in favor of the next live neighbor above the threshold.
+// The response travels with the neighbor's metadata, so a vector present in the
+// store always carries a valid payload.
 func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit bool, err error) {
 	partition, err := partitionKey(key)
 	if err != nil {
@@ -346,7 +378,7 @@ func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit 
 		return "", false, fmt.Errorf("embedding prompt: %w", err)
 	}
 
-	neighbors, err := store.Nearest(ctx, vector, semanticNeighborFanout)
+	neighbors, err := store.Nearest(ctx, vector, 1)
 	if err != nil {
 		if errors.Is(err, vectorstore.ErrDimensionMismatch) {
 			// A different embedding dimension than the indexed vectors means no
@@ -356,34 +388,25 @@ func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit 
 		}
 		return "", false, fmt.Errorf("querying semantic index: %w", err)
 	}
+	if len(neighbors) == 0 || neighbors[0].Score < c.threshold {
+		return "", false, nil
+	}
+
+	top := neighbors[0]
+	response = top.Item.Metadata[metaResponse]
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	for i := range neighbors {
-		n := neighbors[i]
-		if n.Score < c.threshold {
-			// Neighbors are sorted by descending score, so once one falls below
-			// the threshold no later neighbor can qualify.
-			break
-		}
-		el, ok := c.byKey[n.Item.ID]
-		if !ok {
-			// A stale vector whose entry was already evicted: skip it and keep
-			// looking for a live neighbor rather than reporting a false miss.
-			continue
-		}
-		if c.eviction == EvictLRU {
-			c.order.MoveToFront(el)
-		}
-		if c.logger != nil {
-			c.logger.Debug("semcache semantic hit",
-				slog.String("model", key.Model),
-				slog.String("match_hash", n.Item.ID),
-				slog.Float64("score", n.Score))
-		}
-		return entryOf(el).response, true, nil
+	// Promote the matched entry's recency; if it was concurrently evicted the
+	// lookup is a no-op and the already-read response is still returned.
+	c.index.get(top.Item.ID)
+	if c.logger != nil {
+		c.logger.Debug("semcache semantic hit",
+			slog.String("model", key.Model),
+			slog.String("match_hash", top.Item.ID),
+			slog.Float64("score", top.Score))
 	}
-	return "", false, nil
+	c.mu.Unlock()
+	return response, true, nil
 }
 
 // lookupPartition returns the semantic store for partition, or nil if none has
@@ -397,7 +420,7 @@ func (c *Cache) lookupPartition(partition string) *vectorstore.MemoryStore {
 // Put stores response under key, replacing any existing entry with the same
 // key. When semantic mode is enabled it also indexes the prompt embedding so
 // future near-duplicate prompts can be served from the semantic path. Storing
-// past the configured maximum evicts entries per the eviction policy.
+// past the configured maximum evicts the least recently used entry.
 func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 	hash, err := hashKey(key)
 	if err != nil {
@@ -414,7 +437,7 @@ func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 			return fmt.Errorf("cache put: %w", err)
 		}
 		// Embed before locking: embedding is slow and external, so it must not
-		// hold c.mu. The index add and the map/list commit then happen together
+		// hold c.mu. The index add and the map commit then happen together
 		// under a single lock hold so no concurrent Put or eviction can observe
 		// a half-applied entry.
 		vector, embErr := c.embedder.Embed(ctx, key.Prompt)
@@ -432,95 +455,77 @@ func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 		}
 	}
 
-	evictions, err := c.commit(ctx, hash, partition, item, response)
+	evicted, err := c.commit(ctx, hash, partition, item, response)
 	if err != nil {
 		return fmt.Errorf("cache put: %w", err)
 	}
-	// Report evictions to the external recorder only after releasing the lock,
-	// so a blocking or re-entrant recorder cannot deadlock the cache.
-	c.recordEvictions(evictions)
+	// Report the eviction to the external recorder only after releasing the
+	// lock, so a blocking or re-entrant recorder cannot deadlock the cache.
+	if evicted {
+		c.recordEvictions(1)
+	}
 	return nil
 }
 
-// commit applies one Put atomically: it indexes the semantic vector (when
-// enabled) and updates the key map and ordering under a single c.mu hold, then
-// evicts down to the size bound. It returns the number of entries evicted so
-// the caller can report them outside the lock. The vectorstore methods it calls
-// while holding c.mu take only their own internal locks and never call back
-// into the cache, so the fixed c.mu-then-store lock order rules out inversion.
-func (c *Cache) commit(ctx context.Context, hash, partition string, item vectorstore.Item, response string) (int, error) {
+// commit applies one Put atomically under c.mu: it indexes the semantic vector
+// (when enabled) and records the entry in the eviction index, whose onEvict
+// callback performs any semantic cleanup synchronously on this same goroutine.
+// It reports whether an entry was evicted so the caller can notify the recorder
+// after releasing the lock. The vectorstore methods it calls hold only their
+// own locks and never re-enter the cache, so the c.mu-then-store order cannot
+// deadlock.
+func (c *Cache) commit(ctx context.Context, hash, partition string, item vectorstore.Item, response string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if el, ok := c.byKey[hash]; ok {
-		// Same key: the hash pins the prompt, so the indexed vector is already
-		// identical and only the response needs replacing.
-		entryOf(el).response = response
-		if c.eviction == EvictLRU {
-			c.order.MoveToFront(el)
-		}
-		return 0, nil
-	}
-
+	v := indexValue{partition: partition, response: response}
 	if c.semantic {
+		// The vector store is the single source of truth in semantic mode, so
+		// the index keeps no second copy of the response.
+		v.response = ""
 		store := c.stores[partition]
 		created := store == nil
 		if created {
 			store = vectorstore.NewMemoryStore()
 		}
 		if err := store.Add(ctx, item); err != nil {
-			return 0, fmt.Errorf("indexing embedding: %w", err)
+			return false, fmt.Errorf("indexing embedding: %w", err)
 		}
 		if created {
 			c.stores[partition] = store
 		}
-		c.partCount[partition]++
+		if !c.index.contains(hash) {
+			c.partCount[partition]++
+		}
 	}
-
-	c.byKey[hash] = c.order.PushFront(&entry{hash: hash, partition: partition, response: response})
-	return c.evictLocked(ctx), nil
+	return c.index.add(hash, v), nil
 }
 
-// evictLocked removes entries from the back of the ordering until the cache is
-// within its size bound, returning the number evicted. The caller must hold
-// c.mu and is responsible for reporting the count to the external recorder
-// after releasing the lock.
-func (c *Cache) evictLocked(ctx context.Context) int {
-	if c.maxEntries <= 0 {
-		return 0
+// onEvict runs when the bounded index discards an entry. The bounded index only
+// mutates from commit while c.mu is held, and golang-lru invokes this callback
+// synchronously on that same goroutine, so it may touch stores, partCount, and
+// stats without re-locking (re-locking would deadlock). It must not call the
+// external recorder; the caller reports the eviction after releasing the lock.
+func (c *Cache) onEvict(hash string, v indexValue) {
+	c.stats.Evictions++
+	if !c.semantic {
+		return
 	}
-	evicted := 0
-	for c.order.Len() > c.maxEntries {
-		victim := c.order.Back()
-		if victim == nil {
-			break
+	if store := c.stores[v.partition]; store != nil {
+		// A background context makes the internal delete uncancellable, so a
+		// cancelled Get or Put can never leave a stale vector behind.
+		if _, err := store.Delete(context.Background(), hash); err != nil && c.logger != nil {
+			c.logger.Debug("semcache evict: semantic delete failed",
+				slog.String("hash", hash), slog.Any("error", err))
 		}
-		ent := entryOf(victim)
-		c.order.Remove(victim)
-		delete(c.byKey, ent.hash)
-		if c.semantic {
-			// Detach from the caller's context so a cancelled Get or Put cannot
-			// abort the internal delete and leave a stale vector that could
-			// otherwise rank ahead of a live neighbor.
-			delCtx := context.WithoutCancel(ctx)
-			if store := c.stores[ent.partition]; store != nil {
-				if _, err := store.Delete(delCtx, ent.hash); err != nil && c.logger != nil {
-					c.logger.Debug("semcache evict: semantic delete failed",
-						slog.String("hash", ent.hash), slog.Any("error", err))
-				}
-			}
-			c.partCount[ent.partition]--
-			if c.partCount[ent.partition] <= 0 {
-				// The partition is empty: drop its store and counter so a bounded
-				// cache does not accumulate one empty store per distinct key.
-				delete(c.partCount, ent.partition)
-				delete(c.stores, ent.partition)
-			}
-		}
-		c.stats.Evictions++
-		evicted++
 	}
-	return evicted
+	c.partCount[v.partition]--
+	if c.partCount[v.partition] <= 0 {
+		// The partition is empty: drop its store and counter so a bounded cache
+		// does not accumulate one empty store per distinct key.
+		delete(c.partCount, v.partition)
+		delete(c.stores, v.partition)
+	}
 }
 
 // recordEvictions mirrors evicted eviction counts to the external recorder. It
@@ -538,7 +543,7 @@ func (c *Cache) recordEvictions(evicted int) {
 func (c *Cache) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.order.Len()
+	return c.index.len()
 }
 
 // Stats returns a snapshot of cache activity counters.
