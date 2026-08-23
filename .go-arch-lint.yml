@@ -41,6 +41,8 @@ components:
     in: pkg/vcrtest/**
   vectorstore:
     in: pkg/vectorstore/**
+  semcache:
+    in: pkg/semcache/**
   examples:
     in: examples/**
   integtest:
@@ -67,6 +69,7 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - logger
+      - observ
 
   policy:
     anyProjectDeps: false
@@ -185,6 +188,13 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - vectorstore
+
+  semcache:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vectorstore
+      - semcache
 
   examples:
     anyProjectDeps: false

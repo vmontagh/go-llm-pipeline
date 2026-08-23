@@ -1,0 +1,465 @@
+package semcache_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"sync"
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+
+	"github.com/vmontagh/go-llm-pipeline/pkg/semcache"
+)
+
+// errEmbedBoom is a static sentinel used to assert error propagation from the
+// injected embedder.
+var errEmbedBoom = errors.New("embed boom")
+
+// errNoVector is a static sentinel returned by the test embedders when asked for
+// an input they were not primed with.
+var errNoVector = errors.New("no vector for input")
+
+// fakeEmbedder returns caller-configured vectors keyed by input text, giving
+// tests exact control over cosine similarity without any real embedding model.
+type fakeEmbedder struct {
+	vectors map[string][]float64
+	err     error
+}
+
+func (f *fakeEmbedder) Embed(_ context.Context, input string) ([]float64, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	v, ok := f.vectors[input]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", errNoVector, input)
+	}
+	return v, nil
+}
+
+// fakeRecorder is a concurrency-safe MetricsRecorder that tallies increments.
+type fakeRecorder struct {
+	mu     sync.Mutex
+	counts map[string]int64
+}
+
+func newFakeRecorder() *fakeRecorder {
+	return &fakeRecorder{counts: make(map[string]int64)}
+}
+
+func (r *fakeRecorder) Inc(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counts[name]++
+}
+
+func (r *fakeRecorder) snapshot() map[string]int64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]int64, len(r.counts))
+	for k, v := range r.counts {
+		out[k] = v
+	}
+	return out
+}
+
+func mustNew(t *testing.T, opts ...semcache.Option) *semcache.Cache {
+	t.Helper()
+	c, err := semcache.New(opts...)
+	if err != nil {
+		t.Fatalf("New() = %v, want nil", err)
+	}
+	return c
+}
+
+func TestNewValidation(t *testing.T) {
+	t.Parallel()
+	emb := &fakeEmbedder{vectors: map[string][]float64{}}
+
+	tests := []struct {
+		name    string
+		opts    []semcache.Option
+		wantErr error
+	}{
+		{
+			name:    "default is valid",
+			opts:    nil,
+			wantErr: nil,
+		},
+		{
+			name:    "semantic without embedder",
+			opts:    []semcache.Option{semcache.WithSemantic(nil, 0.9)},
+			wantErr: semcache.ErrNoEmbedder,
+		},
+		{
+			name:    "threshold above range",
+			opts:    []semcache.Option{semcache.WithSemantic(emb, 1.5)},
+			wantErr: semcache.ErrInvalidThreshold,
+		},
+		{
+			name:    "threshold below range",
+			opts:    []semcache.Option{semcache.WithSemantic(emb, -2)},
+			wantErr: semcache.ErrInvalidThreshold,
+		},
+		{
+			name:    "negative max entries",
+			opts:    []semcache.Option{semcache.WithMaxEntries(-1)},
+			wantErr: semcache.ErrInvalidMaxEntries,
+		},
+		{
+			name:    "unknown eviction policy",
+			opts:    []semcache.Option{semcache.WithEviction(semcache.Eviction(99))},
+			wantErr: semcache.ErrInvalidEviction,
+		},
+		{
+			name:    "valid semantic config",
+			opts:    []semcache.Option{semcache.WithSemantic(emb, 0.8), semcache.WithMaxEntries(10)},
+			wantErr: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := semcache.New(tt.opts...)
+			if !errors.Is(err, tt.wantErr) {
+				t.Errorf("New() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestExactMatch(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	c := mustNew(t)
+
+	stored := semcache.Key{
+		Model:  "llama3",
+		Params: map[string]string{"temperature": "0.2", "top_p": "0.9"},
+		Prompt: "describe a cat",
+	}
+	if err := c.Put(ctx, stored, "a small feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name     string
+		key      semcache.Key
+		wantResp string
+		wantHit  bool
+	}{
+		{
+			name:     "same key hits",
+			key:      stored,
+			wantResp: "a small feline",
+			wantHit:  true,
+		},
+		{
+			name:     "param order does not matter",
+			key:      semcache.Key{Model: "llama3", Params: map[string]string{"top_p": "0.9", "temperature": "0.2"}, Prompt: "describe a cat"},
+			wantResp: "a small feline",
+			wantHit:  true,
+		},
+		{
+			name:    "different model misses",
+			key:     semcache.Key{Model: "mistral", Params: stored.Params, Prompt: stored.Prompt},
+			wantHit: false,
+		},
+		{
+			name:    "different params miss",
+			key:     semcache.Key{Model: "llama3", Params: map[string]string{"temperature": "0.9"}, Prompt: stored.Prompt},
+			wantHit: false,
+		},
+		{
+			name:    "different prompt misses",
+			key:     semcache.Key{Model: "llama3", Params: stored.Params, Prompt: "describe a dog"},
+			wantHit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, hit, err := c.Get(ctx, tt.key)
+			if err != nil {
+				t.Fatalf("Get() = %v, want nil", err)
+			}
+			if hit != tt.wantHit {
+				t.Errorf("Get() hit = %t, want %t", hit, tt.wantHit)
+			}
+			if resp != tt.wantResp {
+				t.Errorf("Get() response = %q, want %q", resp, tt.wantResp)
+			}
+		})
+	}
+}
+
+func TestGetInvalidKey(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	c := mustNew(t)
+
+	tests := []struct {
+		name    string
+		key     semcache.Key
+		wantErr error
+	}{
+		{
+			name:    "empty model",
+			key:     semcache.Key{Prompt: "hello"},
+			wantErr: semcache.ErrEmptyModel,
+		},
+		{
+			name:    "empty prompt",
+			key:     semcache.Key{Model: "llama3"},
+			wantErr: semcache.ErrEmptyPrompt,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, err := c.Get(ctx, tt.key); !errors.Is(err, tt.wantErr) {
+				t.Errorf("Get() error = %v, want %v", err, tt.wantErr)
+			}
+			if err := c.Put(ctx, tt.key, "x"); !errors.Is(err, tt.wantErr) {
+				t.Errorf("Put() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSemanticFallback(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":      {1, 0, 0},
+		"kitten":   {0.9, 0.1, 0}, // cosine with cat ~0.994
+		"airplane": {0, 0, 1},     // cosine with cat 0
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name     string
+		prompt   string
+		wantResp string
+		wantHit  bool
+	}{
+		{name: "near neighbor above threshold hits", prompt: "kitten", wantResp: "feline", wantHit: true},
+		{name: "far neighbor below threshold misses", prompt: "airplane", wantHit: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: tt.prompt})
+			if err != nil {
+				t.Fatalf("Get() = %v, want nil", err)
+			}
+			if hit != tt.wantHit {
+				t.Errorf("Get(%q) hit = %t, want %t", tt.prompt, hit, tt.wantHit)
+			}
+			if resp != tt.wantResp {
+				t.Errorf("Get(%q) response = %q, want %q", tt.prompt, resp, tt.wantResp)
+			}
+		})
+	}
+}
+
+func TestSemanticEmbedError(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	sentinel := errEmbedBoom
+	c := mustNew(t, semcache.WithSemantic(&fakeEmbedder{err: sentinel}, 0.9))
+
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); !errors.Is(err, sentinel) {
+		t.Errorf("Put() error = %v, want %v", err, sentinel)
+	}
+	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "cat"}); !errors.Is(err, sentinel) {
+		t.Errorf("Get() error = %v, want %v", err, sentinel)
+	}
+}
+
+func TestExactModeSkipsEmbedder(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// An erroring embedder must never be consulted in the default exact-only
+	// mode, so Get and Put succeed despite it.
+	c := mustNew(t)
+	key := semcache.Key{Model: "m", Prompt: "cat"}
+	if err := c.Put(ctx, key, "feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+	resp, hit, err := c.Get(ctx, key)
+	if err != nil || !hit || resp != "feline" {
+		t.Errorf("Get() = (%q, %t, %v), want (%q, true, nil)", resp, hit, err, "feline")
+	}
+}
+
+func TestEviction(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	key := func(p string) semcache.Key { return semcache.Key{Model: "m", Prompt: p} }
+
+	tests := []struct {
+		name      string
+		policy    semcache.Eviction
+		promote   string // prompt read before inserting the overflow entry
+		wantGone  string // prompt expected to be evicted
+		wantKept  []string
+		wantEvict int64
+	}{
+		{
+			name:      "LRU evicts least recently used",
+			policy:    semcache.EvictLRU,
+			promote:   "A", // read A so B becomes the LRU victim
+			wantGone:  "B",
+			wantKept:  []string{"A", "C"},
+			wantEvict: 1,
+		},
+		{
+			name:      "FIFO evicts oldest inserted",
+			policy:    semcache.EvictFIFO,
+			promote:   "A", // reads do not protect under FIFO
+			wantGone:  "A",
+			wantKept:  []string{"B", "C"},
+			wantEvict: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c := mustNew(t, semcache.WithMaxEntries(2), semcache.WithEviction(tt.policy))
+			if err := c.Put(ctx, key("A"), "ra"); err != nil {
+				t.Fatalf("Put(A) = %v", err)
+			}
+			if err := c.Put(ctx, key("B"), "rb"); err != nil {
+				t.Fatalf("Put(B) = %v", err)
+			}
+			if _, _, err := c.Get(ctx, key(tt.promote)); err != nil {
+				t.Fatalf("Get(%s) = %v", tt.promote, err)
+			}
+			if err := c.Put(ctx, key("C"), "rc"); err != nil {
+				t.Fatalf("Put(C) = %v", err)
+			}
+
+			if got := c.Len(); got != 2 {
+				t.Errorf("Len() = %d, want 2", got)
+			}
+			if _, hit, err := c.Get(ctx, key(tt.wantGone)); err != nil || hit {
+				t.Errorf("Get(%s) = (hit %t, err %v), want evicted", tt.wantGone, hit, err)
+			}
+			for _, p := range tt.wantKept {
+				if _, hit, err := c.Get(ctx, key(p)); err != nil || !hit {
+					t.Errorf("Get(%s) = (hit %t, err %v), want retained", p, hit, err)
+				}
+			}
+			if got := c.Stats().Evictions; got != tt.wantEvict {
+				t.Errorf("Stats().Evictions = %d, want %d", got, tt.wantEvict)
+			}
+		})
+	}
+}
+
+func TestPutReplacesResponse(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	c := mustNew(t)
+	key := semcache.Key{Model: "m", Prompt: "cat"}
+
+	if err := c.Put(ctx, key, "old"); err != nil {
+		t.Fatalf("Put(old) = %v", err)
+	}
+	if err := c.Put(ctx, key, "new"); err != nil {
+		t.Fatalf("Put(new) = %v", err)
+	}
+	if got := c.Len(); got != 1 {
+		t.Errorf("Len() = %d, want 1", got)
+	}
+	resp, _, err := c.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("Get() = %v, want nil", err)
+	}
+	if resp != "new" {
+		t.Errorf("Get() response = %q, want %q", resp, "new")
+	}
+}
+
+func TestStatsAndMetrics(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	rec := newFakeRecorder()
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":    {1, 0, 0},
+		"kitten": {0.9, 0.1, 0},
+		"rock":   {0, 1, 0},
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9), semcache.WithMetrics(rec))
+
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); err != nil {
+		t.Fatalf("Put() = %v", err)
+	}
+	// Exact hit.
+	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "cat"}); err != nil {
+		t.Fatalf("Get(cat) = %v", err)
+	}
+	// Semantic hit.
+	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "kitten"}); err != nil {
+		t.Fatalf("Get(kitten) = %v", err)
+	}
+	// Miss (orthogonal vector).
+	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "rock"}); err != nil {
+		t.Fatalf("Get(rock) = %v", err)
+	}
+
+	wantStats := semcache.Stats{Hits: 2, Misses: 1, ExactHits: 1, SemanticHits: 1}
+	if diff := cmp.Diff(wantStats, c.Stats()); diff != "" {
+		t.Errorf("Stats() mismatch (-want +got):\n%s", diff)
+	}
+
+	wantCounts := map[string]int64{
+		semcache.MetricHits:         2,
+		semcache.MetricExactHits:    1,
+		semcache.MetricSemanticHits: 1,
+		semcache.MetricMisses:       1,
+	}
+	if diff := cmp.Diff(wantCounts, rec.snapshot()); diff != "" {
+		t.Errorf("recorder counts mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	c := mustNew(t, semcache.WithMaxEntries(64))
+
+	const goroutines = 32
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for g := range goroutines {
+		go func() {
+			defer wg.Done()
+			for i := range 100 {
+				key := semcache.Key{Model: "m", Prompt: fmt.Sprintf("p-%d-%d", g, i%10)}
+				if err := c.Put(ctx, key, "r"); err != nil {
+					t.Errorf("Put() = %v", err)
+					return
+				}
+				if _, _, err := c.Get(ctx, key); err != nil {
+					t.Errorf("Get() = %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := c.Len(); got > 64 {
+		t.Errorf("Len() = %d, want <= 64", got)
+	}
+}
