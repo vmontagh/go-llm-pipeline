@@ -22,6 +22,10 @@ func TestEmbedder_Live(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping live Ollama smoke test in short mode")
 	}
+	// OLLAMA_HOST gates this opt-in test only; it is not read by the library.
+	// Callers of NewEmbedder pass the host explicitly (see the package docs).
+	// An alternative would be a custom -ollama.host test flag; env is used here
+	// to match Ollama's own OLLAMA_HOST convention and CI/container setups.
 	host := os.Getenv("OLLAMA_HOST")
 	if host == "" {
 		t.Skip("set OLLAMA_HOST to run the live Ollama embedder smoke test")
