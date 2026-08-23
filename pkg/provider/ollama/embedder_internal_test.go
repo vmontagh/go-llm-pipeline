@@ -309,16 +309,11 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 			}
 
 			got, err := e.Embed(t.Context(), "x")
-			if tt.wantErrIs != nil && !errors.Is(err, tt.wantErrIs) {
-				t.Errorf("Embed error = %v, want errors.Is %v", err, tt.wantErrIs)
+			if !errors.Is(err, tt.wantErrIs) {
+				t.Fatalf("Embed(x) error = %v, want errors.Is %v", err, tt.wantErrIs)
 			}
-			if tt.wantErrIs == nil && err != nil {
-				t.Fatalf("Embed error = %v, want nil", err)
-			}
-			if tt.wantVec != nil {
-				if diff := cmp.Diff(tt.wantVec, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
-					t.Errorf("Embed vector mismatch (-want +got):\n%s", diff)
-				}
+			if diff := cmp.Diff(tt.wantVec, got, cmpopts.EquateApprox(0, 1e-9), cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("Embed(x) vector mismatch (-want +got):\n%s", diff)
 			}
 			if diff := cmp.Diff(tt.wantDelays, delays, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("backoff delays mismatch (-want +got):\n%s", diff)
