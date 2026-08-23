@@ -1,6 +1,7 @@
 // Package ollama implements the transport half of the analyzer Template
 // Method using a locally running Ollama instance with a vision-capable
-// model.
+// model. It also provides an Embedder that produces embedding vectors from
+// the same Ollama instance via the /api/embed endpoint.
 package ollama
 
 import (
