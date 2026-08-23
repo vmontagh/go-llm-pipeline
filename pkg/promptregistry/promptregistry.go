@@ -27,7 +27,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"path"
+	"reflect"
 	"slices"
 	"strings"
 	"text/template"
@@ -51,6 +53,16 @@ var (
 	// malformed layout or contains a template that fails to parse.
 	ErrInvalidTemplate = errors.New("invalid template")
 )
+
+// errStrictIndexMissing is returned by the strict index function when a map
+// lookup finds no entry for the requested key. Render maps it to
+// ErrMissingField so index-based access fails closed like direct field access.
+var errStrictIndexMissing = errors.New("map has no entry for key")
+
+// errStrictIndex wraps the non-missing failures of the strict index function
+// (out-of-range, unindexable value, unusable key), which classify as
+// ErrRenderFailed.
+var errStrictIndex = errors.New("strict index")
 
 // templateExt is the file extension identifying a prompt template within the
 // source filesystem.
@@ -152,7 +164,7 @@ func New(fsys fs.FS, opts ...Option) (*Registry, error) {
 		if err != nil {
 			return fmt.Errorf("%w: reading %q: %w", ErrInvalidTemplate, p, err)
 		}
-		tmpl, err := template.New(p).Option("missingkey=error").Funcs(cfg.funcs).Parse(string(src))
+		tmpl, err := template.New(p).Option("missingkey=error").Funcs(builtinFuncs).Funcs(cfg.funcs).Parse(string(src))
 		if err != nil {
 			return fmt.Errorf("%w: parsing %q: %w", ErrInvalidTemplate, p, err)
 		}
@@ -178,14 +190,87 @@ func New(fsys fs.FS, opts ...Option) (*Registry, error) {
 
 // refFromPath derives a Ref from a template path of the form
 // <name>/<version>.tmpl. A template placed directly at the filesystem root has
-// no name directory and is rejected with ErrInvalidTemplate.
+// no name directory, or one whose file name is empty once the extension is
+// stripped (for example "foo/.tmpl"), lacks an explicit version; both are
+// rejected with ErrInvalidTemplate.
 func refFromPath(p string) (Ref, error) {
 	name := path.Dir(p)
 	if name == "." {
 		return Ref{}, fmt.Errorf("%w: %q must be nested under a name directory", ErrInvalidTemplate, p)
 	}
 	version := strings.TrimSuffix(path.Base(p), templateExt)
+	if version == "" {
+		return Ref{}, fmt.Errorf("%w: %q has an empty version", ErrInvalidTemplate, p)
+	}
 	return Ref{Name: name, Version: version}, nil
+}
+
+// builtinFuncs are the functions registered in every template ahead of any
+// caller-supplied FuncMap. It overrides the text/template index builtin with a
+// strict variant so a missing map key fails closed instead of yielding the
+// map's zero value.
+var builtinFuncs = template.FuncMap{"index": strictIndex}
+
+// strictIndex reimplements the text/template index builtin for slices, arrays,
+// strings, and maps, differing in one respect: a map lookup with no matching
+// entry returns errStrictIndexMissing instead of the element type's zero value.
+// This keeps {{index .M "typo"}} fail-closed, mirroring missingkey=error for
+// direct field and key access.
+func strictIndex(item any, keys ...any) (any, error) {
+	v := reflect.ValueOf(item)
+	for _, key := range keys {
+		for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+			if v.IsNil() {
+				return nil, fmt.Errorf("%w: nil value", errStrictIndex)
+			}
+			v = v.Elem()
+		}
+		switch v.Kind() {
+		case reflect.Array, reflect.Slice, reflect.String:
+			i, err := indexInt(key)
+			if err != nil {
+				return nil, err
+			}
+			if i < 0 || i >= v.Len() {
+				return nil, fmt.Errorf("%w: out of range: %d", errStrictIndex, i)
+			}
+			v = v.Index(i)
+		case reflect.Map:
+			kv := reflect.ValueOf(key)
+			keyType := v.Type().Key()
+			switch {
+			case kv.Type().AssignableTo(keyType):
+			case kv.Type().ConvertibleTo(keyType):
+				kv = kv.Convert(keyType)
+			default:
+				return nil, fmt.Errorf("%w: cannot index map[%s] with key of type %T", errStrictIndex, keyType, key)
+			}
+			elem := v.MapIndex(kv)
+			if !elem.IsValid() {
+				return nil, fmt.Errorf("%w %v", errStrictIndexMissing, kv.Interface())
+			}
+			v = elem
+		default:
+			return nil, fmt.Errorf("%w: can't index item of type %s", errStrictIndex, v.Type())
+		}
+	}
+	return v.Interface(), nil
+}
+
+// indexInt converts a template index argument to an int, accepting the signed
+// and unsigned integer kinds text/template may pass for a numeric index.
+func indexInt(key any) (int, error) {
+	switch k := reflect.ValueOf(key); k.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return int(k.Int()), nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		if u := k.Uint(); u <= uint64(math.MaxInt) {
+			return int(u), nil
+		}
+		return 0, fmt.Errorf("%w: index out of range: %d", errStrictIndex, key)
+	default:
+		return 0, fmt.Errorf("%w: cannot index sequence with key of type %T", errStrictIndex, key)
+	}
 }
 
 // validateFuncs verifies a caller-supplied FuncMap up front so a bad function
@@ -205,11 +290,16 @@ func validateFuncs(funcs template.FuncMap) (err error) {
 	return nil
 }
 
+// Render executes the template registered for (name, version) against data and
 // returns the fully rendered string. It returns ErrTemplateNotFound when no
 // such template exists, ErrMissingField when data omits a referenced field or
-// key, and ErrRenderFailed for any other execution failure. The context is
-// honored for cancellation but not stored; it leaves room for a future remote
-// loader without changing the signature.
+// map key (including via the strict index function), and ErrRenderFailed for
+// any other execution failure.
+//
+// The context is checked for cancellation before execution begins but is not
+// stored; because text/template exposes no execution hook, an already-started
+// render is not interrupted mid-flight. The parameter keeps room for a future
+// remote loader without changing the signature.
 func (r *Registry) Render(ctx context.Context, name, version string, data any) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("promptregistry: %w", err)
@@ -220,7 +310,7 @@ func (r *Registry) Render(ctx context.Context, name, version string, data any) (
 	}
 	var buf strings.Builder
 	if err := tmpl.Execute(&buf, data); err != nil {
-		if isMissingKeyError(err) {
+		if errors.Is(err, errStrictIndexMissing) || isMissingKeyError(err) {
 			return "", fmt.Errorf("%w: %s/%s: %w", ErrMissingField, name, version, err)
 		}
 		return "", fmt.Errorf("%w: %s/%s: %w", ErrRenderFailed, name, version, err)

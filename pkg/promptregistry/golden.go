@@ -42,7 +42,7 @@ func WithUpdate(update bool) GoldenOption {
 }
 
 // AssertGolden renders every template in r against the supplied cases and
-// compares each result with the golden file dir/<name>_<version>.golden. A
+// compares each result with the golden file dir/<name>/<version>.golden. A
 // mismatch, a missing case for a registered template, a case naming an
 // unregistered template, or a render error fails the test. When updating is
 // enabled (via WithUpdate or the PROMPTREGISTRY_UPDATE_GOLDEN environment

@@ -64,6 +64,11 @@ func TestNew(t *testing.T) {
 			wantErr: promptregistry.ErrInvalidTemplate,
 		},
 		{
+			name:    "empty version rejected",
+			files:   map[string]string{"foo/.tmpl": "a"},
+			wantErr: promptregistry.ErrInvalidTemplate,
+		},
+		{
 			name:    "no templates rejected",
 			files:   map[string]string{"README.md": "nothing here"},
 			wantErr: promptregistry.ErrInvalidTemplate,
@@ -188,6 +193,74 @@ func TestRenderCanceledContext(t *testing.T) {
 	}
 }
 
+// TestRenderStrictIndex verifies the strict index override: a missing map key
+// fails closed as ErrMissingField, while valid slice and map indexing render.
+func TestRenderStrictIndex(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"maptypo/v1.tmpl":  `{{index .Labels "typo"}}`,
+		"mapok/v1.tmpl":    `{{index .Labels "present"}}`,
+		"sliceok/v1.tmpl":  `{{index .Items 0}}`,
+		"sliceoob/v1.tmpl": `{{index .Items 5}}`,
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		tmpl    string
+		data    any
+		want    string
+		wantErr error
+	}{
+		{
+			name:    "missing map key fails closed",
+			tmpl:    "maptypo",
+			data:    map[string]any{"Labels": map[string]string{"present": "yes"}},
+			wantErr: promptregistry.ErrMissingField,
+		},
+		{
+			name: "present map key renders",
+			tmpl: "mapok",
+			data: map[string]any{"Labels": map[string]string{"present": "yes"}},
+			want: "yes",
+		},
+		{
+			name: "slice index renders",
+			tmpl: "sliceok",
+			data: map[string]any{"Items": []string{"first", "second"}},
+			want: "first",
+		},
+		{
+			name:    "slice index out of range fails",
+			tmpl:    "sliceoob",
+			data:    map[string]any{"Items": []string{"only"}},
+			wantErr: promptregistry.ErrRenderFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := reg.Render(context.Background(), tt.tmpl, "v1", tt.data)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Render() error = %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Render() unexpected error: %v", err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Render() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestWithFuncs verifies caller-supplied functions render.
 func TestWithFuncs(t *testing.T) {
 	t.Parallel()
 	reg, err := promptregistry.New(
