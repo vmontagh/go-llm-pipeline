@@ -16,16 +16,13 @@ concurrency:
 
 jobs:
   golangci:
-    strategy:
-      matrix:
-        go: [stable]
     name: lint
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go }}
+          go-version-file: go.mod
           cache: false
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9

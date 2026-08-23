@@ -101,7 +101,7 @@ borderline conditions surface without blocking automation.
 | `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |
 | `pkg/provider/gemini` | Transport half of the analyzer Template Method for Gemini. |
-| `pkg/provider/ollama` | Transport half of the analyzer Template Method for local Ollama. |
+| `pkg/provider/ollama` | Transport half of the analyzer Template Method for local Ollama, plus a local `Embedder` (`/api/embed`) that returns `[]float64` for `pkg/vectorstore`. |
 | `pkg/strategy` | Ensemble generation and judge-synthesis strategies (`Generator`/`Judge`). |
 | `pkg/policy` | Provider-agnostic retry/error taxonomy (tiers, `RetryPolicy`, error classification). |
 | `pkg/scrub` | Regexp-based text scrubbing to redact sensitive patterns and PII. |

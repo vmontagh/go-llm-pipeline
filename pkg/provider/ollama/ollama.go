@@ -1,6 +1,7 @@
 // Package ollama implements the transport half of the analyzer Template
 // Method using a locally running Ollama instance with a vision-capable
-// model.
+// model. It also provides an Embedder that produces embedding vectors from
+// the same Ollama instance via the /api/embed endpoint.
 package ollama
 
 import (
@@ -86,14 +87,21 @@ func (t *transport) Keys() *endpointKeyPool  { return t.endpoint }
 func (t *transport) ContextLength() int      { return t.contextLength }
 
 func (t *transport) ClassifyError(in provpkg.ClassifyInput, _ provpkg.RetryContext) provpkg.ErrorTier {
+	return classifyTier(in.StatusCode, in.Err)
+}
+
+// classifyTier maps an HTTP status code (0 when no response was received) and
+// an optional transport error to the retry tier shared by the analyzer
+// transport and the Embedder.
+func classifyTier(statusCode int, err error) provpkg.ErrorTier {
 	switch {
-	case in.StatusCode == 0 && in.Err != nil:
+	case statusCode == 0 && err != nil:
 		return provpkg.TierShortTransient
-	case in.StatusCode == 0:
+	case statusCode == 0:
 		return provpkg.TierTerminal
-	case in.StatusCode == http.StatusTooManyRequests:
+	case statusCode == http.StatusTooManyRequests:
 		return provpkg.TierShortRateLimit
-	case in.StatusCode >= http.StatusInternalServerError:
+	case statusCode >= http.StatusInternalServerError:
 		return provpkg.TierShortTransient
 	default:
 		return provpkg.TierTerminal
@@ -287,14 +295,17 @@ func (t *transport) String() string {
 type ProviderOption func(*providerConfig)
 
 type providerConfig struct {
-	keepAlive      string
-	numCtx         int
-	numPredict     int
-	responseSchema any
-	client         *http.Client
-	httpTimeout    time.Duration
-	logger         *slog.Logger
-	tracer         Tracer
+	keepAlive        string
+	numCtx           int
+	numPredict       int
+	maxRetries       int
+	retryBaseBackoff time.Duration
+	retryMaxBackoff  time.Duration
+	responseSchema   any
+	client           *http.Client
+	httpTimeout      time.Duration
+	logger           *slog.Logger
+	tracer           Tracer
 }
 
 func WithKeepAlive(keepAlive string) ProviderOption {
@@ -307,6 +318,27 @@ func WithNumCtx(numCtx int) ProviderOption {
 
 func WithNumPredict(numPredict int) ProviderOption {
 	return func(c *providerConfig) { c.numPredict = numPredict }
+}
+
+// WithMaxRetries caps how many times the Embedder retries a transient or
+// rate-limited /api/embed response before giving up. Zero disables retries
+// (a single attempt); negative values are treated as zero. It is ignored by
+// the generation transport, whose retries are governed by the analyzer engine.
+func WithMaxRetries(maxRetries int) ProviderOption {
+	return func(c *providerConfig) { c.maxRetries = maxRetries }
+}
+
+// WithRetryBackoff tunes the Embedder's exponential backoff between retries of
+// a transient or rate-limited /api/embed response. base is the delay before the
+// first retry and doubles each attempt; maxDelay caps the delay (maxDelay <= 0
+// means uncapped). A non-positive base falls back to the default. A server-
+// supplied Retry-After still takes precedence when it is longer. It is ignored
+// by the generation transport.
+func WithRetryBackoff(base, maxDelay time.Duration) ProviderOption {
+	return func(c *providerConfig) {
+		c.retryBaseBackoff = base
+		c.retryMaxBackoff = maxDelay
+	}
 }
 
 func WithResponseSchema(schema any) ProviderOption {
@@ -330,6 +362,22 @@ func WithTracer(tr Tracer) ProviderOption {
 	return func(c *providerConfig) { c.tracer = tr }
 }
 
+// clientWithTimeout returns the HTTP client to use for requests. A caller-
+// supplied client is shallow-copied before a timeout is applied so the caller's
+// (often shared) client is never mutated; a nil client yields a fresh one.
+func clientWithTimeout(client *http.Client, timeout time.Duration) *http.Client {
+	if client == nil {
+		client = &http.Client{}
+	} else {
+		clone := *client
+		client = &clone
+	}
+	if timeout > 0 {
+		client.Timeout = timeout
+	}
+	return client
+}
+
 func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[struct{}] {
 	cfg := providerConfig{}
 	for _, opt := range opts {
@@ -343,13 +391,7 @@ func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[st
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := cfg.client
-	if client == nil {
-		client = &http.Client{}
-	}
-	if cfg.httpTimeout > 0 {
-		client.Timeout = cfg.httpTimeout
-	}
+	client := clientWithTimeout(cfg.client, cfg.httpTimeout)
 	return &transport{
 		host:           host,
 		model:          model,
