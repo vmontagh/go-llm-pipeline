@@ -23,16 +23,11 @@ type fakeJudgeAnalyzer struct {
 	name   string
 	result *JudgeResponse
 	err    error
-	block  bool
 }
 
 func (m *fakeJudgeAnalyzer) Name() string { return m.name }
 
-func (m *fakeJudgeAnalyzer) Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish func(string, string, string, bool)) (*JudgeResponse, error) {
-	if m.block {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
+func (m *fakeJudgeAnalyzer) Analyze(_ context.Context, _ string, _ []byte, _ string, _ func(string, string, string, bool)) (*JudgeResponse, error) {
 	return m.result, m.err
 }
 
