@@ -1,7 +1,9 @@
 package promptregistry
 
 import (
+	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 )
@@ -84,7 +86,11 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 			t.Errorf("Render(%s/%s) error: %v", ref.Name, ref.Version, err)
 			continue
 		}
-		file := goldenFilePath(dir, ref)
+		file, err := goldenFilePath(dir, ref)
+		if err != nil {
+			t.Errorf("AssertGolden: %v", err)
+			continue
+		}
 		if cfg.update {
 			if err := os.MkdirAll(filepath.Dir(file), 0o750); err != nil {
 				t.Fatalf("AssertGolden: creating %q: %v", filepath.Dir(file), err)
@@ -107,7 +113,14 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 
 // goldenFilePath builds the golden file path for ref. It preserves the
 // template's directory hierarchy (<dir>/<name>/<version>.golden) so distinct
-// names cannot collide onto a single file.
-func goldenFilePath(dir string, ref Ref) string {
-	return filepath.Join(dir, filepath.FromSlash(ref.Name), ref.Version+goldenExt)
+// names cannot collide onto a single file, and localizes the slash-separated
+// ref components so a name or version carrying a path separator (valid in an
+// io/fs path but not on the host filesystem) cannot escape dir.
+func goldenFilePath(dir string, ref Ref) (string, error) {
+	rel := path.Join(ref.Name, ref.Version+goldenExt)
+	local, err := filepath.Localize(rel)
+	if err != nil {
+		return "", fmt.Errorf("%w: golden path for %s/%s: %w", ErrInvalidTemplate, ref.Name, ref.Version, err)
+	}
+	return filepath.Join(dir, local), nil
 }

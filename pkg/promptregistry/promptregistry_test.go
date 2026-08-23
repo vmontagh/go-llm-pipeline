@@ -289,6 +289,7 @@ func TestWithFuncsInvalid(t *testing.T) {
 		{name: "non-function value", funcs: map[string]any{"upper": 42}},
 		{name: "invalid name", funcs: map[string]any{"not a name": func() string { return "" }}},
 		{name: "too many return values", funcs: map[string]any{"bad": func() (string, string, error) { return "", "", nil }}},
+		{name: "reserved index name", funcs: map[string]any{"index": func(any, ...any) (any, error) { return nil, nil }}},
 	}
 
 	for _, tt := range tests {
@@ -331,6 +332,27 @@ func TestRenderFuncError(t *testing.T) {
 	}
 	if errors.Is(err, promptregistry.ErrMissingField) {
 		t.Errorf("Render() error = %v, unexpectedly matched ErrMissingField", err)
+	}
+}
+
+// TestRenderMissingFieldTemplateNameCollision guards that a genuine missing
+// field is classified as ErrMissingField even when the template name itself
+// contains the "error calling " marker, which the name-scrub in
+// isMissingKeyError must strip before inspecting the message.
+func TestRenderMissingFieldTemplateNameCollision(t *testing.T) {
+	t.Parallel()
+	reg, err := promptregistry.New(mapFS(map[string]string{
+		"error calling prompt/v1.tmpl": "{{.Missing}}",
+	}))
+	if err != nil {
+		t.Fatalf("New() unexpected error: %v", err)
+	}
+	_, err = reg.Render(context.Background(), "error calling prompt", "v1", struct{ Name string }{})
+	if !errors.Is(err, promptregistry.ErrMissingField) {
+		t.Fatalf("Render() error = %v, want %v", err, promptregistry.ErrMissingField)
+	}
+	if errors.Is(err, promptregistry.ErrRenderFailed) {
+		t.Errorf("Render() error = %v, unexpectedly matched ErrRenderFailed", err)
 	}
 }
 

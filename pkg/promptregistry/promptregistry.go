@@ -99,6 +99,11 @@ func WithRoot(dir string) Option {
 // WithFuncs makes the given functions available to every template in the
 // registry, mirroring [text/template.Template.Funcs]. Later options merge into
 // earlier ones; a duplicate name overrides the prior function.
+//
+// The name "index" is reserved: the registry always installs its own strict,
+// fail-closed index function (a missing map key surfaces as [ErrMissingField]),
+// and a FuncMap that supplies "index" is rejected by New with
+// [ErrInvalidTemplate].
 func WithFuncs(funcs template.FuncMap) Option {
 	return func(c *config) {
 		if c.funcs == nil {
@@ -164,7 +169,7 @@ func New(fsys fs.FS, opts ...Option) (*Registry, error) {
 		if err != nil {
 			return fmt.Errorf("%w: reading %q: %w", ErrInvalidTemplate, p, err)
 		}
-		tmpl, err := template.New(p).Option("missingkey=error").Funcs(builtinFuncs).Funcs(cfg.funcs).Parse(string(src))
+		tmpl, err := template.New(p).Option("missingkey=error").Funcs(cfg.funcs).Funcs(builtinFuncs).Parse(string(src))
 		if err != nil {
 			return fmt.Errorf("%w: parsing %q: %w", ErrInvalidTemplate, p, err)
 		}
@@ -205,11 +210,16 @@ func refFromPath(p string) (Ref, error) {
 	return Ref{Name: name, Version: version}, nil
 }
 
-// builtinFuncs are the functions registered in every template ahead of any
-// caller-supplied FuncMap. It overrides the text/template index builtin with a
-// strict variant so a missing map key fails closed instead of yielding the
-// map's zero value.
-var builtinFuncs = template.FuncMap{"index": strictIndex}
+// builtinFuncs are the functions registered in every template after any
+// caller-supplied FuncMap, so they always win. It overrides the text/template
+// index builtin with a strict variant so a missing map key fails closed instead
+// of yielding the map's zero value. The "index" name is also reserved by
+// validateFuncs, so a caller cannot supply its own.
+var builtinFuncs = template.FuncMap{reservedIndexName: strictIndex}
+
+// reservedIndexName is the template function name the registry always binds to
+// strictIndex; callers may not override it.
+const reservedIndexName = "index"
 
 // strictIndex reimplements the text/template index builtin for slices, arrays,
 // strings, and maps, differing in one respect: a map lookup with no matching
@@ -262,7 +272,11 @@ func strictIndex(item any, keys ...any) (any, error) {
 func indexInt(key any) (int, error) {
 	switch k := reflect.ValueOf(key); k.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return int(k.Int()), nil
+		n := k.Int()
+		if n < int64(math.MinInt) || n > int64(math.MaxInt) {
+			return 0, fmt.Errorf("%w: index out of range: %d", errStrictIndex, n)
+		}
+		return int(n), nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		if u := k.Uint(); u <= uint64(math.MaxInt) {
 			return int(u), nil
@@ -273,13 +287,17 @@ func indexInt(key any) (int, error) {
 	}
 }
 
-// validateFuncs verifies a caller-supplied FuncMap up front so a bad function
-// map surfaces as ErrInvalidTemplate instead of a panic from text/template's
-// Funcs (which panics on an invalid name, a non-function value, or an
-// unsupported signature) while parsing individual templates.
+// validateFuncs verifies a caller-supplied FuncMap up front. It rejects the
+// reserved "index" name, which the registry always binds to strictIndex, and
+// converts a panic from text/template's Funcs (which panics on an invalid name,
+// a non-function value, or an unsupported signature) into ErrInvalidTemplate
+// instead of crashing while parsing individual templates.
 func validateFuncs(funcs template.FuncMap) (err error) {
 	if len(funcs) == 0 {
 		return nil
+	}
+	if _, ok := funcs[reservedIndexName]; ok {
+		return fmt.Errorf("%w: func name %q is reserved", ErrInvalidTemplate, reservedIndexName)
 	}
 	defer func() {
 		if r := recover(); r != nil {
@@ -330,12 +348,25 @@ var missingKeyMarkers = []string{
 }
 
 // isMissingKeyError reports whether err is a text/template execution failure
-// caused by a missing map key or struct field. A failure returned by a
+// caused by a missing map key or struct field. It inspects only the inner
+// execution error from a [text/template.ExecError] and first strips the
+// template name, which text/template repeats in the wrapper message. Without
+// that scrub a template whose name itself contains a marker substring — such as
+// "error calling " — could flip the classification. A failure returned by a
 // registered function is prefixed by text/template with "error calling " and is
-// treated as a render failure even if its message happens to contain a
-// missing-key marker, so function errors stay classified as ErrRenderFailed.
+// treated as ErrRenderFailed even when its message contains a missing-key
+// marker.
 func isMissingKeyError(err error) bool {
-	msg := err.Error()
+	var execErr template.ExecError
+	if !errors.As(err, &execErr) {
+		return false
+	}
+	msg := execErr.Err.Error()
+	// The empty-string guard matters: strings.ReplaceAll with an empty old
+	// value inserts the replacement between every byte, corrupting the message.
+	if execErr.Name != "" {
+		msg = strings.ReplaceAll(msg, execErr.Name, "")
+	}
 	if strings.Contains(msg, "error calling ") {
 		return false
 	}
