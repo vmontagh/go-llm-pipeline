@@ -270,6 +270,58 @@ func TestSemanticFallback(t *testing.T) {
 	}
 }
 
+func TestSemanticDimensionMismatchIsMiss(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// The store commits to dimension 3 on Put; a later query embedding of a
+	// different dimension has no comparable neighbor and must read as a miss,
+	// not an error.
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":     {1, 0, 0},
+		"unknown": {1, 0}, // dimension 2 vs indexed dimension 3
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+
+	resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "unknown"})
+	if err != nil {
+		t.Fatalf("Get() = %v, want nil", err)
+	}
+	if hit {
+		t.Errorf("Get() hit = true, want miss")
+	}
+	if resp != "" {
+		t.Errorf("Get() response = %q, want empty", resp)
+	}
+}
+
+func TestSemanticGetPropagatesCancellation(t *testing.T) {
+	t.Parallel()
+	// A valid embedder isolates the failure to the store query, so a cancelled
+	// context must surface as an error rather than being masked as a miss. The
+	// query prompt is not stored exactly, so the lookup falls through the exact
+	// fast path to the semantic path where the store is consulted.
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":    {1, 0, 0},
+		"kitten": {0.9, 0.1, 0},
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	if err := c.Put(t.Context(), semcache.Key{Model: "m", Prompt: "cat"}, "feline"); err != nil {
+		t.Fatalf("Put() = %v, want nil", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "kitten"}); !errors.Is(err, context.Canceled) {
+		t.Errorf("Get(cancelled) error = %v, want %v", err, context.Canceled)
+	}
+}
+
 func TestSemanticEmbedError(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

@@ -320,12 +320,13 @@ func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit 
 
 	neighbors, err := c.store.Nearest(ctx, vector, 1)
 	if err != nil {
-		if errors.Is(err, vectorstore.ErrEmptyVector) || errors.Is(err, vectorstore.ErrInvalidVector) {
-			return "", false, fmt.Errorf("querying semantic index: %w", err)
+		if errors.Is(err, vectorstore.ErrDimensionMismatch) {
+			// A different embedding dimension than the indexed vectors means no
+			// comparable neighbor exists, so treat it as a miss. Every other
+			// error, including context cancellation, propagates.
+			return "", false, nil
 		}
-		// A dimension mismatch means no comparable neighbor exists; treat it as
-		// a miss rather than a failure.
-		return "", false, nil
+		return "", false, fmt.Errorf("querying semantic index: %w", err)
 	}
 	if len(neighbors) == 0 || neighbors[0].Score < c.threshold {
 		return "", false, nil
