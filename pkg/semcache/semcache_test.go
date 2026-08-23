@@ -432,6 +432,29 @@ func TestExactGetPropagatesCancellation(t *testing.T) {
 	}
 }
 
+func TestExactPutPropagatesCancellation(t *testing.T) {
+	t.Parallel()
+	// In exact-only mode Put has no ctx-aware store call, so it must re-check
+	// the context under the lock and mutate nothing when already cancelled.
+	c := mustNew(t)
+	key := semcache.Key{Model: "m", Prompt: "cat"}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	if err := c.Put(ctx, key, "feline"); !errors.Is(err, context.Canceled) {
+		t.Errorf("Put(cancelled) error = %v, want %v", err, context.Canceled)
+	}
+
+	resp, hit, err := c.Get(t.Context(), key)
+	if err != nil {
+		t.Fatalf("Get() = %v, want nil", err)
+	}
+	if hit || resp != "" {
+		t.Errorf("Get() = (%q, hit %t), want (\"\", false): cancelled Put must not insert", resp, hit)
+	}
+}
+
 func TestSemanticEmbedError(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()

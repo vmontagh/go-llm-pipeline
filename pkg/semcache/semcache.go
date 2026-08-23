@@ -481,6 +481,13 @@ func (c *Cache) commit(ctx context.Context, hash, partition string, item vectors
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Re-check cancellation before any mutation, mirroring getExact and the
+	// MemoryStore methods; this guards exact-only Put, whose only ctx-aware
+	// call (store.Add) is skipped.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+
 	v := indexValue{partition: partition, response: response}
 	if c.semantic {
 		// The vector store is the single source of truth in semantic mode, so
