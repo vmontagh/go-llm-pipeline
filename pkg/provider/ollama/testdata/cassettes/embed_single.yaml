@@ -1,0 +1,51 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 67
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "nomic-embed-text",
+              "input": "the quick brown fox"
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/embed
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 69
+        uncompressed: false
+        body: |-
+            {
+              "embeddings": [
+                [
+                  0.1,
+                  0.2,
+                  0.3
+                ]
+              ]
+            }
+        headers:
+            Content-Length:
+                - "69"
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 6.484458ms

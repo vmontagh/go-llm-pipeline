@@ -37,6 +37,8 @@ components:
     in: pkg/scrub/**
   llmvcr:
     in: pkg/llmvcr/**
+  vcrtest:
+    in: pkg/vcrtest/**
   vectorstore:
     in: pkg/vectorstore/**
   examples:
@@ -105,6 +107,7 @@ deps:
       - trace
       - httputil
       - provider
+      - vcrtest
 
   doctor:
     anyProjectDeps: false
@@ -166,6 +169,14 @@ deps:
       - provider
       - openai
       - gemini
+
+  vcrtest:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - vcrtest
+      - llmvcr
+      - scrub
 
   vectorstore:
     anyProjectDeps: false
