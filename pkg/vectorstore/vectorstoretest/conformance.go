@@ -96,6 +96,14 @@ func testRoundTrip(t *testing.T, newStore func(tb testing.TB) Store) {
 			query:     vectorstore.Vector{5},
 			wantScore: 1.0,
 		},
+		{
+			name: "non-utf8 metadata round-trip",
+			// Invalid UTF-8 in both key and value must survive verbatim; JSON
+			// encoding would replace these bytes with U+FFFD.
+			item:      vectorstore.Item{ID: "d", Vector: vectorstore.Vector{1, 2}, Metadata: map[string]string{"k": "\xff\xfe", "\xff": "v"}},
+			query:     vectorstore.Vector{1, 2},
+			wantScore: 1.0,
+		},
 	}
 
 	for _, tc := range tests {
