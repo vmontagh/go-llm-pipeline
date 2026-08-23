@@ -50,13 +50,13 @@ type jsonPostResult struct {
 func doJSONPost(ctx context.Context, req jsonPostRequest) (jsonPostResult, error) {
 	reqBytes, err := json.Marshal(req.body)
 	if err != nil {
-		return jsonPostResult{}, fmt.Errorf("marshaling request body: %w: %w", errRequestNotSent, err)
+		return jsonPostResult{}, fmt.Errorf("%w: marshaling request body: %w", errRequestNotSent, err)
 	}
 
 	url := strings.TrimRight(req.host, "/") + req.path
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
 	if err != nil {
-		return jsonPostResult{}, fmt.Errorf("creating request: %w: %w", errRequestNotSent, err)
+		return jsonPostResult{}, fmt.Errorf("%w: creating request: %w", errRequestNotSent, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
