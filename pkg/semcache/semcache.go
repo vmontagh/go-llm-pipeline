@@ -131,11 +131,13 @@ type Stats struct {
 	Evictions int64
 }
 
-// entry is one cached response together with its normalized key hash. The hash
-// doubles as the ID under which the entry is indexed in the semantic store.
+// entry is one cached response together with its normalized key hash and the
+// semantic partition it belongs to. The hash doubles as the ID under which the
+// entry is indexed in its partition's semantic store.
 type entry struct {
-	hash     string
-	response string
+	hash      string
+	partition string
+	response  string
 }
 
 // entryOf recovers the *entry stored in a list element. The list holds only
@@ -210,10 +212,10 @@ type Cache struct {
 	metrics    MetricsRecorder
 	logger     *slog.Logger
 
-	mu    sync.Mutex
-	byKey map[string]*list.Element // hash -> element holding *entry
-	order *list.List               // front = most recently used, back = eviction victim
-	store *vectorstore.MemoryStore // semantic index; nil unless semantic is enabled
+	mu     sync.Mutex
+	byKey  map[string]*list.Element            // hash -> element holding *entry
+	order  *list.List                          // front = most recently used, back = eviction victim
+	stores map[string]*vectorstore.MemoryStore // partitionKey -> semantic index; nil unless semantic is enabled
 
 	stats Stats
 }
@@ -257,7 +259,7 @@ func New(opts ...Option) (*Cache, error) {
 		order:      list.New(),
 	}
 	if cfg.semantic {
-		c.store = vectorstore.NewMemoryStore()
+		c.stores = make(map[string]*vectorstore.MemoryStore)
 	}
 	return c, nil
 }
@@ -310,15 +312,28 @@ func (c *Cache) getExact(hash string) (string, bool) {
 	return entryOf(el).response, true
 }
 
-// getSemantic embeds key.Prompt and returns the nearest stored response whose
-// cosine similarity meets the threshold.
+// getSemantic embeds key.Prompt and returns the nearest stored response within
+// the key's model+params partition whose cosine similarity meets the threshold.
+// Partitioning by model and params keeps semantic matches from crossing model
+// or parameter boundaries, so a match never returns another model's response.
 func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit bool, err error) {
+	partition, err := partitionKey(key)
+	if err != nil {
+		return "", false, err
+	}
+
+	store := c.lookupPartition(partition)
+	if store == nil {
+		// No entries for this model+params yet: a clean miss, no query needed.
+		return "", false, nil
+	}
+
 	vector, err := c.embedder.Embed(ctx, key.Prompt)
 	if err != nil {
 		return "", false, fmt.Errorf("embedding prompt: %w", err)
 	}
 
-	neighbors, err := c.store.Nearest(ctx, vector, 1)
+	neighbors, err := store.Nearest(ctx, vector, 1)
 	if err != nil {
 		if errors.Is(err, vectorstore.ErrDimensionMismatch) {
 			// A different embedding dimension than the indexed vectors means no
@@ -350,6 +365,27 @@ func (c *Cache) getSemantic(ctx context.Context, key Key) (response string, hit 
 	return entryOf(el).response, true, nil
 }
 
+// lookupPartition returns the semantic store for partition, or nil if none has
+// been created yet.
+func (c *Cache) lookupPartition(partition string) *vectorstore.MemoryStore {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stores[partition]
+}
+
+// ensurePartition returns the semantic store for partition, creating it on
+// first use.
+func (c *Cache) ensurePartition(partition string) *vectorstore.MemoryStore {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	store, ok := c.stores[partition]
+	if !ok {
+		store = vectorstore.NewMemoryStore()
+		c.stores[partition] = store
+	}
+	return store
+}
+
 // Put stores response under key, replacing any existing entry with the same
 // key. When semantic mode is enabled it also indexes the prompt embedding so
 // future near-duplicate prompts can be served from the semantic path. Storing
@@ -360,7 +396,12 @@ func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 		return fmt.Errorf("cache put: %w", err)
 	}
 
+	var partition string
 	if c.semantic {
+		partition, err = partitionKey(key)
+		if err != nil {
+			return fmt.Errorf("cache put: %w", err)
+		}
 		vector, err := c.embedder.Embed(ctx, key.Prompt)
 		if err != nil {
 			return fmt.Errorf("cache put: embedding prompt: %w", err)
@@ -374,7 +415,7 @@ func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 				metaResponse: response,
 			},
 		}
-		if err := c.store.Add(ctx, item); err != nil {
+		if err := c.ensurePartition(partition).Add(ctx, item); err != nil {
 			return fmt.Errorf("cache put: indexing embedding: %w", err)
 		}
 	}
@@ -388,7 +429,7 @@ func (c *Cache) Put(ctx context.Context, key Key, response string) error {
 		}
 		return nil
 	}
-	c.byKey[hash] = c.order.PushFront(&entry{hash: hash, response: response})
+	c.byKey[hash] = c.order.PushFront(&entry{hash: hash, partition: partition, response: response})
 	c.evictLocked(ctx)
 	return nil
 }
@@ -407,10 +448,10 @@ func (c *Cache) evictLocked(ctx context.Context) {
 		ent := entryOf(victim)
 		c.order.Remove(victim)
 		delete(c.byKey, ent.hash)
-		if c.store != nil {
+		if store := c.stores[ent.partition]; store != nil {
 			// Best-effort: a delete failure would only leave a stale vector in
 			// the semantic index, which is masked because its entry is gone.
-			if _, err := c.store.Delete(ctx, ent.hash); err != nil && c.logger != nil {
+			if _, err := store.Delete(ctx, ent.hash); err != nil && c.logger != nil {
 				c.logger.Debug("semcache evict: semantic delete failed",
 					slog.String("hash", ent.hash), slog.Any("error", err))
 			}
@@ -467,9 +508,27 @@ func (c *Cache) record(hit bool, metric string) {
 	c.metrics.Inc(MetricMisses)
 }
 
-// hashKey returns a stable SHA-256 hash of the normalized key. Params are
-// sorted so map iteration order cannot change the hash, and every field is
-// length-prefixed so no combination of field contents can collide with another.
+// encodeModelParams writes the length-prefixed model and canonicalized params
+// of key to b. Params are sorted so map iteration order cannot change the
+// encoding. Prompt is intentionally excluded so this encoding also forms the
+// semantic partition key.
+func encodeModelParams(b *strings.Builder, key Key) {
+	writeField(b, key.Model)
+
+	names := make([]string, 0, len(key.Params))
+	for name := range key.Params {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		writeField(b, name)
+		writeField(b, key.Params[name])
+	}
+}
+
+// hashKey returns a stable SHA-256 hash of the normalized model, params, and
+// prompt. Every field is length-prefixed so no combination of field contents
+// can collide with another.
 func hashKey(key Key) (string, error) {
 	if key.Model == "" {
 		return "", ErrEmptyModel
@@ -478,19 +537,24 @@ func hashKey(key Key) (string, error) {
 		return "", ErrEmptyPrompt
 	}
 
-	names := make([]string, 0, len(key.Params))
-	for name := range key.Params {
-		names = append(names, name)
+	var b strings.Builder
+	encodeModelParams(&b, key)
+	writeField(&b, key.Prompt)
+
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// partitionKey returns a stable SHA-256 hash of the model and params only.
+// Entries that share a partition key share a semantic index, so semantic
+// nearest-neighbor matches can never cross model or parameter boundaries.
+func partitionKey(key Key) (string, error) {
+	if key.Model == "" {
+		return "", ErrEmptyModel
 	}
-	sort.Strings(names)
 
 	var b strings.Builder
-	writeField(&b, key.Model)
-	for _, name := range names {
-		writeField(&b, name)
-		writeField(&b, key.Params[name])
-	}
-	writeField(&b, key.Prompt)
+	encodeModelParams(&b, key)
 
 	sum := sha256.Sum256([]byte(b.String()))
 	return hex.EncodeToString(sum[:]), nil

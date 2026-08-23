@@ -106,6 +106,9 @@ func (s *MemoryStore) Delete(ctx context.Context, id string) (bool, error) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, fmt.Errorf("vectorstore: delete cancelled: %w", err)
+	}
 	if _, ok := s.items[id]; !ok {
 		return false, nil
 	}

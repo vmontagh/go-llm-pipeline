@@ -91,4 +91,7 @@ func TestMemoryStoreDeleteCancelled(t *testing.T) {
 	if _, err := store.Delete(ctx, "a"); !errors.Is(err, context.Canceled) {
 		t.Errorf("Delete(cancelled) = %v, want %v", err, context.Canceled)
 	}
+	if got := store.Len(); got != 1 {
+		t.Errorf("Len() after cancelled Delete = %d, want 1 (deletion must be prevented)", got)
+	}
 }

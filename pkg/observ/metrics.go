@@ -46,8 +46,13 @@ func (m *Metrics) counter(name string) *atomic.Int64 {
 	return c
 }
 
-// Add increases the counter named name by delta.
+// Add increases the counter named name by delta. It panics if delta is
+// negative, because counters are monotonic and a negative delta signals a
+// programmer error.
 func (m *Metrics) Add(name string, delta int64) {
+	if delta < 0 {
+		panic("observ: Metrics.Add called with negative delta")
+	}
 	m.counter(name).Add(delta)
 }
 

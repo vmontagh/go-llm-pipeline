@@ -55,6 +55,23 @@ func TestMetricsSnapshot(t *testing.T) {
 	}
 }
 
+func TestMetricsAddNegativePanics(t *testing.T) {
+	t.Parallel()
+	m := observ.NewMetrics()
+	m.Add("bytes", 5)
+
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("Add(negative) did not panic, want panic")
+		}
+		if got, want := m.Value("bytes"), int64(5); got != want {
+			t.Errorf("Value(%q) after panicking Add = %d, want %d", "bytes", got, want)
+		}
+	}()
+	m.Add("bytes", -1)
+}
+
 func TestMetricsValue(t *testing.T) {
 	t.Parallel()
 	m := observ.NewMetrics()

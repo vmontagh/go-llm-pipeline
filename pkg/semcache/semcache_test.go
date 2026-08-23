@@ -270,6 +270,96 @@ func TestSemanticFallback(t *testing.T) {
 	}
 }
 
+func TestSemanticIsolatesModels(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// Both models cache the same prompt with an identical embedding, so a global
+	// semantic index would let one model's query return the other's response.
+	// Partitioning by model must keep each model's semantic match to its own
+	// response.
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":    {1, 0, 0},
+		"kitten": {0.9, 0.1, 0}, // cosine with cat ~0.994, above threshold
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	if err := c.Put(ctx, semcache.Key{Model: "a", Prompt: "cat"}, "resp-a"); err != nil {
+		t.Fatalf("Put(a) = %v, want nil", err)
+	}
+	if err := c.Put(ctx, semcache.Key{Model: "b", Prompt: "cat"}, "resp-b"); err != nil {
+		t.Fatalf("Put(b) = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name     string
+		model    string
+		wantResp string
+	}{
+		{name: "model a stays within its partition", model: "a", wantResp: "resp-a"},
+		{name: "model b stays within its partition", model: "b", wantResp: "resp-b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, hit, err := c.Get(ctx, semcache.Key{Model: tt.model, Prompt: "kitten"})
+			if err != nil {
+				t.Fatalf("Get() = %v, want nil", err)
+			}
+			if !hit {
+				t.Errorf("Get(model=%q) hit = false, want true", tt.model)
+			}
+			if resp != tt.wantResp {
+				t.Errorf("Get(model=%q) response = %q, want %q", tt.model, resp, tt.wantResp)
+			}
+		})
+	}
+}
+
+func TestSemanticIsolatesParams(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	// Same model and prompt, differing params must not cross-serve on the
+	// semantic path either, because params are part of the partition key.
+	emb := &fakeEmbedder{vectors: map[string][]float64{
+		"cat":    {1, 0, 0},
+		"kitten": {0.9, 0.1, 0},
+	}}
+	c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+
+	hot := semcache.Key{Model: "m", Params: map[string]string{"temperature": "0.9"}, Prompt: "cat"}
+	cold := semcache.Key{Model: "m", Params: map[string]string{"temperature": "0.1"}, Prompt: "cat"}
+	if err := c.Put(ctx, hot, "resp-hot"); err != nil {
+		t.Fatalf("Put(hot) = %v, want nil", err)
+	}
+	if err := c.Put(ctx, cold, "resp-cold"); err != nil {
+		t.Fatalf("Put(cold) = %v, want nil", err)
+	}
+
+	tests := []struct {
+		name     string
+		params   map[string]string
+		wantResp string
+	}{
+		{name: "hot params stay within their partition", params: map[string]string{"temperature": "0.9"}, wantResp: "resp-hot"},
+		{name: "cold params stay within their partition", params: map[string]string{"temperature": "0.1"}, wantResp: "resp-cold"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp, hit, err := c.Get(ctx, semcache.Key{Model: "m", Params: tt.params, Prompt: "kitten"})
+			if err != nil {
+				t.Fatalf("Get() = %v, want nil", err)
+			}
+			if !hit {
+				t.Errorf("Get(params=%v) hit = false, want true", tt.params)
+			}
+			if resp != tt.wantResp {
+				t.Errorf("Get(params=%v) response = %q, want %q", tt.params, resp, tt.wantResp)
+			}
+		})
+	}
+}
+
 func TestSemanticDimensionMismatchIsMiss(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -325,15 +415,29 @@ func TestSemanticGetPropagatesCancellation(t *testing.T) {
 func TestSemanticEmbedError(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	sentinel := errEmbedBoom
-	c := mustNew(t, semcache.WithSemantic(&fakeEmbedder{err: sentinel}, 0.9))
 
-	if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); !errors.Is(err, sentinel) {
-		t.Errorf("Put() error = %v, want %v", err, sentinel)
-	}
-	if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "cat"}); !errors.Is(err, sentinel) {
-		t.Errorf("Get() error = %v, want %v", err, sentinel)
-	}
+	t.Run("put surfaces embed error", func(t *testing.T) {
+		t.Parallel()
+		c := mustNew(t, semcache.WithSemantic(&fakeEmbedder{err: errEmbedBoom}, 0.9))
+		if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); !errors.Is(err, errEmbedBoom) {
+			t.Errorf("Put() error = %v, want %v", err, errEmbedBoom)
+		}
+	})
+
+	t.Run("get surfaces embed error within an existing partition", func(t *testing.T) {
+		t.Parallel()
+		// "cat" embeds so its partition exists; the query prompt has no vector,
+		// so the semantic path reaches the embedder and surfaces its error
+		// rather than masking it as a miss.
+		emb := &fakeEmbedder{vectors: map[string][]float64{"cat": {1, 0, 0}}}
+		c := mustNew(t, semcache.WithSemantic(emb, 0.9))
+		if err := c.Put(ctx, semcache.Key{Model: "m", Prompt: "cat"}, "feline"); err != nil {
+			t.Fatalf("Put() = %v, want nil", err)
+		}
+		if _, _, err := c.Get(ctx, semcache.Key{Model: "m", Prompt: "kitten"}); !errors.Is(err, errNoVector) {
+			t.Errorf("Get() error = %v, want %v", err, errNoVector)
+		}
+	})
 }
 
 func TestExactModeSkipsEmbedder(t *testing.T) {
