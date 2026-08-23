@@ -72,7 +72,7 @@ func (s *MemoryStore) Add(ctx context.Context, item Item) error {
 	if item.ID == "" {
 		return fmt.Errorf("adding item: %w", ErrEmptyID)
 	}
-	normalized, err := normalize(item.Vector)
+	normalized, err := Normalize(item.Vector)
 	if err != nil {
 		return fmt.Errorf("adding item %q: %w", item.ID, err)
 	}
@@ -149,7 +149,7 @@ func (s *MemoryStore) Nearest(ctx context.Context, vector Vector, limit int) ([]
 	if limit <= 0 {
 		return nil, fmt.Errorf("querying nearest: %w: %d", ErrInvalidLimit, limit)
 	}
-	query, err := normalize(vector)
+	query, err := Normalize(vector)
 	if err != nil {
 		return nil, fmt.Errorf("querying nearest: %w", err)
 	}

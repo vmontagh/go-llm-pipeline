@@ -80,7 +80,7 @@ type Neighbor struct {
 	Score float64
 }
 
-// normalize returns a unit-length copy of v. It rejects empty vectors, vectors
+// Normalize returns a unit-length copy of v. It rejects empty vectors, vectors
 // with non-finite components, and zero-magnitude vectors, for which cosine
 // similarity is undefined.
 //
@@ -88,7 +88,7 @@ type Neighbor struct {
 // is formed. This keeps the intermediate magnitude near 1, so very large
 // components do not overflow to +Inf (which would cache a valid vector as all
 // zeros) and very small components do not underflow to 0.
-func normalize(v Vector) (Vector, error) {
+func Normalize(v Vector) (Vector, error) {
 	if len(v) == 0 {
 		return nil, ErrEmptyVector
 	}
@@ -133,6 +133,10 @@ func dot(a, b Vector) float64 {
 // and clamps any other result into the valid [-1, 1] range without perturbing
 // it. Distinct directions therefore keep their true score (which may sit just
 // below 1) rather than being snapped to an endpoint.
+//
+// It assumes both inputs are already unit-length and of equal dimension;
+// callers guarantee this via [Normalize] and dimension enforcement. The
+// validated public entry point is [Cosine].
 func cosine(a, b Vector) float64 {
 	if slices.Equal(a, b) {
 		return 1
@@ -141,6 +145,27 @@ func cosine(a, b Vector) float64 {
 		return -1
 	}
 	return clampUnit(dot(a, b))
+}
+
+// Cosine returns the cosine similarity of a and b in the range [-1, 1]. Unlike
+// the internal fast path it validates its inputs: it returns [ErrDimensionMismatch]
+// when the vectors differ in length, and normalizes both inputs via [Normalize],
+// propagating [ErrEmptyVector] or [ErrInvalidVector] for an empty, non-finite,
+// or zero-magnitude vector. Scores match [MemoryStore.Nearest] exactly, with 1
+// for identical and -1 for antipodal directions preserved at the endpoints.
+func Cosine(a, b Vector) (float64, error) {
+	if len(a) != len(b) {
+		return 0, fmt.Errorf("cosine: %w: got %d, want %d", ErrDimensionMismatch, len(a), len(b))
+	}
+	na, err := Normalize(a)
+	if err != nil {
+		return 0, fmt.Errorf("cosine: %w", err)
+	}
+	nb, err := Normalize(b)
+	if err != nil {
+		return 0, fmt.Errorf("cosine: %w", err)
+	}
+	return cosine(na, nb), nil
 }
 
 // antipodal reports whether a equals -b component-wise, i.e. the two unit
@@ -188,7 +213,7 @@ func normalizeItems(items []Item) ([]Vector, error) {
 			return nil, fmt.Errorf("%w: %q", ErrDuplicateID, item.ID)
 		}
 		seen[item.ID] = struct{}{}
-		nv, err := normalize(item.Vector)
+		nv, err := Normalize(item.Vector)
 		if err != nil {
 			return nil, fmt.Errorf("item %q: %w", item.ID, err)
 		}
