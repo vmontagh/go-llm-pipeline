@@ -33,6 +33,18 @@
 
 ## 3. Testing
 
+### 3.0 Structure & simplicity (apply while writing, not after)
+
+- **One case → a plain test; two or more cases of the same behavior → one table-driven test.** Never write near-duplicate `TestFooA`/`TestFooB` funcs for one behavior — add rows.
+- **Don't merge distinct behaviors** to cut count. Readability first: a shared table with per-row `act`/`assert` closures is a smell. Keep genuinely different behaviors as separate, clearly-named tests.
+- **Extract ceremony into named `t.Helper()` helpers** so each test body reads Arrange→Act→Assert. Repeated open/reopen, `sync.WaitGroup`/goroutine fan-out, and raw DB or fixture setup go in helpers (e.g. `addItems`, `runConcurrentErrs`, `injectRow`) — never inline.
+- **`cmp.Diff` for every want/got equality** — `cmp.Diff(want, got, cmpopts.EquateErrors())` for errors, `cmpopts.EquateApprox` for floats. Reserve `errors.Is` for negative ("must not be") or "is-one-of" assertions where a diff is meaningless.
+- **Name magic literals in tests too** — `permWorldWritableDir = 0o777`, not a bare `0o777`.
+- **Leave the file simpler than you found it** — when adding a case, extend the existing table instead of appending a standalone `Test` func.
+- **No external assertion libraries** — use only the standard `testing` package plus `github.com/google/go-cmp`; never testify (`assert`/`require`) or gomega.
+- **Test through the exported API** — prioritize covering exported functions and observable behavior; use internal (white-box `package foo`) tests only for logic that cannot be reached through the public surface.
+- **Errors by identity, not text** — assert against **sentinel errors** with `errors.Is` or `cmp.Diff(wantErr, got, cmpopts.EquateErrors())`; never compare `err.Error()` strings or substrings.
+
 - **`want`/`got`** — never `expected`/`actual`.
 - **Table-driven + `cmp.Diff`** — avoid `reflect.DeepEqual`; keep assertions minimal and readable.
 - **Don't set zero-value fields** in test structs.
