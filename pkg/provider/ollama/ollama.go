@@ -50,6 +50,9 @@ type Request struct {
 	Format    any            `json:"format,omitempty"`
 	Options   map[string]any `json:"options,omitempty"`
 	KeepAlive string         `json:"keep_alive,omitempty"`
+	// Think toggles the model's reasoning ("thinking") phase. Nil omits the
+	// field so Ollama applies the model's default behavior.
+	Think *bool `json:"think,omitempty"`
 }
 
 type Response struct {
@@ -67,6 +70,7 @@ type transport struct {
 	keepAlive      string
 	numCtx         int
 	numPredict     int
+	think          *bool
 	contextLength  int
 	responseSchema any
 	client         *http.Client
@@ -121,6 +125,7 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 		keepAlive:      t.keepAlive,
 		numCtx:         t.numCtx,
 		numPredict:     t.numPredict,
+		think:          t.think,
 		responseSchema: t.responseSchema,
 	})
 
@@ -224,6 +229,7 @@ type buildRequestParams struct {
 	keepAlive      string
 	numCtx         int
 	numPredict     int
+	think          *bool
 	responseSchema any
 }
 
@@ -252,6 +258,7 @@ func buildRequest(p *buildRequestParams) *Request {
 		Stream:    false,
 		Format:    format,
 		KeepAlive: keepAlive,
+		Think:     p.think,
 		Options: map[string]any{
 			"temperature": defaultTemperature,
 			"num_predict": predictLimit,
@@ -277,6 +284,7 @@ type providerConfig struct {
 	keepAlive        string
 	numCtx           int
 	numPredict       int
+	think            *bool
 	maxRetries       int
 	retryBaseBackoff time.Duration
 	retryMaxBackoff  time.Duration
@@ -297,6 +305,14 @@ func WithNumCtx(numCtx int) ProviderOption {
 
 func WithNumPredict(numPredict int) ProviderOption {
 	return func(c *providerConfig) { c.numPredict = numPredict }
+}
+
+// WithThink explicitly enables or disables the model's reasoning ("thinking")
+// phase on /api/generate requests. Without this option the "think" field is
+// omitted and Ollama applies the model's default. Disabling thinking is
+// usually faster for perception tasks such as image tagging.
+func WithThink(think bool) ProviderOption {
+	return func(c *providerConfig) { c.think = &think }
 }
 
 // WithMaxRetries caps how many times the Embedder retries a transient or
@@ -377,6 +393,7 @@ func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[st
 		keepAlive:      cfg.keepAlive,
 		numCtx:         cfg.numCtx,
 		numPredict:     cfg.numPredict,
+		think:          cfg.think,
 		responseSchema: cfg.responseSchema,
 		client:         client,
 		endpoint:       provpkg.NewKeyPool([]struct{}{{}}),
