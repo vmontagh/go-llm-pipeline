@@ -439,11 +439,11 @@ func TestJudgeAnalyzer_PromptBuilderError(t *testing.T) {
 			if diff := cmp.Diff(errJudgeTestPrompt, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Analyze() error mismatch (-want +got):\n%s", diff)
 			}
-			if got != nil {
-				t.Errorf("Analyze() = %+v, want nil", got)
+			if diff := cmp.Diff((*dummyAnalysisResult)(nil), got); diff != "" {
+				t.Errorf("Analyze() result mismatch (-want +got):\n%s", diff)
 			}
-			if judge.call != tt.wantJudgeCalls {
-				t.Errorf("judge called %d times, want %d", judge.call, tt.wantJudgeCalls)
+			if diff := cmp.Diff(tt.wantJudgeCalls, judge.call); diff != "" {
+				t.Errorf("judge call count mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
