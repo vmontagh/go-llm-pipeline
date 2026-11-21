@@ -304,10 +304,17 @@ func TestCall_TransportError(t *testing.T) {
 
 func TestWithHTTPClientTimeout(t *testing.T) {
 	t.Parallel()
+	// The handler never reads the body, so the server may not notice the
+	// client hanging up; release it explicitly before srv.Close waits on it.
+	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
 	}))
 	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
 	caller := &http.Client{}
 	p := gemini.NewProvider(nil,
 		gemini.WithBaseURL(srv.URL),
