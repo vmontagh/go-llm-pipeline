@@ -25,8 +25,18 @@ func item(id string, components ...float64) vectorstore.Item {
 func snapshotByID(t *testing.T, items []vectorstore.Item) map[string]vectorstore.Item {
 	t.Helper()
 	out := make(map[string]vectorstore.Item, len(items))
-	for _, it := range items {
-		out[it.ID] = vectorstore.Item{
+	for _, it := range snapshotInOrder(items) {
+		out[it.ID] = it
+	}
+	return out
+}
+
+// snapshotInOrder deep-copies items in input order, so comparing it with the
+// input after a call detects reordering and replacement as well as changes.
+func snapshotInOrder(items []vectorstore.Item) []vectorstore.Item {
+	out := make([]vectorstore.Item, len(items))
+	for i, it := range items {
+		out[i] = vectorstore.Item{
 			ID:       it.ID,
 			Vector:   slices.Clone(it.Vector),
 			Metadata: maps.Clone(it.Metadata),

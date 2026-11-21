@@ -37,9 +37,10 @@ func TestResultsDoNotAliasInput(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			// Non-unit vectors make any in-place normalization visible.
-			items := []vectorstore.Item{item("a", 3, 4), item("b", 6, 8), item("c", 5, 5)}
-			want := snapshotByID(t, items)
+			// Non-unit vectors make any in-place normalization visible, and
+			// unsorted IDs make any in-place sorting visible.
+			items := []vectorstore.Item{item("c", 5, 5), item("a", 3, 4), item("b", 6, 8)}
+			want := snapshotInOrder(items)
 
 			got, err := tc.run(t.Context(), items)
 			if err != nil {
@@ -86,11 +87,9 @@ func flatten(clusters []vectorstore.Cluster) []vectorstore.Item {
 	return out
 }
 
-func assertUnchanged(t *testing.T, when string, want map[string]vectorstore.Item, items []vectorstore.Item) {
+func assertUnchanged(t *testing.T, when string, want, items []vectorstore.Item) {
 	t.Helper()
-	for _, it := range items {
-		if diff := cmp.Diff(want[it.ID], it); diff != "" {
-			t.Errorf("input item %q changed %s (-want +got):\n%s", it.ID, when, diff)
-		}
+	if diff := cmp.Diff(want, items); diff != "" {
+		t.Errorf("input items changed %s (-want +got):\n%s", when, diff)
 	}
 }

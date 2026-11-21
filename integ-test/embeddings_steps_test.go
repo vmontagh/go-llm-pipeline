@@ -75,6 +75,9 @@ type embedWorld struct {
 	// expected holds deep copies of items keyed by ID, so expectations share
 	// no memory with anything a call under test could mutate.
 	expected map[string]vectorstore.Item
+	// original holds the same deep copies in table order, to detect a call
+	// that reorders or replaces input items.
+	original []vectorstore.Item
 	// sqlite is the reopened persistent store, closed in the After hook.
 	sqlite *sqlitestore.Store
 }
@@ -116,6 +119,7 @@ func (w *embedWorld) reset(scenario *godog.Scenario) {
 	w.vectors = make(map[string]vectorstore.Vector)
 	w.items = nil
 	w.expected = make(map[string]vectorstore.Item)
+	w.original = nil
 	w.sqlite = nil
 }
 
@@ -182,11 +186,13 @@ func (w *embedWorld) iEmbedTheFollowingTexts(ctx context.Context, table *godog.T
 		}
 		w.vectors[id] = item.Vector
 		w.items = append(w.items, item)
-		w.expected[id] = vectorstore.Item{
+		snapshot := vectorstore.Item{
 			ID:       id,
 			Vector:   slices.Clone(item.Vector),
 			Metadata: maps.Clone(item.Metadata),
 		}
+		w.expected[id] = snapshot
+		w.original = append(w.original, snapshot)
 	}
 	return nil
 }
@@ -416,12 +422,10 @@ func (w *embedWorld) closeSQLite() error {
 }
 
 // checkInputUnchanged requires the items passed to the call under test to
-// still equal the deep copies taken at embedding time.
+// still equal, in order, the deep copies taken at embedding time.
 func (w *embedWorld) checkInputUnchanged() error {
-	for _, item := range w.items {
-		if diff := gocmp.Diff(w.expected[item.ID], item); diff != "" {
-			return fmt.Errorf("%w: item %q (-want +got):\n%s", errInputMutated, item.ID, diff)
-		}
+	if diff := gocmp.Diff(w.original, w.items); diff != "" {
+		return fmt.Errorf("%w (-want +got):\n%s", errInputMutated, diff)
 	}
 	return nil
 }

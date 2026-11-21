@@ -155,7 +155,7 @@ func TestClusterItemsErrors(t *testing.T) {
 		},
 		{
 			name:      "negativeInfinityComponent",
-			items:     []vectorstore.Item{item("a", math.Inf(-1), 0)},
+			items:     []vectorstore.Item{item("a", 1, math.Inf(-1))},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
 		},
