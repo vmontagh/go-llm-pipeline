@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/vmontagh/go-llm-pipeline/internal/appendfile"
 )
 
 const (
@@ -33,14 +35,16 @@ type DLQEntry struct {
 	Error     string    `json:"error"`
 }
 
-// NewDeadLetterQueue creates a new DLQ that appends to the specified file.
+// NewDeadLetterQueue creates a new DLQ that appends to the specified file. The
+// path must be a regular file or not yet exist: a symlink, FIFO, device or
+// directory is rejected without blocking.
 func NewDeadLetterQueue(filePath string, appLogger *slog.Logger) (*DeadLetterQueue, error) {
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating DLQ directory: %w", err)
 	}
 
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, filePermissions)
+	file, err := appendfile.Open(filePath, filePermissions)
 	if err != nil {
 		return nil, fmt.Errorf("opening DLQ file: %w", err)
 	}

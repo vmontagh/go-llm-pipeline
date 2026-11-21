@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/natefinch/lumberjack.v2"
+
+	"github.com/vmontagh/go-llm-pipeline/internal/appendfile"
 )
 
 // New returns a text-format slog.Logger writing to w at the given minimum level.
@@ -46,15 +48,16 @@ func DefaultLogFilePath(appName string) string {
 // NewFileLogger returns a slog.Logger that writes JSON-formatted records to
 // filename with size-based rotation. It creates the parent directory if it
 // does not exist and verifies the file is writable before returning, so
-// callers can fail fast on invalid paths.
+// callers can fail fast on invalid paths. A symlink, FIFO, device or directory
+// at filename is rejected without blocking.
 func NewFileLogger(filename string) (*slog.Logger, error) {
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, logDirPerm); err != nil {
 		return nil, fmt.Errorf("creating log directory %q: %w", dir, err)
 	}
 
-	// Verify the file is actually writable by opening (or creating) it.
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_APPEND, logFilePerm)
+	// Verify the file is a writable regular file by opening (or creating) it.
+	f, err := appendfile.Open(filename, logFilePerm)
 	if err != nil {
 		return nil, fmt.Errorf("opening log file %q: %w", filename, err)
 	}
