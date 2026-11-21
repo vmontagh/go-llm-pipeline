@@ -5,8 +5,8 @@
 // The package deliberately does not compute embeddings itself: callers own the
 // choice of embedding model and inject the resulting vectors. This keeps the
 // core module dependency-light. The MVP ships an in-memory implementation
-// ([MemoryStore]); a persistent implementation can be added later behind the
-// same method set.
+// ([MemoryStore]); the sqlitestore subpackage adds a persistent, SQLite-backed
+// store behind the same method set.
 //
 // All operations run fully offline. The cosine-based APIs — [MemoryStore.Nearest],
 // [FindDuplicates], and [ClusterItems] — score similarity as cosine similarity
@@ -166,6 +166,27 @@ func Cosine(a, b Vector) (float64, error) {
 		return 0, fmt.Errorf("cosine: %w", err)
 	}
 	return cosine(na, nb), nil
+}
+
+// CosineUnit returns the cosine similarity of two vectors that are ALREADY
+// normalized (unit-length), in the range [-1, 1]. It is the validated,
+// exported entry point to the same fast path [MemoryStore.Nearest] uses
+// internally: callers that normalize once (for example a query) and normalize
+// or pre-store their other operand can score without re-normalizing on every
+// call, avoiding an O(n*dim) pass. It returns [ErrDimensionMismatch] when the
+// vectors differ in length, and [ErrEmptyVector] for empty input, matching
+// [Cosine]. Behavior is undefined if either input is not unit-length; use
+// [Cosine] when the inputs are not already normalized. Scores match [Cosine]
+// exactly for unit-length inputs, with 1 for identical and -1 for antipodal
+// directions preserved at the endpoints.
+func CosineUnit(a, b Vector) (float64, error) {
+	if len(a) != len(b) {
+		return 0, fmt.Errorf("cosine: %w: got %d, want %d", ErrDimensionMismatch, len(a), len(b))
+	}
+	if len(a) == 0 {
+		return 0, fmt.Errorf("cosine: %w", ErrEmptyVector)
+	}
+	return cosine(a, b), nil
 }
 
 // antipodal reports whether a equals -b component-wise, i.e. the two unit

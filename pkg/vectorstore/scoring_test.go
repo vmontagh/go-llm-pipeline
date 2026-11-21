@@ -162,6 +162,84 @@ func TestCosine(t *testing.T) {
 	}
 }
 
+func TestCosineUnit(t *testing.T) {
+	t.Parallel()
+
+	// invSqrt2 is the unit-length component of a 45-degree vector, used to build
+	// already-normalized inputs.
+	const invSqrt2 = 0.7071067811865476
+
+	tests := []struct {
+		name    string
+		a       vectorstore.Vector
+		b       vectorstore.Vector
+		want    float64
+		wantErr error
+	}{
+		{
+			name: "identical",
+			a:    vectorstore.Vector{1, 0},
+			b:    vectorstore.Vector{1, 0},
+			want: 1,
+		},
+		{
+			name: "antipodal",
+			a:    vectorstore.Vector{1, 0},
+			b:    vectorstore.Vector{-1, 0},
+			want: -1,
+		},
+		{
+			name: "orthogonal",
+			a:    vectorstore.Vector{1, 0},
+			b:    vectorstore.Vector{0, 1},
+			want: 0,
+		},
+		{
+			name: "forty-five degrees",
+			a:    vectorstore.Vector{1, 0},
+			b:    vectorstore.Vector{invSqrt2, invSqrt2},
+			want: invSqrt2,
+		},
+		{
+			name:    "unequal length",
+			a:       vectorstore.Vector{1, 0},
+			b:       vectorstore.Vector{1, 0, 0},
+			wantErr: vectorstore.ErrDimensionMismatch,
+		},
+		{
+			name:    "empty",
+			a:       vectorstore.Vector{},
+			b:       vectorstore.Vector{},
+			wantErr: vectorstore.ErrEmptyVector,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := vectorstore.CosineUnit(tc.a, tc.b)
+			if diff := cmp.Diff(tc.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("CosineUnit(%v, %v) error mismatch (-want +got):\n%s", tc.a, tc.b, diff)
+			}
+			if tc.wantErr != nil {
+				return
+			}
+			if diff := cmp.Diff(tc.want, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
+				t.Errorf("CosineUnit(%v, %v) = %v, want %v (-want +got):\n%s", tc.a, tc.b, got, tc.want, diff)
+			}
+			// For unit-length inputs, CosineUnit matches Cosine exactly.
+			cosineGot, cosineErr := vectorstore.Cosine(tc.a, tc.b)
+			if cosineErr != nil {
+				t.Fatalf("Cosine(%v, %v) = %v, want nil", tc.a, tc.b, cosineErr)
+			}
+			if diff := cmp.Diff(cosineGot, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
+				t.Errorf("CosineUnit vs Cosine for unit inputs mismatch (-Cosine +CosineUnit):\n%s", diff)
+			}
+		})
+	}
+}
+
 // length returns the Euclidean length of v, used to assert that Normalize
 // produces unit vectors.
 func length(v vectorstore.Vector) float64 {
