@@ -1,31 +1,14 @@
 package vectorstore_test
 
 import (
-	"errors"
 	"math"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/vectorstore"
 )
-
-// clusterIDs projects clusters to their member IDs for comparison. It returns
-// nil for an empty result so it compares cleanly against a nil want.
-func clusterIDs(clusters []vectorstore.Cluster) [][]string {
-	if len(clusters) == 0 {
-		return nil
-	}
-	out := make([][]string, len(clusters))
-	for i, c := range clusters {
-		ids := make([]string, len(c.Items))
-		for j, item := range c.Items {
-			ids[j] = item.ID
-		}
-		out[i] = ids
-	}
-	return out
-}
 
 func TestClusterItems(t *testing.T) {
 	t.Parallel()
@@ -44,11 +27,11 @@ func TestClusterItems(t *testing.T) {
 			// transitive single linkage. x, y form a separate pair far enough
 			// away not to connect to the arc.
 			items: []vectorstore.Item{
-				{ID: "c", Vector: vectorstore.Vector{0.342020, 0.939693}},  // 70°
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},                // 0°
-				{ID: "b", Vector: vectorstore.Vector{0.819152, 0.573576}},  // 35°
-				{ID: "x", Vector: vectorstore.Vector{-0.906308, 0.422618}}, // 155°
-				{ID: "y", Vector: vectorstore.Vector{-0.939693, 0.342020}}, // 160°
+				item("c", 0.342020, 0.939693),  // 70°
+				item("a", 1, 0),                // 0°
+				item("b", 0.819152, 0.573576),  // 35°
+				item("x", -0.906308, 0.422618), // 155°
+				item("y", -0.939693, 0.342020), // 160°
 			},
 			threshold: 0.6,
 			want:      [][]string{{"a", "b", "c"}, {"x", "y"}},
@@ -56,8 +39,8 @@ func TestClusterItems(t *testing.T) {
 		{
 			name: "high threshold yields singletons",
 			items: []vectorstore.Item{
-				{ID: "b", Vector: vectorstore.Vector{0, 1}},
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},
+				item("b", 0, 1),
+				item("a", 1, 0),
 			},
 			threshold: 0.99,
 			want:      [][]string{{"a"}, {"b"}},
@@ -67,8 +50,8 @@ func TestClusterItems(t *testing.T) {
 			// Identical {1,1} vectors normalize to the same unit vector, so
 			// cosine reports exactly 1 and they link at threshold 1.
 			items: []vectorstore.Item{
-				{ID: "a", Vector: vectorstore.Vector{1, 1}},
-				{ID: "b", Vector: vectorstore.Vector{1, 1}},
+				item("a", 1, 1),
+				item("b", 1, 1),
 			},
 			threshold: 1,
 			want:      [][]string{{"a", "b"}},
@@ -86,8 +69,8 @@ func TestClusterItems(t *testing.T) {
 			// separate. A subtractive `1-cosine <= 1-threshold` form would round
 			// 1-threshold up to 1.0 and wrongly merge them.
 			items: []vectorstore.Item{
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},
-				{ID: "b", Vector: vectorstore.Vector{0, 1}},
+				item("a", 1, 0),
+				item("b", 0, 1),
 			},
 			threshold: math.SmallestNonzeroFloat64,
 			want:      [][]string{{"a"}, {"b"}},
@@ -97,11 +80,13 @@ func TestClusterItems(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			want := wantClusters(t, snapshotByID(t, tc.items), tc.want)
+
 			got, err := vectorstore.ClusterItems(tc.items, tc.threshold)
 			if err != nil {
 				t.Fatalf("ClusterItems(%s) = %v, want nil", tc.name, err)
 			}
-			if diff := cmp.Diff(tc.want, clusterIDs(got)); diff != "" {
+			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("ClusterItems(%s) mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
@@ -118,16 +103,22 @@ func TestClusterItemsErrors(t *testing.T) {
 		want      error
 	}{
 		{
+			name:      "threshold below range",
+			items:     []vectorstore.Item{item("a", 1, 0)},
+			threshold: -1.5,
+			want:      vectorstore.ErrInvalidThreshold,
+		},
+		{
 			name:      "threshold above range",
-			items:     []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{1, 0}}},
-			threshold: 2,
+			items:     []vectorstore.Item{item("a", 1, 0)},
+			threshold: 1.5,
 			want:      vectorstore.ErrInvalidThreshold,
 		},
 		{
 			name: "dimension mismatch",
 			items: []vectorstore.Item{
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},
-				{ID: "b", Vector: vectorstore.Vector{1, 0, 0}},
+				item("a", 1, 0),
+				item("b", 1, 0, 0),
 			},
 			threshold: 0.5,
 			want:      vectorstore.ErrDimensionMismatch,
@@ -146,15 +137,35 @@ func TestClusterItemsErrors(t *testing.T) {
 		},
 		{
 			name:      "zero magnitude vector",
-			items:     []vectorstore.Item{{ID: "a", Vector: vectorstore.Vector{0, 0}}},
+			items:     []vectorstore.Item{item("a", 0, 0)},
+			threshold: 0.5,
+			want:      vectorstore.ErrInvalidVector,
+		},
+		{
+			// Invalid components sit past index 0 so per-component validation
+			// of only the first element would not pass.
+			name:      "NaN component",
+			items:     []vectorstore.Item{item("a", 1, math.NaN())},
+			threshold: 0.5,
+			want:      vectorstore.ErrInvalidVector,
+		},
+		{
+			name:      "positive infinity component",
+			items:     []vectorstore.Item{item("a", 1, math.Inf(1))},
+			threshold: 0.5,
+			want:      vectorstore.ErrInvalidVector,
+		},
+		{
+			name:      "negative infinity component",
+			items:     []vectorstore.Item{item("a", math.Inf(-1), 0)},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
 			name: "duplicate id",
 			items: []vectorstore.Item{
-				{ID: "a", Vector: vectorstore.Vector{1, 0}},
-				{ID: "a", Vector: vectorstore.Vector{0, 1}},
+				item("a", 1, 0),
+				item("a", 0, 1),
 			},
 			threshold: 0.5,
 			want:      vectorstore.ErrDuplicateID,
@@ -165,8 +176,8 @@ func TestClusterItemsErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := vectorstore.ClusterItems(tc.items, tc.threshold)
-			if !errors.Is(err, tc.want) {
-				t.Errorf("ClusterItems(%s) = %v, want %v", tc.name, err, tc.want)
+			if diff := cmp.Diff(tc.want, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("ClusterItems(%s) error mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
 	}
@@ -184,7 +195,7 @@ func axisDistance(a, b vectorstore.Item) float64 {
 // axis builds an item whose only meaningful data is its 1-D position, the shape
 // a scalar metric (time, price, ...) consumes.
 func axis(id string, pos float64) vectorstore.Item {
-	return vectorstore.Item{ID: id, Vector: vectorstore.Vector{pos}}
+	return item(id, pos)
 }
 
 func TestClusterByDistance(t *testing.T) {
@@ -251,11 +262,13 @@ func TestClusterByDistance(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			want := wantClusters(t, snapshotByID(t, tc.items), tc.want)
+
 			got, err := vectorstore.ClusterByDistance(tc.items, axisDistance, tc.maxDistance)
 			if err != nil {
 				t.Fatalf("ClusterByDistance(%s) = %v, want nil", tc.name, err)
 			}
-			if diff := cmp.Diff(tc.want, clusterIDs(got)); diff != "" {
+			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
 				t.Errorf("ClusterByDistance(%s) mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
@@ -268,7 +281,7 @@ func TestClusterByDistance(t *testing.T) {
 func TestClusterByDistanceDeterministic(t *testing.T) {
 	t.Parallel()
 
-	want := [][]string{{"a", "b", "c"}, {"x", "y"}}
+	wantGroups := [][]string{{"a", "b", "c"}, {"x", "y"}}
 	orderings := [][]vectorstore.Item{
 		{axis("a", 0), axis("b", 1), axis("c", 2), axis("x", 10), axis("y", 11)},
 		{axis("y", 11), axis("x", 10), axis("c", 2), axis("b", 1), axis("a", 0)},
@@ -276,11 +289,13 @@ func TestClusterByDistanceDeterministic(t *testing.T) {
 	}
 
 	for _, items := range orderings {
+		want := wantClusters(t, snapshotByID(t, items), wantGroups)
+
 		got, err := vectorstore.ClusterByDistance(items, axisDistance, 1)
 		if err != nil {
 			t.Fatalf("ClusterByDistance(%v) = %v, want nil", clusterInputIDs(items), err)
 		}
-		if diff := cmp.Diff(want, clusterIDs(got)); diff != "" {
+		if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
 			t.Errorf("ClusterByDistance(%v) mismatch (-want +got):\n%s", clusterInputIDs(items), diff)
 		}
 	}
@@ -331,8 +346,8 @@ func TestClusterByDistanceErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			_, err := vectorstore.ClusterByDistance(tc.items, tc.metric, 1)
-			if !errors.Is(err, tc.want) {
-				t.Errorf("ClusterByDistance(%s) = %v, want %v", tc.name, err, tc.want)
+			if diff := cmp.Diff(tc.want, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("ClusterByDistance(%s) error mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
 	}
