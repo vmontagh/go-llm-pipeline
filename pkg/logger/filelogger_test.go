@@ -1,11 +1,13 @@
 package logger_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -14,58 +16,117 @@ import (
 )
 
 const (
-	logFileName   = "app.log"
-	permWritable  = 0o600
-	previousLine  = "line from a previous run"
-	savedMsg      = "photo saved"
-	debugOnlyMsg  = "debug detail"
-	savedItemID   = "photo-1"
-	itemIDLogAttr = "itemID"
+	logFileName  = "app.log"
+	permOwnerRW  = 0o600
+	previousMsg  = "from a previous run"
+	savedMsg     = "photo saved"
+	debugMsg     = "debug detail"
+	warnMsg      = "slow response"
+	errorMsg     = "upload failed"
+	levelInfo    = "INFO"
+	levelWarning = "WARN"
+	levelError   = "ERROR"
 )
 
 // logRecord is the subset of a JSON slog record the tests inspect.
 type logRecord struct {
-	Level  string `json:"level"`
-	Msg    string `json:"msg"`
-	ItemID string `json:"itemID"`
+	Level string `json:"level"`
+	Msg   string `json:"msg"`
 }
 
-func TestNewFileLoggerAppendsJSONRecordsAtInfo(t *testing.T) {
+// logCall is one call made through the logger under test.
+type logCall struct {
+	level slog.Level
+	msg   string
+}
+
+func TestNewFileLogger_WritesRecords(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join(t.TempDir(), logFileName)
-	if err := os.WriteFile(path, []byte(previousLine+"\n"), permWritable); err != nil {
-		t.Fatalf("seeding %q: %v", path, err)
+	tests := []struct {
+		name  string
+		seed  []logRecord
+		calls []logCall
+		want  []logRecord
+	}{
+		{
+			name:  "newFile_infoWritten",
+			calls: []logCall{{slog.LevelInfo, savedMsg}},
+			want:  []logRecord{{levelInfo, savedMsg}},
+		},
+		{
+			name:  "existingFile_appended",
+			seed:  []logRecord{{levelInfo, previousMsg}},
+			calls: []logCall{{slog.LevelInfo, savedMsg}},
+			want:  []logRecord{{levelInfo, previousMsg}, {levelInfo, savedMsg}},
+		},
+		{
+			name:  "debugBelowDefaultLevel_dropped",
+			calls: []logCall{{slog.LevelDebug, debugMsg}},
+		},
+		{
+			name:  "warnAndError_writtenInOrder",
+			calls: []logCall{{slog.LevelWarn, warnMsg}, {slog.LevelError, errorMsg}},
+			want:  []logRecord{{levelWarning, warnMsg}, {levelError, errorMsg}},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), logFileName)
+			writeRecords(t, path, tt.seed)
 
-	log, err := logger.NewFileLogger(path)
-	if err != nil {
-		t.Fatalf("NewFileLogger(%q): %v", path, err)
-	}
-	log.Debug(debugOnlyMsg, itemIDLogAttr, savedItemID)
-	log.Info(savedMsg, itemIDLogAttr, savedItemID)
+			fileLogger, err := logger.NewFileLogger(path)
+			if err != nil {
+				t.Fatalf("NewFileLogger(%q): %v", path, err)
+			}
+			for _, c := range tt.calls {
+				fileLogger.Log(t.Context(), c.level, c.msg)
+			}
 
-	lines := readLines(t, path)
-	if len(lines) != 2 {
-		t.Fatalf("%q has %d lines, want the seeded line plus one record:\n%s", path, len(lines), strings.Join(lines, "\n"))
-	}
-	if lines[0] != previousLine {
-		t.Errorf("first line of %q = %q, want the seeded %q", path, lines[0], previousLine)
-	}
-	var got logRecord
-	if err := json.Unmarshal([]byte(lines[1]), &got); err != nil {
-		t.Fatalf("decoding record %q: %v", lines[1], err)
-	}
-	want := logRecord{Level: slog.LevelInfo.String(), Msg: savedMsg, ItemID: savedItemID}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("record written to %q mismatch (-want +got):\n%s", path, diff)
+			if diff := cmp.Diff(tt.want, readRecords(t, path)); diff != "" {
+				t.Errorf("records in %q after %v mismatch (-want +got):\n%s", path, tt.calls, diff)
+			}
+		})
 	}
 }
 
-func readLines(t *testing.T, path string) []string {
+// writeRecords creates path holding records as JSON lines; with no records it
+// leaves path absent.
+func writeRecords(t *testing.T, path string, records []logRecord) {
+	t.Helper()
+	if len(records) == 0 {
+		return
+	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	for _, r := range records {
+		if err := enc.Encode(r); err != nil {
+			t.Fatalf("encoding %v: %v", r, err)
+		}
+	}
+	if err := os.WriteFile(path, buf.Bytes(), permOwnerRW); err != nil {
+		t.Fatalf("WriteFile(%q): %v", path, err)
+	}
+}
+
+// readRecords decodes every JSON line in path; it returns nil for no lines.
+func readRecords(t *testing.T, path string) []logRecord {
 	t.Helper()
 	data, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("reading %q: %v", path, err)
+		t.Fatalf("ReadFile(%q): %v", path, err)
 	}
-	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	var records []logRecord
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for {
+		var r logRecord
+		err := dec.Decode(&r)
+		if errors.Is(err, io.EOF) {
+			return records
+		}
+		if err != nil {
+			t.Fatalf("decoding record %d of %q: %v", len(records)+1, path, err)
+		}
+		records = append(records, r)
+	}
 }

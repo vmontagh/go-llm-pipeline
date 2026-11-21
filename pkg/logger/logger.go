@@ -48,8 +48,11 @@ func DefaultLogFilePath(appName string) string {
 // NewFileLogger returns a slog.Logger that writes JSON-formatted records to
 // filename with size-based rotation. It creates the parent directory if it
 // does not exist and verifies the file is writable before returning, so
-// callers can fail fast on invalid paths. A symlink, FIFO, device or directory
-// at filename is rejected without blocking.
+// callers can fail fast on invalid paths. That initial probe rejects a
+// directory, FIFO or device at filename; on Unix it also rejects a
+// final-component symlink and never blocks on a FIFO or device. The rotating
+// writer reopens the file itself afterwards, so these checks cover only the
+// probe.
 func NewFileLogger(filename string) (*slog.Logger, error) {
 	dir := filepath.Dir(filename)
 	if err := os.MkdirAll(dir, logDirPerm); err != nil {

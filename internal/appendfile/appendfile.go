@@ -1,5 +1,6 @@
 // Package appendfile opens caller-configured append-only files (logs, dead
-// letter queues) without blocking on special files or following symlinks.
+// letter queues) and rejects paths that are not regular files. On Unix the open
+// also never blocks on a special file and refuses a final-component symlink.
 package appendfile
 
 import (
@@ -18,10 +19,11 @@ var (
 	ErrSymlink = errors.New("path is a symlink")
 )
 
-// Open opens path for appending, creating it with perm if missing. The open is
-// non-blocking and does not follow a final-component symlink (on Unix), and the
-// handle is checked with fstat, so a FIFO or device fails fast instead of
-// hanging an uncancelable open.
+// Open opens path for appending, creating it with perm if missing, and checks
+// the handle with fstat so a directory, FIFO or device is rejected with
+// [ErrNotRegularFile]. On Unix the open is also non-blocking and refuses a
+// final-component symlink with [ErrSymlink], so a FIFO fails fast instead of
+// hanging an uncancelable open. Other platforms get only the fstat check.
 func Open(path string, perm os.FileMode) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|extraOpenFlags, perm)
 	if err != nil {

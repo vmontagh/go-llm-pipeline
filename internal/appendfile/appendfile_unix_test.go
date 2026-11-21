@@ -3,11 +3,11 @@
 package appendfile_test
 
 import (
+	"io/fs"
 	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -16,91 +16,74 @@ import (
 )
 
 const (
-	permOwnerOnlyDir = 0o700
-	// rejectTimeout bounds how long a rejected open may take; a blocking open
-	// of a FIFO would otherwise hang the test forever.
-	rejectTimeout = 5 * time.Second
-	devNull       = "/dev/null"
+	permOwnerReadOnly = 0o400
+	permOwnerOnlyDir  = 0o700
+	permWorldReadable = 0o644
+	devNull           = "/dev/null"
 )
 
-func TestOpenCreatesOwnerOnlyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "new.log")
+func TestOpen_FileMode(t *testing.T) {
+	t.Parallel()
+	// Modes are chosen so no common umask changes them.
+	tests := []struct {
+		name         string
+		existingMode os.FileMode
+		perm         os.FileMode
+		want         os.FileMode
+	}{
+		{name: "newFile_ownerReadWrite", perm: permOwnerOnly, want: permOwnerOnly},
+		{name: "newFile_ownerReadOnly", perm: permOwnerReadOnly, want: permOwnerReadOnly},
+		{name: "existingFile_modeKept", existingMode: permWorldReadable, perm: permOwnerOnly, want: permWorldReadable},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), fileName)
+			if tt.existingMode != 0 {
+				createWithMode(t, path, tt.existingMode)
+			}
 
-	f, err := appendfile.Open(path, permOwnerOnly)
-	if err != nil {
-		t.Fatalf("Open(%q) error = %v", path, err)
-	}
-	if err := f.Close(); err != nil {
-		t.Fatalf("closing %q: %v", path, err)
-	}
+			f, err := appendfile.Open(path, tt.perm)
+			if err != nil {
+				t.Fatalf("Open(%q, %v): %v", path, tt.perm, err)
+			}
+			if err := f.Close(); err != nil {
+				t.Fatalf("Close(%q): %v", path, err)
+			}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("Stat(%q): %v", path, err)
-	}
-	if diff := cmp.Diff(os.FileMode(permOwnerOnly), info.Mode()); diff != "" {
-		t.Errorf("mode of %q mismatch (-want +got):\n%s", path, diff)
+			if diff := cmp.Diff(tt.want, modeOf(t, path)); diff != "" {
+				t.Errorf("Open(%q, %v) file mode mismatch (-want +got):\n%s", path, tt.perm, diff)
+			}
+		})
 	}
 }
 
-func TestOpenRejectsUnsafePath(t *testing.T) {
+// TestOpen_InvalidPath_Rejected has no timeout of its own: a regression to a
+// blocking open hangs the FIFO rows until `go test -timeout` fails the run with
+// a goroutine dump pointing at Open.
+func TestOpen_InvalidPath_Rejected(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
 		setup   func(t *testing.T, dir string) string
 		wantErr error
 	}{
-		{
-			name: "directory",
-			setup: func(t *testing.T, dir string) string {
-				t.Helper()
-				path := filepath.Join(dir, "subdir")
-				if err := os.Mkdir(path, permOwnerOnlyDir); err != nil {
-					t.Fatalf("Mkdir(%q): %v", path, err)
-				}
-				return path
-			},
-			wantErr: appendfile.ErrNotRegularFile,
-		},
-		{
-			name:    "fifo without reader",
-			setup:   makeFIFO,
-			wantErr: appendfile.ErrNotRegularFile,
-		},
-		{
-			name: "fifo with reader",
-			setup: func(t *testing.T, dir string) string {
-				t.Helper()
-				path := makeFIFO(t, dir)
-				openReader(t, path)
-				return path
-			},
-			wantErr: appendfile.ErrNotRegularFile,
-		},
-		{
-			name:    "character device",
-			setup:   func(*testing.T, string) string { return devNull },
-			wantErr: appendfile.ErrNotRegularFile,
-		},
-		{
-			name: "symlink to regular file",
-			setup: func(t *testing.T, dir string) string {
-				t.Helper()
-				target := filepath.Join(dir, "target.log")
-				if err := os.WriteFile(target, nil, permOwnerOnly); err != nil {
-					t.Fatalf("WriteFile(%q): %v", target, err)
-				}
-				return makeSymlink(t, target, filepath.Join(dir, "link.log"))
-			},
-			wantErr: appendfile.ErrSymlink,
-		},
+		{name: "directory", setup: makeDir, wantErr: appendfile.ErrNotRegularFile},
+		{name: "fifoWithoutReader", setup: makeFIFO, wantErr: appendfile.ErrNotRegularFile},
+		{name: "fifoWithReader", setup: makeFIFOWithReader, wantErr: appendfile.ErrNotRegularFile},
+		{name: "characterDevice", setup: func(*testing.T, string) string { return devNull }, wantErr: appendfile.ErrNotRegularFile},
+		{name: "symlinkToRegularFile", setup: makeSymlink, wantErr: appendfile.ErrSymlink},
+		{name: "missingParentDir", setup: missingParent, wantErr: fs.ErrNotExist},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := tt.setup(t, t.TempDir())
 
-			err := openWithin(t, path, rejectTimeout)
+			f, err := appendfile.Open(path, permOwnerOnly)
+			if err == nil {
+				closeFile(t, f)
+			}
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Open(%q) error mismatch (-want +got):\n%s", path, diff)
@@ -109,25 +92,37 @@ func TestOpenRejectsUnsafePath(t *testing.T) {
 	}
 }
 
-// openWithin calls appendfile.Open and fails the test if it does not return
-// within timeout, so a regression to a blocking open fails instead of hanging.
-func openWithin(t *testing.T, path string, timeout time.Duration) error {
+func createWithMode(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() {
-		f, err := appendfile.Open(path, permOwnerOnly)
-		if err == nil {
-			err = f.Close()
-		}
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(timeout):
-		t.Fatalf("Open(%q) did not return within %v", path, timeout)
-		return nil
+	writeFile(t, path, "")
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("Chmod(%q, %v): %v", path, mode, err)
 	}
+}
+
+func modeOf(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", path, err)
+	}
+	return info.Mode()
+}
+
+func closeFile(t *testing.T, f *os.File) {
+	t.Helper()
+	if err := f.Close(); err != nil {
+		t.Errorf("Close(%q): %v", f.Name(), err)
+	}
+}
+
+func makeDir(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "subdir")
+	if err := os.Mkdir(path, permOwnerOnlyDir); err != nil {
+		t.Fatalf("Mkdir(%q): %v", path, err)
+	}
+	return path
 }
 
 func makeFIFO(t *testing.T, dir string) string {
@@ -139,25 +134,30 @@ func makeFIFO(t *testing.T, dir string) string {
 	return path
 }
 
-// openReader holds a non-blocking reader on the FIFO for the rest of the test,
-// so a writer's open succeeds and only the fstat check can reject it.
-func openReader(t *testing.T, path string) {
+// makeFIFOWithReader holds a non-blocking reader on a new FIFO for the rest of
+// the test, so a writer's open succeeds and only the fstat check can reject it.
+func makeFIFOWithReader(t *testing.T, dir string) string {
 	t.Helper()
+	path := makeFIFO(t, dir)
 	r, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		t.Fatalf("opening reader on %q: %v", path, err)
 	}
-	t.Cleanup(func() {
-		if err := r.Close(); err != nil {
-			t.Errorf("closing reader on %q: %v", path, err)
-		}
-	})
+	t.Cleanup(func() { closeFile(t, r) })
+	return path
 }
 
-func makeSymlink(t *testing.T, target, link string) string {
+func makeSymlink(t *testing.T, dir string) string {
 	t.Helper()
+	target := filepath.Join(dir, "target.log")
+	writeFile(t, target, "")
+	link := filepath.Join(dir, "link.log")
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatalf("Symlink(%q, %q): %v", target, link, err)
 	}
 	return link
+}
+
+func missingParent(_ *testing.T, dir string) string {
+	return filepath.Join(dir, "missing", fileName)
 }

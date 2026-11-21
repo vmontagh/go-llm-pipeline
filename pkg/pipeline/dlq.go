@@ -36,8 +36,9 @@ type DLQEntry struct {
 }
 
 // NewDeadLetterQueue creates a new DLQ that appends to the specified file. The
-// path must be a regular file or not yet exist: a symlink, FIFO, device or
-// directory is rejected without blocking.
+// path must be a regular file or not yet exist; a directory, FIFO or device is
+// rejected. On Unix a final-component symlink is rejected too, and the check
+// never blocks on a FIFO or device.
 func NewDeadLetterQueue(filePath string, appLogger *slog.Logger) (*DeadLetterQueue, error) {
 	dir := filepath.Dir(filePath)
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
