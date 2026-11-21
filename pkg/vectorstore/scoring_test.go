@@ -228,7 +228,8 @@ func TestCosineUnit(t *testing.T) {
 			if diff := cmp.Diff(tc.want, got, cmpopts.EquateApprox(0, 1e-9)); diff != "" {
 				t.Errorf("CosineUnit(%v, %v) = %v, want %v (-want +got):\n%s", tc.a, tc.b, got, tc.want, diff)
 			}
-			// For unit-length inputs, CosineUnit matches Cosine exactly.
+			// For unit-length inputs, CosineUnit matches Cosine up to rounding:
+			// Cosine normalizes again, so the last bit can differ.
 			cosineGot, cosineErr := vectorstore.Cosine(tc.a, tc.b)
 			if cosineErr != nil {
 				t.Fatalf("Cosine(%v, %v) = %v, want nil", tc.a, tc.b, cosineErr)

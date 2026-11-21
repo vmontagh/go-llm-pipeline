@@ -176,9 +176,11 @@ func Cosine(a, b Vector) (float64, error) {
 // call, avoiding an O(n*dim) pass. It returns [ErrDimensionMismatch] when the
 // vectors differ in length, and [ErrEmptyVector] for empty input, matching
 // [Cosine]. Behavior is undefined if either input is not unit-length; use
-// [Cosine] when the inputs are not already normalized. Scores match [Cosine]
-// exactly for unit-length inputs, with 1 for identical and -1 for antipodal
-// directions preserved at the endpoints.
+// [Cosine] when the inputs are not already normalized. For unit-length inputs
+// scores agree with [Cosine] only up to floating-point rounding, because
+// [Cosine] normalizes its inputs again: a 45-degree pair can differ in the last
+// bit, so compare scores against a threshold with a tolerance. The endpoints
+// stay exact: 1 for identical and -1 for antipodal directions.
 func CosineUnit(a, b Vector) (float64, error) {
 	if len(a) != len(b) {
 		return 0, fmt.Errorf("cosine: %w: got %d, want %d", ErrDimensionMismatch, len(a), len(b))
