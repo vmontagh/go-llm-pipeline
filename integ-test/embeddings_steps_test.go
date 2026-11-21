@@ -92,9 +92,7 @@ func initializeScenario(t *testing.T, sc *godog.ScenarioContext) {
 		w.reset(scenario)
 		return ctx, nil
 	})
-	sc.After(func(ctx context.Context, _ *godog.Scenario, err error) (context.Context, error) {
-		return ctx, errors.Join(err, w.closeSQLite())
-	})
+	sc.After(w.afterScenario)
 
 	sc.Step(`^an Ollama embedder for model "([^"]*)"$`, func(model string) error {
 		return w.anOllamaEmbedderForModel(t, model)
@@ -406,6 +404,14 @@ func (w *embedWorld) reopenedStoreRanksLikeMemory(ctx context.Context, id string
 		return fmt.Errorf("%w: Nearest(%q) memory vs sqlite (-want +got):\n%s", errResultMismatch, id, diff)
 	}
 	return nil
+}
+
+// afterScenario releases scenario resources and returns only cleanup errors.
+// godog already reports the step error it passes in and treats any non-nil
+// return as a hook failure, so echoing that error would duplicate it and
+// misreport a successful cleanup as failed.
+func (w *embedWorld) afterScenario(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
+	return ctx, w.closeSQLite()
 }
 
 // closeSQLite closes the reopened store, if a scenario opened one.
