@@ -1,6 +1,23 @@
 // Package gemini implements the transport half of the analyzer Template
 // Method using Google's Gemini models. It talks to the Gemini REST API
 // directly over net/http, so it pulls in no Google SDK dependencies.
+//
+// # Migrating from v0.4
+//
+// Up to v0.4.0 the provider wrapped the deprecated
+// github.com/google/generative-ai-go SDK and leased *genai.Client values.
+// It now leases API keys:
+//
+//	// v0.4
+//	gemini.NewProvider(model, []*genai.Client{client}, opts...)
+//	// v0.5
+//	gemini.NewProvider(apiKeys, gemini.WithModel(model), opts...)
+//
+// Callers that build analyzers use analyzer.NewBuilder[string, R] instead
+// of analyzer.NewBuilder[*genai.Client, R]. Replace option.WithEndpoint
+// with WithBaseURL, whose value includes the API version path (see
+// DefaultBaseURL), and option.WithHTTPClient with WithHTTPClient. API
+// failures are *APIError values instead of *googleapi.Error.
 package gemini
 
 import (
