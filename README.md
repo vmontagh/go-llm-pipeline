@@ -1,5 +1,7 @@
 ## go-llm-pipeline
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/vmontagh/go-llm-pipeline/badge)](https://scorecard.dev/viewer/?uri=github.com/vmontagh/go-llm-pipeline)
+
 An idiomatic, low-dependency Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
 
 ### Overview

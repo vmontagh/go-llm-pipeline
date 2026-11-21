@@ -118,7 +118,7 @@ func TestClient_RecordRedactsSecrets(t *testing.T) {
 
 	const (
 		bearerToken = "Bearer sk-secretBEARER1234567890abcdef"
-		openAIKey   = "sk-bodySECRET1234567890abcdefghij"
+		openAIKey   = "sk-bodySECRET1234567890abcdefghij" // gitleaks:allow — fake fixture for redaction tests
 	)
 	srv := newJSONServer(t, `{"ok":true,"echo":"`+openAIKey+`"}`)
 

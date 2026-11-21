@@ -19,8 +19,8 @@ import (
 
 const (
 	fakeBearerToken = "Bearer sk-secret1234567890ABCDEFGHIJ"
-	fakeOpenAIKey   = "sk-secret1234567890ABCDEFGHIJ"
-	fakeGoogleKey   = "AIzaSyA1234567890abcdefghijklmnopqrstuvw"
+	fakeOpenAIKey   = "sk-secret1234567890ABCDEFGHIJ"            // gitleaks:allow — fake fixture for redaction tests
+	fakeGoogleKey   = "AIzaSyA1234567890abcdefghijklmnopqrstuvw" // gitleaks:allow — fake fixture for redaction tests
 )
 
 // doPOST issues a JSON POST through client and drains the response body.

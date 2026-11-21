@@ -1,4 +1,9 @@
-.PHONY: build test test-unit-cover test-bdd test-bdd-live lint lint-arch clean fmt vet tidy
+.PHONY: build test test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
+
+GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
+GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
+# SECRETS_BASE is the ref whose descendants `make secrets` scans commit by commit.
+SECRETS_BASE ?= origin/main
 
 build:
 	go build ./...
@@ -28,6 +33,16 @@ lint:
 
 lint-arch:
 	go run github.com/fe3dback/go-arch-lint@v1.15.0 check --project-path .
+
+# vuln reports known vulnerabilities in code paths the module actually calls.
+vuln:
+	$(GOVULNCHECK) ./...
+
+# secrets scans the working tree and every commit after SECRETS_BASE for
+# credentials. Deliberate fake keys in tests carry a `gitleaks:allow` comment.
+secrets:
+	$(GITLEAKS) dir . --no-banner --redact
+	$(GITLEAKS) git . --no-banner --redact --log-opts="$(SECRETS_BASE)..HEAD"
 
 fmt:
 	gofmt -w .
