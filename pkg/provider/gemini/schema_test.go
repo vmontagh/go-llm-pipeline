@@ -3,7 +3,6 @@ package gemini
 import (
 	"testing"
 
-	"github.com/google/generative-ai-go/genai"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
@@ -13,7 +12,7 @@ func TestConvertJSONSchema(t *testing.T) {
 	tests := []struct {
 		name string
 		in   map[string]any
-		want *genai.Schema
+		want *schema
 	}{
 		{name: "nil input", in: nil, want: nil},
 		{name: "empty input", in: map[string]any{}, want: nil},
@@ -21,12 +20,17 @@ func TestConvertJSONSchema(t *testing.T) {
 		{
 			name: "primitive string with description",
 			in:   map[string]any{"type": "string", "description": "d"},
-			want: &genai.Schema{Type: genai.TypeString, Description: "d"},
+			want: &schema{Type: geminiTypeString, Description: "d"},
 		},
 		{
 			name: "nullable object",
 			in:   map[string]any{"type": "object", "nullable": true},
-			want: &genai.Schema{Type: genai.TypeObject, Nullable: true},
+			want: &schema{Type: geminiTypeObject, Nullable: true},
+		},
+		{
+			name: "unknown type maps to unspecified",
+			in:   map[string]any{"type": "null"},
+			want: &schema{Type: geminiTypeUnspecified},
 		},
 		{
 			name: "array of strings",
@@ -34,9 +38,9 @@ func TestConvertJSONSchema(t *testing.T) {
 				"type":  "array",
 				"items": map[string]any{"type": "string"},
 			},
-			want: &genai.Schema{
-				Type:  genai.TypeArray,
-				Items: &genai.Schema{Type: genai.TypeString},
+			want: &schema{
+				Type:  geminiTypeArray,
+				Items: &schema{Type: geminiTypeString},
 			},
 		},
 		{
@@ -53,14 +57,14 @@ func TestConvertJSONSchema(t *testing.T) {
 				},
 				"required": []any{"heading", "tags", "description"},
 			},
-			want: &genai.Schema{
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"heading":     {Type: genai.TypeString},
-					"description": {Type: genai.TypeString},
+			want: &schema{
+				Type: geminiTypeObject,
+				Properties: map[string]*schema{
+					"heading":     {Type: geminiTypeString},
+					"description": {Type: geminiTypeString},
 					"tags": {
-						Type:  genai.TypeArray,
-						Items: &genai.Schema{Type: genai.TypeString},
+						Type:  geminiTypeArray,
+						Items: &schema{Type: geminiTypeString},
 					},
 				},
 				Required: []string{"heading", "tags", "description"},
@@ -76,12 +80,12 @@ func TestConvertJSONSchema(t *testing.T) {
 					"b": map[string]any{"type": "boolean"},
 				},
 			},
-			want: &genai.Schema{
-				Type: genai.TypeObject,
-				Properties: map[string]*genai.Schema{
-					"n": {Type: genai.TypeNumber},
-					"i": {Type: genai.TypeInteger},
-					"b": {Type: genai.TypeBoolean},
+			want: &schema{
+				Type: geminiTypeObject,
+				Properties: map[string]*schema{
+					"n": {Type: geminiTypeNumber},
+					"i": {Type: geminiTypeInteger},
+					"b": {Type: geminiTypeBoolean},
 				},
 			},
 		},
@@ -95,12 +99,12 @@ func TestConvertJSONSchema(t *testing.T) {
 					"b": map[string]any{"type": "string"},
 				},
 			},
-			want: &genai.Schema{
-				Type:     genai.TypeObject,
+			want: &schema{
+				Type:     geminiTypeObject,
 				Required: []string{"a", "b"},
-				Properties: map[string]*genai.Schema{
-					"a": {Type: genai.TypeString},
-					"b": {Type: genai.TypeString},
+				Properties: map[string]*schema{
+					"a": {Type: geminiTypeString},
+					"b": {Type: geminiTypeString},
 				},
 			},
 		},
