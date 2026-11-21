@@ -5,6 +5,8 @@ allow:
 components:
   logger:
     in: pkg/logger/**
+  appendfile:
+    in: internal/appendfile/**
   trace:
     in: pkg/trace/**
   httputil:
@@ -51,10 +53,18 @@ components:
     in: integ-test/**
 
 deps:
+  appendfile:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - appendfile
+
   logger:
     anyProjectDeps: false
     anyVendorDeps: true
-    mayDependOn: []
+    mayDependOn:
+      - appendfile
+      - logger
 
   trace:
     anyProjectDeps: false
@@ -147,6 +157,7 @@ deps:
     anyProjectDeps: false
     anyVendorDeps: true
     mayDependOn:
+      - appendfile
       - logger
       - pipeline
 
