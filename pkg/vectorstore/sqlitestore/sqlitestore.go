@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	// modernc.org/sqlite registers the "sqlite" database/sql driver via its
@@ -376,6 +377,10 @@ func ensureCanonicalStorePath(path string) (string, error) {
 // contents are preserved (no truncation).
 func precreateSecure(path string) (err error) {
 	f, err := os.OpenFile(path, precreateOpenFlags, ownerOnlyFileMode)
+	if errors.Is(err, syscall.EISDIR) {
+		// Linux refuses a writable open of a directory before fstat can see it.
+		return fmt.Errorf("opening sqlite store file %q: %w", path, errors.Join(errNotRegularFile, err))
+	}
 	if err != nil {
 		return fmt.Errorf("creating sqlite store file %q: %w", path, err)
 	}
