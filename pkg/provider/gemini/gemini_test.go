@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,6 +331,132 @@ func TestWithHTTPClientTimeout(t *testing.T) {
 	}
 	if caller.Timeout != 0 {
 		t.Errorf("caller's http.Client.Timeout = %v, want 0 (unmodified)", caller.Timeout)
+	}
+}
+
+// newRedirectServer answers every request with a 307 to target(srv), where
+// srv is the redirecting server itself.
+func newRedirectServer(t *testing.T, newServer func(http.Handler) *httptest.Server, target func(srv *httptest.Server) string) *httptest.Server {
+	t.Helper()
+	var srv *httptest.Server
+	srv = newServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		http.Redirect(rw, r, target(srv), http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestCall_CrossOriginRedirectRefused(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		newServer func(http.Handler) *httptest.Server
+		target    func(redirector, other *httptest.Server) string
+	}{
+		{
+			name:      "different host",
+			newServer: httptest.NewServer,
+			target:    func(_, other *httptest.Server) string { return other.URL },
+		},
+		{
+			name:      "HTTPS to HTTP downgrade on the same host",
+			newServer: httptest.NewTLSServer,
+			target: func(redirector, _ *httptest.Server) string {
+				return "http://" + redirector.Listener.Addr().String()
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			leaked := make(chan string, 1)
+			other := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				leaked <- r.Header.Get("X-Goog-Api-Key")
+			}))
+			t.Cleanup(other.Close)
+			redirector := newRedirectServer(t, tt.newServer, func(srv *httptest.Server) string { return tt.target(srv, other) })
+			p := gemini.NewProvider(nil, gemini.WithBaseURL(redirector.URL), gemini.WithHTTPClient(redirector.Client()))
+
+			got := call(t, p, []byte("img"))
+
+			if !errors.Is(got.Err, gemini.ErrCrossOriginRedirect) {
+				t.Errorf("Call() error = %v, want %v", got.Err, gemini.ErrCrossOriginRedirect)
+			}
+			select {
+			case key := <-leaked:
+				t.Errorf("redirect target received a request with API key %q", key)
+			default:
+			}
+		})
+	}
+}
+
+func TestCall_SameOriginRedirect(t *testing.T) {
+	t.Parallel()
+	const okBody = `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`
+	newServer := func(t *testing.T) *httptest.Server {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Has("moved") {
+				if _, err := io.WriteString(rw, okBody); err != nil {
+					t.Errorf("WriteString() = %v", err)
+				}
+				return
+			}
+			http.Redirect(rw, r, r.URL.Path+"?moved", http.StatusTemporaryRedirect)
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	tests := []struct {
+		name          string
+		checkRedirect func(*http.Request, []*http.Request) error
+		want          provpkg.CallResult
+	}{
+		{
+			name: "followed by default",
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "ok"},
+		},
+		{
+			name:          "caller CheckRedirect still applies",
+			checkRedirect: func(*http.Request, []*http.Request) error { return errTest },
+			want:          provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: errTest},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newServer(t)
+			client := &http.Client{CheckRedirect: tt.checkRedirect}
+			p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL), gemini.WithHTTPClient(client))
+
+			got := call(t, p, nil)
+
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCall_RedirectLoopStops(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(rw, r, r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL))
+
+	got := call(t, p, nil)
+
+	if !errors.Is(got.Err, gemini.ErrTooManyRedirects) {
+		t.Errorf("Call() error = %v, want %v", got.Err, gemini.ErrTooManyRedirects)
+	}
+	const wantHits = 10
+	if got := hits.Load(); got != wantHits {
+		t.Errorf("server hits = %d, want %d", got, wantHits)
 	}
 }
 
