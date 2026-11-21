@@ -9,7 +9,7 @@
 
 ### Proposal: The go-llm-pipeline Project
 
-- **Objective:** Build an idiomatic, dependency-free Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
+- **Objective:** Build an idiomatic, low-dependency Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
 - **Stance:** Most AI frameworks are centered on Python, dynamic chat interfaces, and live API calls. This project provides a contrasting approach with statically typed pipelines, deterministic VCR-style testing, and batch-processing generic assets using concurrent worker pools.
 
 ### Core Value Propositions
@@ -72,7 +72,7 @@ A team building ETL-style LLM enrichment in Go could reasonably adopt `go-llm-pi
 
 - **Productize the VCR Package (`pkg/llmvcr`):**
   - Extract the current cassette/proxy workflow into a standalone package.
-  - Ensure it natively intercepts requests from standard Go HTTP clients used by OpenAI and Gemini SDKs.
+  - Ensure it natively intercepts requests from standard Go HTTP clients used by the OpenAI and Gemini providers.
   - Implement automatic redaction for common sensitive headers (for example, `Authorization` and API keys) before writing YAML/JSON cassettes.
 - **Define the Generic Asset Interface:**
   - Define and standardize the domain-agnostic `Asset` contract in the analyzer.

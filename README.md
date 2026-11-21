@@ -1,6 +1,6 @@
 ## go-llm-pipeline
 
-An idiomatic, dependency-free Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
+An idiomatic, low-dependency Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
 
 ### Overview
 
@@ -8,7 +8,8 @@ An idiomatic, dependency-free Go toolkit for local-first, deterministic LLM orch
 It favors deterministic, VCR-style testing over live API calls, routes natively to local
 inference engines (Ollama) as well as hosted providers (OpenAI, Gemini), and processes generic
 assets through concurrent worker pools. It is a Go library with no server component and a light
-dependency footprint.
+dependency footprint: every provider speaks its REST API over `net/http`, so no vendor SDKs (or
+their gRPC and cloud client trees) are pulled in.
 
 ### Installation
 
@@ -100,7 +101,7 @@ borderline conditions surface without blocking automation.
 | `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, and a dead-letter queue. |
 | `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |
-| `pkg/provider/gemini` | Transport half of the analyzer Template Method for Gemini. |
+| `pkg/provider/gemini` | Transport half of the analyzer Template Method for Gemini, calling the `generateContent` REST API over `net/http`. |
 | `pkg/provider/ollama` | Transport half of the analyzer Template Method for local Ollama, plus a local `Embedder` (`/api/embed`) that returns `[]float64` for `pkg/vectorstore`. |
 | `pkg/strategy` | Ensemble generation and judge-synthesis strategies (`Generator`/`Judge`). |
 | `pkg/policy` | Provider-agnostic retry/error taxonomy (tiers, `RetryPolicy`, error classification). |

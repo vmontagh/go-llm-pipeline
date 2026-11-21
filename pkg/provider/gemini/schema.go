@@ -1,7 +1,6 @@
 package gemini
 
-import "github.com/google/generative-ai-go/genai"
-
+// JSON Schema type names accepted by convertJSONSchema.
 const (
 	typeString  = "string"
 	typeNumber  = "number"
@@ -11,17 +10,37 @@ const (
 	typeObject  = "object"
 )
 
-// convertJSONSchema translates a provider-agnostic JSON Schema representation into a genai.Schema struct.
-func convertJSONSchema(s map[string]any) *genai.Schema {
+// Gemini Schema.Type enum values (an OpenAPI 3.0 subset).
+const (
+	geminiTypeUnspecified = "TYPE_UNSPECIFIED"
+	geminiTypeString      = "STRING"
+	geminiTypeNumber      = "NUMBER"
+	geminiTypeInteger     = "INTEGER"
+	geminiTypeBoolean     = "BOOLEAN"
+	geminiTypeArray       = "ARRAY"
+	geminiTypeObject      = "OBJECT"
+)
+
+// schema is the Gemini REST API Schema object used for structured output.
+type schema struct {
+	Type        string             `json:"type"`
+	Description string             `json:"description,omitempty"`
+	Nullable    bool               `json:"nullable,omitempty"`
+	Required    []string           `json:"required,omitempty"`
+	Properties  map[string]*schema `json:"properties,omitempty"`
+	Items       *schema            `json:"items,omitempty"`
+}
+
+// convertJSONSchema translates a provider-agnostic JSON Schema representation into a Gemini schema.
+func convertJSONSchema(s map[string]any) *schema {
 	if len(s) == 0 {
 		return nil
 	}
-	out := &genai.Schema{}
 	t, ok := s["type"].(string)
 	if !ok {
 		return nil
 	}
-	out.Type = jsonTypeToGenAI(t)
+	out := &schema{Type: geminiType(t)}
 	if d, ok := s["description"].(string); ok {
 		out.Description = d
 	}
@@ -32,7 +51,7 @@ func convertJSONSchema(s map[string]any) *genai.Schema {
 		out.Required = toStringSlice(req)
 	}
 	if props, ok := s["properties"].(map[string]any); ok && len(props) > 0 {
-		out.Properties = make(map[string]*genai.Schema, len(props))
+		out.Properties = make(map[string]*schema, len(props))
 		for name, v := range props {
 			if child, ok := v.(map[string]any); ok {
 				if converted := convertJSONSchema(child); converted != nil {
@@ -47,22 +66,22 @@ func convertJSONSchema(s map[string]any) *genai.Schema {
 	return out
 }
 
-func jsonTypeToGenAI(t string) genai.Type {
+func geminiType(t string) string {
 	switch t {
 	case typeString:
-		return genai.TypeString
+		return geminiTypeString
 	case typeNumber:
-		return genai.TypeNumber
+		return geminiTypeNumber
 	case typeInteger:
-		return genai.TypeInteger
+		return geminiTypeInteger
 	case typeBoolean:
-		return genai.TypeBoolean
+		return geminiTypeBoolean
 	case typeArray:
-		return genai.TypeArray
+		return geminiTypeArray
 	case typeObject:
-		return genai.TypeObject
+		return geminiTypeObject
 	default:
-		return genai.TypeUnspecified
+		return geminiTypeUnspecified
 	}
 }
 
