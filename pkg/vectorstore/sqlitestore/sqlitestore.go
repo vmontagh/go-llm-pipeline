@@ -33,6 +33,7 @@ import (
 	// modernc.org/sqlite registers the "sqlite" database/sql driver via its
 	// init; it is imported by name to detect SQLITE_BUSY on concurrent opens.
 	sqlite3 "modernc.org/sqlite"
+	sqlitelib "modernc.org/sqlite/lib"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/vectorstore"
 )
@@ -58,11 +59,10 @@ const (
 	// override it, bounding how long a write waits on a competing lock.
 	defaultBusyTimeout = 5 * time.Second
 
-	// sqliteBusy is SQLite's SQLITE_BUSY result code. Converting a fresh database to
-	// WAL journal mode needs a brief exclusive lock that SQLite does not retry via
-	// busy_timeout, so concurrent first opens can see this transiently and must
-	// retry rather than fail. It matches [modernc.org/sqlite/lib.SQLITE_BUSY].
-	sqliteBusy = 5
+	// primaryResultCodeMask selects SQLite's primary result code from an extended
+	// one: the driver enables extended result codes, so a lock error such as
+	// SQLITE_BUSY_RECOVERY (261) carries SQLITE_BUSY (5) only in its low byte.
+	primaryResultCodeMask = 0xff
 
 	// pingRetryDelay bounds how long Open waits between retries while the WAL
 	// conversion lock is briefly held by a competing opener.
@@ -280,10 +280,19 @@ func pingWithRetry(ctx context.Context, db *sql.DB, busyTimeout time.Duration) e
 	}
 }
 
-// isSQLiteBusy reports whether err is a SQLITE_BUSY error from the driver.
+// isSQLiteBusy reports whether err is a SQLITE_BUSY error from the driver,
+// including its extended forms. Converting a fresh database to WAL journal mode
+// needs a brief exclusive lock that SQLite does not retry via busy_timeout, so
+// concurrent first opens can see this transiently and must retry rather than
+// fail.
 func isSQLiteBusy(err error) bool {
 	var serr *sqlite3.Error
-	return errors.As(err, &serr) && serr.Code() == sqliteBusy
+	return errors.As(err, &serr) && isBusyCode(serr.Code())
+}
+
+// isBusyCode reports whether an (extended) SQLite result code is SQLITE_BUSY.
+func isBusyCode(code int) bool {
+	return code&primaryResultCodeMask == sqlitelib.SQLITE_BUSY
 }
 
 // dirComponentSafe reports why a directory component on the resolved store path
