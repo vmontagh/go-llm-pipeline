@@ -11,7 +11,6 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/stretchr/testify/require"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
@@ -131,7 +130,9 @@ func TestTemplate_Analyze(t *testing.T) {
 			}
 			mustTemplate := func(p provider.Provider[string], parser func(string) (parsedResult, error), opts ...TemplateConfigurator) *Template[string, parsedResult] {
 				tInst, err := NewTemplate[string, parsedResult](p, parser, opts...)
-				require.NoError(t, err)
+				if err != nil {
+					t.Fatalf("NewTemplate() = %v, want nil", err)
+				}
 				return tInst
 			}
 			tmpl := mustTemplate(p, func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }, WithTemplateBackOff(&backoff.StopBackOff{}))
@@ -256,7 +257,9 @@ func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 				func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil },
 				WithTemplateShortCooldownRetryThreshold(tt.threshold),
 			)
-			require.NoError(t, err)
+			if err != nil {
+				t.Fatalf("NewTemplate() = %v, want nil", err)
+			}
 
 			_, err = tmpl.callOnce(context.Background(), &callOnceParams{prompt: "prompt"})
 			if diff := cmp.Diff(provider.ErrAllKeysCoolingDown, err, cmpopts.EquateErrors()); diff != "" {
