@@ -17,6 +17,7 @@ var (
 	errJudgeTestFailed1 = errors.New("failed 1")
 	errJudgeTestFailed2 = errors.New("failed 2")
 	errJudgeTestJudge   = errors.New("judge failed")
+	errJudgeTestPrompt  = errors.New("prompt failed")
 )
 
 type fakeJudgeAnalyzer struct {
@@ -50,8 +51,8 @@ func (m *fakePointerAnalyzer) Analyze(ctx context.Context, prompt string, imageD
 	return m.result, m.err
 }
 
-func dummyPromptBuilder(_ context.Context, genPrompt string, drafts []*dummyAnalysisResult, feedback []string, attempt int) string {
-	return "judge-prompt"
+func dummyPromptBuilder(_ context.Context, genPrompt string, drafts []*dummyAnalysisResult, feedback []string, attempt int) (string, error) {
+	return "judge-prompt", nil
 }
 
 func TestJudgeAnalyzer_Init(t *testing.T) {
@@ -61,7 +62,7 @@ func TestJudgeAnalyzer_Init(t *testing.T) {
 		name          string
 		judge         Judge
 		generators    []Generator[*dummyAnalysisResult]
-		promptBuilder func(ctx context.Context, generatorPrompt string, drafts []*dummyAnalysisResult, feedback []string, attempt int) string
+		promptBuilder JudgePromptBuilder[*dummyAnalysisResult]
 		options       []JudgeOption[*dummyAnalysisResult]
 		wantErr       error
 		wantName      string
@@ -315,6 +316,8 @@ func (c *capturingGeneratorWithPrompts) Analyze(_ context.Context, prompt string
 	return c.result, nil
 }
 
+// dynamicjudgeAnalyzer returns responses in order, repeating the last one once
+// they run out. call counts every invocation, including repeats.
 type dynamicjudgeAnalyzer struct {
 	name      string
 	responses []*JudgeResponse
@@ -323,10 +326,7 @@ type dynamicjudgeAnalyzer struct {
 
 func (d *dynamicjudgeAnalyzer) Name() string { return d.name }
 func (d *dynamicjudgeAnalyzer) Analyze(_ context.Context, _ string, _ []byte, _ string, _ func(string, string, string, bool)) (*JudgeResponse, error) {
-	if d.call >= len(d.responses) {
-		return d.responses[len(d.responses)-1], nil
-	}
-	resp := d.responses[d.call]
+	resp := d.responses[min(d.call, len(d.responses)-1)]
 	d.call++
 	return resp, nil
 }
@@ -399,6 +399,50 @@ func TestJudgeAnalyzer_ReflexionLoop(t *testing.T) {
 				if len(gen.prompts) < 2 || gen.prompts[1] == initialPrompt {
 					t.Errorf("attempt 2: want rebuilt prompt, still got initial prompt %q", initialPrompt)
 				}
+			}
+		})
+	}
+}
+
+func TestJudgeAnalyzer_PromptBuilderError(t *testing.T) {
+	t.Parallel()
+	draft := &dummyAnalysisResult{Heading: "Draft"}
+	reject := &JudgeResponse{Approved: false, Feedback: "more tags", SelectedDraftIndex: 0}
+
+	tests := []struct {
+		name           string
+		failOnAttempt  int
+		wantJudgeCalls int
+	}{
+		{name: "first attempt", failOnAttempt: 1},
+		{name: "retry attempt after a rejection", failOnAttempt: 2, wantJudgeCalls: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			judge := &dynamicjudgeAnalyzer{name: "j", responses: []*JudgeResponse{reject}}
+			builder := func(_ context.Context, _ string, _ []*dummyAnalysisResult, _ []string, attempt int) (string, error) {
+				if attempt == tt.failOnAttempt {
+					return "", errJudgeTestPrompt
+				}
+				return "judge-prompt", nil
+			}
+			gen := &fakePointerAnalyzer{name: "gen", result: draft}
+			ja, err := NewJudgeAnalyzer(judge, []Generator[*dummyAnalysisResult]{gen}, builder, WithJudgeMaxAttempts[*dummyAnalysisResult](3))
+			if err != nil {
+				t.Fatalf("NewJudgeAnalyzer() = %v", err)
+			}
+
+			got, err := ja.Analyze(t.Context(), "prompt", nil, "job123", nil)
+
+			if diff := cmp.Diff(errJudgeTestPrompt, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Analyze() error mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff((*dummyAnalysisResult)(nil), got); diff != "" {
+				t.Errorf("Analyze() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantJudgeCalls, judge.call); diff != "" {
+				t.Errorf("judge call count mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
