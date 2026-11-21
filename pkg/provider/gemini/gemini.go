@@ -223,12 +223,16 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 		}
 	}()
 
+	// Parsed before reading the body so a failed read on a 429/503 still
+	// honors the server's cooldown.
+	retryAfter := httputil.ParseRetryAfter(resp.Header.Get("Retry-After"))
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return provpkg.CallResult{
 			Outcome:    provpkg.OutcomeProviderError,
 			Err:        fmt.Errorf("reading gemini response: %w", err),
 			StatusCode: resp.StatusCode,
+			RetryAfter: retryAfter,
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -237,7 +241,7 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 			Err:        newAPIError(resp.StatusCode, body),
 			StatusCode: resp.StatusCode,
 			Body:       body,
-			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: retryAfter,
 		}
 	}
 	return parseResponse(body)

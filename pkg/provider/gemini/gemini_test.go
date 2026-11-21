@@ -286,20 +286,57 @@ func TestCall_APIError(t *testing.T) {
 	}
 }
 
-func TestCall_TransportError(t *testing.T) {
+// roundTripperFunc adapts a function to http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// errReader is a response body whose reads always fail with err.
+type errReader struct{ err error }
+
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestCall_TransportFailure(t *testing.T) {
 	t.Parallel()
-	srv := httptest.NewServer(http.NotFoundHandler())
-	srv.Close()
-	p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL))
-
-	got := call(t, p, nil)
-
-	want := provpkg.CallResult{Outcome: provpkg.OutcomeProviderError}
-	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(provpkg.CallResult{}, "Err")); diff != "" {
-		t.Errorf("Call() mismatch (-want +got):\n%s", diff)
+	tests := []struct {
+		name string
+		rt   roundTripperFunc
+		want provpkg.CallResult
+	}{
+		{
+			name: "request fails",
+			rt:   func(*http.Request) (*http.Response, error) { return nil, errTest },
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: errTest},
+		},
+		{
+			name: "body read fails on rate limit",
+			rt: func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     http.Header{"Retry-After": {"7"}},
+					Body:       io.NopCloser(errReader{errTest}),
+					Request:    r,
+				}, nil
+			},
+			want: provpkg.CallResult{
+				Outcome:    provpkg.OutcomeProviderError,
+				Err:        errTest,
+				StatusCode: http.StatusTooManyRequests,
+				RetryAfter: retryAfterSecs * time.Second,
+			},
+		},
 	}
-	if got.Err == nil {
-		t.Error("Call() error = nil, want transport error")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			p := gemini.NewProvider(nil, gemini.WithHTTPClient(&http.Client{Transport: tt.rt}))
+
+			got := call(t, p, nil)
+
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
