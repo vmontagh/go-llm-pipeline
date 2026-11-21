@@ -486,6 +486,76 @@ func TestDecodeMetadataRejectsCorruptBlob(t *testing.T) {
 	}
 }
 
+// cancelAfterQuery runs queries against q and cancels the scan's context as
+// soon as a query has started, so the cancellation lands mid-scan with rows
+// still open.
+type cancelAfterQuery struct {
+	q      rowQuerier
+	cancel context.CancelFunc
+}
+
+func (c cancelAfterQuery) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	rows, err := c.q.QueryContext(ctx, query, args...)
+	c.cancel()
+	return rows, err
+}
+
+func TestScanItemsCanceledMidScan(t *testing.T) {
+	t.Parallel()
+	s := openInternal(t)
+	for _, id := range []string{"a", "b", "c"} {
+		if err := s.Add(t.Context(), vectorstore.Item{ID: id, Vector: vectorstore.Vector{1, 0}}); err != nil {
+			t.Fatalf("Add(%q) = %v, want nil", id, err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	got, err := scanItems(ctx, cancelAfterQuery{q: s.db, cancel: cancel}, vectorstore.Vector{1, 0})
+
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("scanItems() error mismatch (-want +got):\n%s", diff)
+	}
+	if len(got) != 0 {
+		t.Errorf("scanItems() = %d partial neighbors, want none", len(got))
+	}
+}
+
+// TestNearestReleasesReadSnapshotOnError proves a Nearest that fails after
+// opening its read snapshot rolls it back: no connection stays checked out and
+// no reader pins the WAL, so a full checkpoint is not blocked.
+func TestNearestReleasesReadSnapshotOnError(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	s := openInternal(t)
+	if err := s.Add(ctx, vectorstore.Item{ID: "ok", Vector: vectorstore.Vector{1, 0}}); err != nil {
+		t.Fatalf("Add(ok) = %v, want nil", err)
+	}
+	injectCorruptRow(t, s, "corrupt", vectorstore.Vector{0, 0})
+
+	if _, err := s.Nearest(ctx, vectorstore.Vector{1, 0}, 1); !errors.Is(err, ErrCorruptVector) {
+		t.Fatalf("Nearest() = %v, want ErrCorruptVector to fail mid-scan", err)
+	}
+
+	if diff := cmp.Diff(0, s.db.Stats().InUse); diff != "" {
+		t.Errorf("connections in use after failed Nearest mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(0, checkpointBusy(t, s)); diff != "" {
+		t.Errorf("wal_checkpoint(TRUNCATE) busy mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// checkpointBusy runs a truncating WAL checkpoint and returns SQLite's busy
+// flag, which is 1 when an open reader prevented the checkpoint from finishing.
+func checkpointBusy(tb testing.TB, s *Store) int {
+	tb.Helper()
+	var busy, logFrames, checkpointed int
+	if err := s.db.QueryRowContext(tb.Context(), "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+		tb.Fatalf("PRAGMA wal_checkpoint(TRUNCATE) = %v, want nil", err)
+	}
+	return busy
+}
+
 // TestPrecreateSecureRejectsNonRegularFile proves a path that is not a regular
 // file is rejected promptly (a FIFO open must not block waiting for a writer)
 // and left untouched.
