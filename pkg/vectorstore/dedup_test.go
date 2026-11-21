@@ -16,6 +16,14 @@ import (
 // docs only promise exact endpoints for identical and antipodal directions.
 const scoreTolerance = 1e-9
 
+// cos45 is the cosine of 45°, the similarity of {1,0} and {1,1}.
+const cos45 = math.Sqrt2 / 2
+
+// approxScores compares Duplicate.Score within scoreTolerance and every other
+// field, vectors included, exactly.
+var approxScores = cmp.FilterPath(func(p cmp.Path) bool { return p.Last().String() == ".Score" },
+	cmpopts.EquateApprox(0, scoreTolerance))
+
 func TestFindDuplicates(t *testing.T) {
 	t.Parallel()
 
@@ -26,7 +34,7 @@ func TestFindDuplicates(t *testing.T) {
 		want      []pair
 	}{
 		{
-			name: "identical and near vectors pair up",
+			name: "identicalAndSameDirection_pairUp",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", 1, 0),    // identical to a
@@ -37,7 +45,19 @@ func TestFindDuplicates(t *testing.T) {
 			want:      []pair{{"a", "b", 1}, {"a", "c", 1}, {"b", "c", 1}},
 		},
 		{
-			name: "unsorted input yields sorted pairs",
+			name: "fractionalScores_reportedExactly",
+			// b sits at 45° to both a and c, which are orthogonal, so only the
+			// two 45° pairs meet 0.7 and each scores cos45, not 1.
+			items: []vectorstore.Item{
+				item("a", 1, 0),
+				item("b", 1, 1),
+				item("c", 0, 1),
+			},
+			threshold: 0.7,
+			want:      []pair{{"a", "b", cos45}, {"b", "c", cos45}},
+		},
+		{
+			name: "unsortedInput_pairsSorted",
 			items: []vectorstore.Item{
 				item("z", 1, 0),
 				item("m", 1, 0),
@@ -47,7 +67,7 @@ func TestFindDuplicates(t *testing.T) {
 			want:      []pair{{"a", "m", 1}, {"a", "z", 1}, {"m", "z", 1}},
 		},
 		{
-			name: "identical vectors meet endpoint threshold 1",
+			name: "identicalVectors_meetThresholdOne",
 			// Identical {1,1} vectors normalize to the same unit vector, so
 			// cosine reports exactly 1 and they pair at threshold 1.
 			items: []vectorstore.Item{
@@ -58,7 +78,7 @@ func TestFindDuplicates(t *testing.T) {
 			want:      []pair{{"a", "b", 1}},
 		},
 		{
-			name: "opposite vectors meet endpoint threshold -1",
+			name: "oppositeVectors_meetThresholdMinusOne",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", -1, 0),
@@ -67,7 +87,7 @@ func TestFindDuplicates(t *testing.T) {
 			want:      []pair{{"a", "b", -1}},
 		},
 		{
-			name: "near-identical distinct directions excluded at threshold 1",
+			name: "nearIdenticalDirections_excludedAtThresholdOne",
 			// {1,0} and {1,1e-5} have cosine just below 1; they must not be
 			// snapped together at the exact endpoint.
 			items: []vectorstore.Item{
@@ -75,16 +95,14 @@ func TestFindDuplicates(t *testing.T) {
 				item("b", 1, 1e-5),
 			},
 			threshold: 1,
-			want:      nil,
 		},
 		{
-			name: "no pairs meet threshold",
+			name: "noPairMeetsThreshold_none",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", 0, 1),
 			},
 			threshold: 0.9,
-			want:      nil,
 		},
 	}
 
@@ -97,7 +115,7 @@ func TestFindDuplicates(t *testing.T) {
 			if err != nil {
 				t.Fatalf("FindDuplicates(%s) = %v, want nil", tc.name, err)
 			}
-			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty(), cmpopts.EquateApprox(0, scoreTolerance)); diff != "" {
+			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty(), approxScores); diff != "" {
 				t.Errorf("FindDuplicates(%s) mismatch (-want +got):\n%s", tc.name, diff)
 			}
 		})
@@ -114,19 +132,19 @@ func TestFindDuplicatesErrors(t *testing.T) {
 		want      error
 	}{
 		{
-			name:      "threshold below range",
+			name:      "thresholdBelowRange",
 			items:     []vectorstore.Item{item("a", 1, 0)},
 			threshold: -1.5,
 			want:      vectorstore.ErrInvalidThreshold,
 		},
 		{
-			name:      "threshold above range",
+			name:      "thresholdAboveRange",
 			items:     []vectorstore.Item{item("a", 1, 0)},
 			threshold: 1.5,
 			want:      vectorstore.ErrInvalidThreshold,
 		},
 		{
-			name: "dimension mismatch",
+			name: "dimensionMismatch",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", 1, 0, 0),
@@ -135,19 +153,19 @@ func TestFindDuplicatesErrors(t *testing.T) {
 			want:      vectorstore.ErrDimensionMismatch,
 		},
 		{
-			name:      "empty id",
+			name:      "emptyID",
 			items:     []vectorstore.Item{{Vector: vectorstore.Vector{1, 0}}},
 			threshold: 0.9,
 			want:      vectorstore.ErrEmptyID,
 		},
 		{
-			name:      "empty vector",
+			name:      "emptyVector",
 			items:     []vectorstore.Item{{ID: "a"}},
 			threshold: 0.9,
 			want:      vectorstore.ErrEmptyVector,
 		},
 		{
-			name:      "zero magnitude vector",
+			name:      "zeroMagnitudeVector",
 			items:     []vectorstore.Item{item("a", 0, 0)},
 			threshold: 0.9,
 			want:      vectorstore.ErrInvalidVector,
@@ -155,25 +173,25 @@ func TestFindDuplicatesErrors(t *testing.T) {
 		{
 			// Invalid components sit past index 0 so per-component validation
 			// of only the first element would not pass.
-			name:      "NaN component",
+			name:      "nanComponent",
 			items:     []vectorstore.Item{item("a", 1, math.NaN())},
 			threshold: 0.9,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name:      "positive infinity component",
+			name:      "positiveInfinityComponent",
 			items:     []vectorstore.Item{item("a", 1, math.Inf(1))},
 			threshold: 0.9,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name:      "negative infinity component",
+			name:      "negativeInfinityComponent",
 			items:     []vectorstore.Item{item("a", math.Inf(-1), 0)},
 			threshold: 0.9,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name: "duplicate id",
+			name: "duplicateID",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("a", 0, 1),
@@ -202,11 +220,10 @@ func TestFindDuplicatesCancelled(t *testing.T) {
 		items []vectorstore.Item
 	}{
 		{
-			name:  "empty items",
-			items: nil,
+			name: "emptyItems",
 		},
 		{
-			name: "non-empty items",
+			name: "nonEmptyItems",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", 1, 0),

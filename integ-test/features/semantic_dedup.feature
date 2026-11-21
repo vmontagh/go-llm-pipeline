@@ -25,7 +25,9 @@ Feature: Semantic deduplication and clustering over real embeddings
       | rocket     |
       | tax1, tax2 |
 
-  @fake @live-local
+  # @unix: sqlitestore refuses to open on platforms without its owner-only
+  # file checks, so this scenario is skipped there.
+  @fake @live-local @unix
   Scenario: Embeddings persisted to SQLite rank neighbors like the memory store
     Given an Ollama embedder for model "nomic-embed-text"
     When I embed the following texts:

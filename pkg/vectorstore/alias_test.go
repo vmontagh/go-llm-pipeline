@@ -14,8 +14,10 @@ const (
 	aliasThreshold = 0.5
 	// aliasMaxDistance is the ClusterByDistance analogue of aliasThreshold.
 	aliasMaxDistance = 10.0
-	// scribble overwrites returned vector components and metadata values.
+	// scribble overwrites returned vector components.
 	scribble = -42
+	// scribbledMeta overwrites returned metadata values.
+	scribbledMeta = "scribbled"
 )
 
 // TestResultsDoNotAliasInput checks that each grouping function leaves its
@@ -50,7 +52,7 @@ func TestResultsDoNotAliasInput(t *testing.T) {
 
 			for _, it := range got {
 				it.Vector[0] = scribble
-				it.Metadata[fixtureMetaKey] = "scribbled"
+				it.Metadata[fixtureMetaKey] = scribbledMeta
 			}
 			assertUnchanged(t, "after writing to the results", want, items)
 		})

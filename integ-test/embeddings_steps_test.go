@@ -60,13 +60,11 @@ var (
 	errBadThreshold   = errors.New("threshold is not a number")
 	errResultMismatch = errors.New("result differs from expectation")
 	errInputMutated   = errors.New("call under test mutated its input")
-	errBelowThreshold = errors.New("duplicate score below threshold")
 )
 
 // embedWorld holds per-scenario state. The same instance is reused across
 // scenarios via the initializer, so reset clears it in the Before hook.
 type embedWorld struct {
-	t        *testing.T
 	cassette string
 	embedder *ollama.Embedder
 	store    *vectorstore.MemoryStore
@@ -81,11 +79,11 @@ type embedWorld struct {
 	sqlite *sqlitestore.Store
 }
 
-// initializeScenario registers the Before hook and step definitions. It takes
-// the outer *testing.T so steps can build cassette-backed HTTP clients with
-// pkg/vcrtest, which is testing.T-aware.
+// initializeScenario registers the Before hook and step definitions. Steps get
+// the scenario context from godog; the few that need the outer *testing.T (for
+// pkg/vcrtest cassettes and temp dirs) receive it as a parameter.
 func initializeScenario(t *testing.T, sc *godog.ScenarioContext) {
-	w := &embedWorld{t: t}
+	w := &embedWorld{}
 
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
 		w.reset(scenario)
@@ -95,13 +93,17 @@ func initializeScenario(t *testing.T, sc *godog.ScenarioContext) {
 		return ctx, errors.Join(err, w.closeSQLite())
 	})
 
-	sc.Step(`^an Ollama embedder for model "([^"]*)"$`, w.anOllamaEmbedderForModel)
+	sc.Step(`^an Ollama embedder for model "([^"]*)"$`, func(model string) error {
+		return w.anOllamaEmbedderForModel(t, model)
+	})
 	sc.Step(`^I embed the following texts:$`, w.iEmbedTheFollowingTexts)
 	sc.Step(`^the self-similarity of "([^"]*)" is approximately ([0-9.]+)$`, w.theSelfSimilarityIsApproximately)
 	sc.Step(`^"([^"]*)" is more similar to "([^"]*)" than to "([^"]*)"$`, w.isMoreSimilarToThanTo)
 	sc.Step(`^finding duplicates at threshold ([0-9.]+) reports exactly these pairs:$`, w.findingDuplicatesReports)
 	sc.Step(`^clustering at threshold ([0-9.]+) yields exactly these groups:$`, w.clusteringYieldsGroups)
-	sc.Step(`^I save the embeddings to a SQLite store and reopen it$`, w.iSaveToSQLiteAndReopen)
+	sc.Step(`^I save the embeddings to a SQLite store and reopen it$`, func(ctx context.Context) error {
+		return w.iSaveToSQLiteAndReopen(ctx, t.TempDir())
+	})
 	sc.Step(`^the reopened store ranks neighbors of "([^"]*)" exactly like the memory store$`, w.reopenedStoreRanksLikeMemory)
 }
 
@@ -142,7 +144,7 @@ func cassetteName(scenario string) string {
 	return strings.Trim(b.String(), "_")
 }
 
-func (w *embedWorld) anOllamaEmbedderForModel(model string) error {
+func (w *embedWorld) anOllamaEmbedderForModel(t *testing.T, model string) error {
 	if model == "" {
 		return errEmptyModel
 	}
@@ -151,18 +153,18 @@ func (w *embedWorld) anOllamaEmbedderForModel(model string) error {
 		host = liveHost()
 	}
 	w.embedder = ollama.NewEmbedder(host, model,
-		ollama.WithHTTPClient(vcrtest.Client(w.t, w.cassette)),
+		ollama.WithHTTPClient(vcrtest.Client(t, w.cassette)),
 		ollama.WithHTTPClientTimeout(embedTimeout),
 	)
 	return nil
 }
 
-func (w *embedWorld) iEmbedTheFollowingTexts(table *godog.Table) error {
+func (w *embedWorld) iEmbedTheFollowingTexts(ctx context.Context, table *godog.Table) error {
 	ids, texts, err := parseTextsTable(table)
 	if err != nil {
-		return err
+		return fmt.Errorf("parsing texts table: %w", err)
 	}
-	vectors, err := w.embedder.EmbedBatch(w.t.Context(), texts)
+	vectors, err := w.embedder.EmbedBatch(ctx, texts)
 	if err != nil {
 		return fmt.Errorf("embedding batch: %w", err)
 	}
@@ -175,7 +177,7 @@ func (w *embedWorld) iEmbedTheFollowingTexts(table *godog.Table) error {
 			Vector:   vectorstore.Vector(vectors[i]),
 			Metadata: map[string]string{textMetaKey: texts[i]},
 		}
-		if err := w.store.Add(w.t.Context(), item); err != nil {
+		if err := w.store.Add(ctx, item); err != nil {
 			return fmt.Errorf("indexing %q: %w", id, err)
 		}
 		w.vectors[id] = item.Vector
@@ -189,14 +191,14 @@ func (w *embedWorld) iEmbedTheFollowingTexts(table *godog.Table) error {
 	return nil
 }
 
-func (w *embedWorld) theSelfSimilarityIsApproximately(id, wantStr string) error {
+func (w *embedWorld) theSelfSimilarityIsApproximately(ctx context.Context, id, wantStr string) error {
 	want, err := strconv.ParseFloat(wantStr, 64)
 	if err != nil {
 		return fmt.Errorf("parsing want similarity %q: %w", wantStr, err)
 	}
-	scores, err := w.scoresFor(id)
+	scores, err := w.scoresFor(ctx, id)
 	if err != nil {
-		return err
+		return fmt.Errorf("scoring against %q: %w", id, err)
 	}
 	got, ok := scores[id]
 	if !ok {
@@ -209,10 +211,10 @@ func (w *embedWorld) theSelfSimilarityIsApproximately(id, wantStr string) error 
 	return nil
 }
 
-func (w *embedWorld) isMoreSimilarToThanTo(base, related, unrelated string) error {
-	scores, err := w.scoresFor(base)
+func (w *embedWorld) isMoreSimilarToThanTo(ctx context.Context, base, related, unrelated string) error {
+	scores, err := w.scoresFor(ctx, base)
 	if err != nil {
-		return err
+		return fmt.Errorf("scoring against %q: %w", base, err)
 	}
 	relatedScore, ok := scores[related]
 	if !ok {
@@ -231,12 +233,12 @@ func (w *embedWorld) isMoreSimilarToThanTo(base, related, unrelated string) erro
 
 // scoresFor returns the cosine similarity of id's vector against every indexed
 // item, keyed by item ID, by querying the vectorstore.
-func (w *embedWorld) scoresFor(id string) (map[string]float64, error) {
+func (w *embedWorld) scoresFor(ctx context.Context, id string) (map[string]float64, error) {
 	query, ok := w.vectors[id]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", errUnknownID, id)
 	}
-	neighbors, err := w.store.Nearest(w.t.Context(), query, w.store.Len())
+	neighbors, err := w.store.Nearest(ctx, query, w.store.Len())
 	if err != nil {
 		return nil, fmt.Errorf("querying nearest for %q: %w", id, err)
 	}
@@ -252,7 +254,7 @@ func (w *embedWorld) scoresFor(id string) (map[string]float64, error) {
 func parseTextsTable(table *godog.Table) (ids, texts []string, err error) {
 	rows, err := parseColumns(table, "id", "text")
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("reading id and text columns: %w", err)
 	}
 	ids = make([]string, 0, len(rows))
 	texts = make([]string, 0, len(rows))
@@ -266,45 +268,54 @@ func parseTextsTable(table *godog.Table) (ids, texts []string, err error) {
 // sqliteStoreFile is the database file name inside the scenario's temp dir.
 const sqliteStoreFile = "embeddings.db"
 
-// scoreTolerance absorbs float rounding between stores computing the same
-// cosine similarity over identical stored vectors.
+// scoreTolerance absorbs float rounding between two computations of the same
+// cosine similarity over identical vectors.
 const scoreTolerance = 1e-12
+
+// scoreField is the cmp path step for Duplicate.Score and Neighbor.Score.
+const scoreField = ".Score"
+
+// approxScores compares Score fields within scoreTolerance and every other
+// field, vectors included, exactly.
+func approxScores() gocmp.Option {
+	return gocmp.FilterPath(func(p gocmp.Path) bool { return p.Last().String() == scoreField },
+		cmpopts.EquateApprox(0, scoreTolerance))
+}
 
 // findingDuplicatesReports runs FindDuplicates over every embedded item and
 // requires exactly the tabled (a, b) pairs, each carrying both items' full
-// payload and a score at or above the threshold.
-func (w *embedWorld) findingDuplicatesReports(thresholdText string, table *godog.Table) error {
+// payload and their cosine similarity computed independently from the
+// embedding-time copies.
+func (w *embedWorld) findingDuplicatesReports(ctx context.Context, thresholdText string, table *godog.Table) error {
 	threshold, err := parseThreshold(thresholdText)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading duplicate threshold: %w", err)
 	}
 	rows, err := parseColumns(table, "a", "b")
 	if err != nil {
-		return err
+		return fmt.Errorf("reading duplicate pairs: %w", err)
 	}
 	want := make([]vectorstore.Duplicate, 0, len(rows))
 	for _, row := range rows {
-		a, b, err := w.expectedPair(row[0], row[1])
+		dup, err := w.expectedDuplicate(row[0], row[1])
 		if err != nil {
-			return err
+			return fmt.Errorf("building expected pair (%q, %q): %w", row[0], row[1], err)
 		}
-		want = append(want, vectorstore.Duplicate{A: a, B: b})
+		want = append(want, dup)
 	}
 
-	got, err := vectorstore.FindDuplicates(w.t.Context(), w.items, threshold)
+	got, err := vectorstore.FindDuplicates(ctx, w.items, threshold)
 	if err != nil {
 		return fmt.Errorf("finding duplicates: %w", err)
 	}
 
-	if diff := gocmp.Diff(want, got, cmpopts.IgnoreFields(vectorstore.Duplicate{}, "Score")); diff != "" {
+	if diff := gocmp.Diff(want, got, approxScores()); diff != "" {
 		return fmt.Errorf("%w: FindDuplicates(threshold=%v) (-want +got):\n%s", errResultMismatch, threshold, diff)
 	}
-	for _, d := range got {
-		if d.Score < threshold {
-			return fmt.Errorf("%w: (%q, %q) scored %v, threshold %v", errBelowThreshold, d.A.ID, d.B.ID, d.Score, threshold)
-		}
+	if err := w.checkInputUnchanged(); err != nil {
+		return fmt.Errorf("after FindDuplicates: %w", err)
 	}
-	return w.checkInputUnchanged()
+	return nil
 }
 
 // clusteringYieldsGroups runs ClusterItems over every embedded item and
@@ -313,11 +324,11 @@ func (w *embedWorld) findingDuplicatesReports(thresholdText string, table *godog
 func (w *embedWorld) clusteringYieldsGroups(thresholdText string, table *godog.Table) error {
 	threshold, err := parseThreshold(thresholdText)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading cluster threshold: %w", err)
 	}
 	rows, err := parseColumns(table, "members")
 	if err != nil {
-		return err
+		return fmt.Errorf("reading cluster members: %w", err)
 	}
 	want := make([]vectorstore.Cluster, 0, len(rows))
 	for _, row := range rows {
@@ -340,26 +351,29 @@ func (w *embedWorld) clusteringYieldsGroups(thresholdText string, table *godog.T
 	if diff := gocmp.Diff(want, got); diff != "" {
 		return fmt.Errorf("%w: ClusterItems(threshold=%v) (-want +got):\n%s", errResultMismatch, threshold, diff)
 	}
-	return w.checkInputUnchanged()
+	if err := w.checkInputUnchanged(); err != nil {
+		return fmt.Errorf("after ClusterItems: %w", err)
+	}
+	return nil
 }
 
 // iSaveToSQLiteAndReopen persists every embedded item to a fresh SQLite
-// store, closes it, and reopens it so later steps read only from disk.
-func (w *embedWorld) iSaveToSQLiteAndReopen() error {
-	path := filepath.Join(w.t.TempDir(), sqliteStoreFile)
-	store, err := sqlitestore.Open(w.t.Context(), path)
+// store in dir, closes it, and reopens it so later steps read only from disk.
+func (w *embedWorld) iSaveToSQLiteAndReopen(ctx context.Context, dir string) error {
+	path := filepath.Join(dir, sqliteStoreFile)
+	store, err := sqlitestore.Open(ctx, path)
 	if err != nil {
 		return fmt.Errorf("opening sqlite store: %w", err)
 	}
 	for _, item := range w.items {
-		if err := store.Add(w.t.Context(), item); err != nil {
+		if err := store.Add(ctx, item); err != nil {
 			return errors.Join(fmt.Errorf("adding %q: %w", item.ID, err), store.Close())
 		}
 	}
 	if err := store.Close(); err != nil {
 		return fmt.Errorf("closing sqlite store: %w", err)
 	}
-	w.sqlite, err = sqlitestore.Open(w.t.Context(), path)
+	w.sqlite, err = sqlitestore.Open(ctx, path)
 	if err != nil {
 		return fmt.Errorf("reopening sqlite store: %w", err)
 	}
@@ -368,21 +382,21 @@ func (w *embedWorld) iSaveToSQLiteAndReopen() error {
 
 // reopenedStoreRanksLikeMemory queries both stores with id's vector over all
 // items and requires the same neighbors, payloads, and scores.
-func (w *embedWorld) reopenedStoreRanksLikeMemory(id string) error {
+func (w *embedWorld) reopenedStoreRanksLikeMemory(ctx context.Context, id string) error {
 	query, ok := w.vectors[id]
 	if !ok {
 		return fmt.Errorf("%w: %q", errUnknownID, id)
 	}
 	limit := len(w.items)
-	want, err := w.store.Nearest(w.t.Context(), query, limit)
+	want, err := w.store.Nearest(ctx, query, limit)
 	if err != nil {
 		return fmt.Errorf("memory Nearest(%q): %w", id, err)
 	}
-	got, err := w.sqlite.Nearest(w.t.Context(), query, limit)
+	got, err := w.sqlite.Nearest(ctx, query, limit)
 	if err != nil {
 		return fmt.Errorf("sqlite Nearest(%q): %w", id, err)
 	}
-	if diff := gocmp.Diff(want, got, cmpopts.EquateApprox(0, scoreTolerance)); diff != "" {
+	if diff := gocmp.Diff(want, got, approxScores()); diff != "" {
 		return fmt.Errorf("%w: Nearest(%q) memory vs sqlite (-want +got):\n%s", errResultMismatch, id, diff)
 	}
 	return nil
@@ -412,18 +426,23 @@ func (w *embedWorld) checkInputUnchanged() error {
 	return nil
 }
 
-// expectedPair returns the expected items for a and b ordered by ID, matching
-// the Duplicate contract that A has the smaller ID.
-func (w *embedWorld) expectedPair(a, b string) (low, high vectorstore.Item, err error) {
+// expectedDuplicate builds the Duplicate expected for a and b from the
+// embedding-time copies: A has the smaller ID, matching the Duplicate
+// contract, and Score is their cosine similarity.
+func (w *embedWorld) expectedDuplicate(a, b string) (vectorstore.Duplicate, error) {
 	low, okA := w.expected[a]
 	high, okB := w.expected[b]
 	if !okA || !okB {
-		return low, high, fmt.Errorf("%w: pair (%q, %q)", errUnknownID, a, b)
+		return vectorstore.Duplicate{}, fmt.Errorf("%w: pair (%q, %q)", errUnknownID, a, b)
 	}
 	if high.ID < low.ID {
 		low, high = high, low
 	}
-	return low, high, nil
+	score, err := vectorstore.Cosine(low.Vector, high.Vector)
+	if err != nil {
+		return vectorstore.Duplicate{}, fmt.Errorf("cosine of (%q, %q): %w", low.ID, high.ID, err)
+	}
+	return vectorstore.Duplicate{A: low, B: high, Score: score}, nil
 }
 
 // parseThreshold parses a threshold captured by a step pattern.

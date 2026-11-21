@@ -53,7 +53,8 @@ func wantClusters(t *testing.T, snapshot map[string]vectorstore.Item, groups [][
 	return out
 }
 
-// pair is an expected duplicate: member IDs plus the exact cosine score.
+// pair is an expected duplicate: member IDs plus the cosine score, compared
+// within scoreTolerance.
 type pair struct {
 	a, b  string
 	score float64

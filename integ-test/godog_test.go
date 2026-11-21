@@ -8,6 +8,7 @@ package integtest
 
 import (
 	"flag"
+	"strings"
 	"testing"
 
 	"github.com/cucumber/godog"
@@ -38,6 +39,8 @@ func TestFeatures(t *testing.T) {
 	}
 	flag.Parse()
 	opts.TestingT = t
+	opts.DefaultContext = t.Context()
+	opts.Tags = excludeTags(opts.Tags, unsupportedPlatformTags)
 
 	suite := godog.TestSuite{
 		Name:                "ollama-embeddings",
@@ -47,4 +50,21 @@ func TestFeatures(t *testing.T) {
 	if suite.Run() != 0 {
 		t.Fatal("godog suite reported failures")
 	}
+}
+
+// excludeTags narrows a godog tag filter so no scenario tagged with exclude
+// runs. godog ORs comma-separated groups before ANDing within a group, so the
+// exclusion is ANDed into every group; an empty exclude leaves filter as is.
+func excludeTags(filter, exclude string) string {
+	if exclude == "" {
+		return filter
+	}
+	if filter == "" {
+		return exclude
+	}
+	groups := strings.Split(filter, ",")
+	for i, g := range groups {
+		groups[i] = g + "&&" + exclude
+	}
+	return strings.Join(groups, ",")
 }

@@ -20,7 +20,7 @@ func TestClusterItems(t *testing.T) {
 		want      [][]string
 	}{
 		{
-			name: "single linkage connects transitive group",
+			name: "singleLinkage_joinsTransitiveGroup",
 			// a, b, c lie on an arc at 0°, 35°, 70°. At threshold 0.6 the
 			// adjacent pairs a-b and b-c meet it (cos35° ≈ 0.82) but the ends
 			// a-c do not (cos70° ≈ 0.34), so all three group only via
@@ -37,7 +37,7 @@ func TestClusterItems(t *testing.T) {
 			want:      [][]string{{"a", "b", "c"}, {"x", "y"}},
 		},
 		{
-			name: "high threshold yields singletons",
+			name: "highThreshold_singletons",
 			items: []vectorstore.Item{
 				item("b", 0, 1),
 				item("a", 1, 0),
@@ -46,7 +46,7 @@ func TestClusterItems(t *testing.T) {
 			want:      [][]string{{"a"}, {"b"}},
 		},
 		{
-			name: "identical vectors cluster at endpoint threshold 1",
+			name: "identicalVectors_clusterAtThresholdOne",
 			// Identical {1,1} vectors normalize to the same unit vector, so
 			// cosine reports exactly 1 and they link at threshold 1.
 			items: []vectorstore.Item{
@@ -57,13 +57,11 @@ func TestClusterItems(t *testing.T) {
 			want:      [][]string{{"a", "b"}},
 		},
 		{
-			name:      "no items",
-			items:     nil,
+			name:      "noItems_noClusters",
 			threshold: 0.5,
-			want:      nil,
 		},
 		{
-			name: "orthogonal vectors stay split at subnormal threshold",
+			name: "orthogonalVectors_splitAtSubnormalThreshold",
 			// Regression: cosine of orthogonal unit vectors is exactly 0, which
 			// is below the smallest positive threshold, so they must remain
 			// separate. A subtractive `1-cosine <= 1-threshold` form would round
@@ -103,19 +101,19 @@ func TestClusterItemsErrors(t *testing.T) {
 		want      error
 	}{
 		{
-			name:      "threshold below range",
+			name:      "thresholdBelowRange",
 			items:     []vectorstore.Item{item("a", 1, 0)},
 			threshold: -1.5,
 			want:      vectorstore.ErrInvalidThreshold,
 		},
 		{
-			name:      "threshold above range",
+			name:      "thresholdAboveRange",
 			items:     []vectorstore.Item{item("a", 1, 0)},
 			threshold: 1.5,
 			want:      vectorstore.ErrInvalidThreshold,
 		},
 		{
-			name: "dimension mismatch",
+			name: "dimensionMismatch",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("b", 1, 0, 0),
@@ -124,19 +122,19 @@ func TestClusterItemsErrors(t *testing.T) {
 			want:      vectorstore.ErrDimensionMismatch,
 		},
 		{
-			name:      "empty id",
+			name:      "emptyID",
 			items:     []vectorstore.Item{{Vector: vectorstore.Vector{1, 0}}},
 			threshold: 0.5,
 			want:      vectorstore.ErrEmptyID,
 		},
 		{
-			name:      "empty vector",
+			name:      "emptyVector",
 			items:     []vectorstore.Item{{ID: "a"}},
 			threshold: 0.5,
 			want:      vectorstore.ErrEmptyVector,
 		},
 		{
-			name:      "zero magnitude vector",
+			name:      "zeroMagnitudeVector",
 			items:     []vectorstore.Item{item("a", 0, 0)},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
@@ -144,25 +142,25 @@ func TestClusterItemsErrors(t *testing.T) {
 		{
 			// Invalid components sit past index 0 so per-component validation
 			// of only the first element would not pass.
-			name:      "NaN component",
+			name:      "nanComponent",
 			items:     []vectorstore.Item{item("a", 1, math.NaN())},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name:      "positive infinity component",
+			name:      "positiveInfinityComponent",
 			items:     []vectorstore.Item{item("a", 1, math.Inf(1))},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name:      "negative infinity component",
+			name:      "negativeInfinityComponent",
 			items:     []vectorstore.Item{item("a", math.Inf(-1), 0)},
 			threshold: 0.5,
 			want:      vectorstore.ErrInvalidVector,
 		},
 		{
-			name: "duplicate id",
+			name: "duplicateID",
 			items: []vectorstore.Item{
 				item("a", 1, 0),
 				item("a", 0, 1),
@@ -208,7 +206,7 @@ func TestClusterByDistance(t *testing.T) {
 		want        [][]string
 	}{
 		{
-			name: "no edges yields singletons",
+			name: "noEdges_singletons",
 			items: []vectorstore.Item{
 				axis("b", 10),
 				axis("a", 0),
@@ -218,7 +216,7 @@ func TestClusterByDistance(t *testing.T) {
 			want:        [][]string{{"a"}, {"b"}, {"c"}},
 		},
 		{
-			name: "fully connected group is one cluster",
+			name: "fullyConnected_oneCluster",
 			items: []vectorstore.Item{
 				axis("c", 2),
 				axis("a", 0),
@@ -228,7 +226,7 @@ func TestClusterByDistance(t *testing.T) {
 			want:        [][]string{{"a", "b", "c"}},
 		},
 		{
-			name: "transitive chain links distant endpoints",
+			name: "transitiveChain_linksDistantEndpoints",
 			// 0-1-2-3 are each within maxDistance 1 of the next neighbor, so
 			// single linkage joins all four even though a and d are 3 apart.
 			items: []vectorstore.Item{
@@ -241,7 +239,7 @@ func TestClusterByDistance(t *testing.T) {
 			want:        [][]string{{"a", "b", "c", "d"}},
 		},
 		{
-			name: "gap splits into separate clusters",
+			name: "gap_splitsClusters",
 			items: []vectorstore.Item{
 				axis("a", 0),
 				axis("b", 1),
@@ -252,10 +250,8 @@ func TestClusterByDistance(t *testing.T) {
 			want:        [][]string{{"a", "b"}, {"x", "y"}},
 		},
 		{
-			name:        "no items",
-			items:       nil,
+			name:        "noItems_noClusters",
 			maxDistance: 1,
-			want:        nil,
 		},
 	}
 
@@ -275,29 +271,43 @@ func TestClusterByDistance(t *testing.T) {
 	}
 }
 
-// TestClusterByDistanceDeterministic pins down that clustering depends only on
-// the set of items, not their input order: every permutation of a fixed set
-// must produce the same sorted clusters.
-func TestClusterByDistanceDeterministic(t *testing.T) {
+// TestClusterByDistance_InputOrder_SameClusters pins down that clustering
+// depends only on the set of items, not their input order: every permutation
+// of a fixed set must produce the same sorted clusters.
+func TestClusterByDistance_InputOrder_SameClusters(t *testing.T) {
 	t.Parallel()
-
 	wantGroups := [][]string{{"a", "b", "c"}, {"x", "y"}}
-	orderings := [][]vectorstore.Item{
-		{axis("a", 0), axis("b", 1), axis("c", 2), axis("x", 10), axis("y", 11)},
-		{axis("y", 11), axis("x", 10), axis("c", 2), axis("b", 1), axis("a", 0)},
-		{axis("c", 2), axis("x", 10), axis("a", 0), axis("y", 11), axis("b", 1)},
+	tests := []struct {
+		name  string
+		items []vectorstore.Item
+	}{
+		{
+			name:  "sorted",
+			items: []vectorstore.Item{axis("a", 0), axis("b", 1), axis("c", 2), axis("x", 10), axis("y", 11)},
+		},
+		{
+			name:  "reversed",
+			items: []vectorstore.Item{axis("y", 11), axis("x", 10), axis("c", 2), axis("b", 1), axis("a", 0)},
+		},
+		{
+			name:  "interleaved",
+			items: []vectorstore.Item{axis("c", 2), axis("x", 10), axis("a", 0), axis("y", 11), axis("b", 1)},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			want := wantClusters(t, snapshotByID(t, tt.items), wantGroups)
 
-	for _, items := range orderings {
-		want := wantClusters(t, snapshotByID(t, items), wantGroups)
+			got, err := vectorstore.ClusterByDistance(tt.items, axisDistance, 1)
+			if err != nil {
+				t.Fatalf("ClusterByDistance(%v) = %v, want nil", clusterInputIDs(tt.items), err)
+			}
 
-		got, err := vectorstore.ClusterByDistance(items, axisDistance, 1)
-		if err != nil {
-			t.Fatalf("ClusterByDistance(%v) = %v, want nil", clusterInputIDs(items), err)
-		}
-		if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
-			t.Errorf("ClusterByDistance(%v) mismatch (-want +got):\n%s", clusterInputIDs(items), diff)
-		}
+			if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("ClusterByDistance(%v) mismatch (-want +got):\n%s", clusterInputIDs(tt.items), diff)
+			}
+		})
 	}
 }
 
@@ -311,34 +321,30 @@ func TestClusterByDistanceErrors(t *testing.T) {
 		want   error
 	}{
 		{
-			name:   "empty id",
+			name:   "emptyID",
 			items:  []vectorstore.Item{axis("", 0)},
 			metric: axisDistance,
 			want:   vectorstore.ErrEmptyID,
 		},
 		{
-			name:   "duplicate id",
+			name:   "duplicateID",
 			items:  []vectorstore.Item{axis("a", 0), axis("a", 1)},
 			metric: axisDistance,
 			want:   vectorstore.ErrDuplicateID,
 		},
 		{
-			name:   "nil metric with multiple items",
-			items:  []vectorstore.Item{axis("a", 0), axis("b", 1)},
-			metric: nil,
-			want:   vectorstore.ErrNilMetric,
+			name:  "nilMetric_multipleItems",
+			items: []vectorstore.Item{axis("a", 0), axis("b", 1)},
+			want:  vectorstore.ErrNilMetric,
 		},
 		{
-			name:   "nil metric with single item",
-			items:  []vectorstore.Item{axis("a", 0)},
-			metric: nil,
-			want:   vectorstore.ErrNilMetric,
+			name:  "nilMetric_singleItem",
+			items: []vectorstore.Item{axis("a", 0)},
+			want:  vectorstore.ErrNilMetric,
 		},
 		{
-			name:   "nil metric with no items",
-			items:  nil,
-			metric: nil,
-			want:   vectorstore.ErrNilMetric,
+			name: "nilMetric_noItems",
+			want: vectorstore.ErrNilMetric,
 		},
 	}
 

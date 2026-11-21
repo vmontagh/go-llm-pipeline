@@ -71,10 +71,13 @@ store on real embeddings, which fake unit-test vectors cannot stand in for:
   paraphrase pairs and one unrelated text, then requires `FindDuplicates` to
   report exactly the paraphrase pairs and `ClusterItems` to yield exactly the
   expected groups. Results are compared in full, so each item must keep its own
-  vector and metadata, and the input items must be left unchanged.
+  vector and metadata, and the input items must be left unchanged. Each pair's
+  score must match `vectorstore.Cosine` of its two vectors.
 - **Embeddings persisted to SQLite rank neighbors like the memory store** saves
   the embeddings to a `sqlitestore.Store`, reopens it, and requires `Nearest` to
-  return the same neighbors, payloads, and scores as the in-memory store.
+  return the same neighbors, payloads, and scores as the in-memory store. It is
+  tagged `@unix` and skipped on other platforms, where `sqlitestore` refuses to
+  open.
 
 With `nomic-embed-text`, paraphrase pairs score about 0.92 and unrelated pairs
 at most about 0.53, so the 0.8 threshold leaves a wide margin. Re-check the
