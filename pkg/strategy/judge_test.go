@@ -316,6 +316,8 @@ func (c *capturingGeneratorWithPrompts) Analyze(_ context.Context, prompt string
 	return c.result, nil
 }
 
+// dynamicjudgeAnalyzer returns responses in order, repeating the last one once
+// they run out. call counts every invocation, including repeats.
 type dynamicjudgeAnalyzer struct {
 	name      string
 	responses []*JudgeResponse
@@ -324,10 +326,7 @@ type dynamicjudgeAnalyzer struct {
 
 func (d *dynamicjudgeAnalyzer) Name() string { return d.name }
 func (d *dynamicjudgeAnalyzer) Analyze(_ context.Context, _ string, _ []byte, _ string, _ func(string, string, string, bool)) (*JudgeResponse, error) {
-	if d.call >= len(d.responses) {
-		return d.responses[len(d.responses)-1], nil
-	}
-	resp := d.responses[d.call]
+	resp := d.responses[min(d.call, len(d.responses)-1)]
 	d.call++
 	return resp, nil
 }
