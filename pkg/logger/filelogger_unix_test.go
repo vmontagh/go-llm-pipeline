@@ -3,6 +3,7 @@
 package logger_test
 
 import (
+	"os"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -16,7 +17,8 @@ import (
 )
 
 const (
-	permOwnerOnly = 0o600
+	permOwnerOnly    = 0o600
+	permOwnerOnlyDir = 0o700
 	// rejectTimeout bounds the call; a blocking open of a FIFO would otherwise
 	// hang the test forever.
 	rejectTimeout = 5 * time.Second
@@ -42,4 +44,29 @@ func TestNewFileLoggerRejectsFIFOWithoutBlocking(t *testing.T) {
 	case <-time.After(rejectTimeout):
 		t.Fatalf("NewFileLogger(%q) did not return within %v", path, rejectTimeout)
 	}
+}
+
+func TestNewFileLoggerCreatesOwnerOnlyPaths(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(t.TempDir(), "logs")
+	path := filepath.Join(dir, logFileName)
+
+	if _, err := logger.NewFileLogger(path); err != nil {
+		t.Fatalf("NewFileLogger(%q): %v", path, err)
+	}
+
+	want := map[string]os.FileMode{dir: os.ModeDir | permOwnerOnlyDir, path: permOwnerOnly}
+	got := map[string]os.FileMode{dir: modeOf(t, dir), path: modeOf(t, path)}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("NewFileLogger(%q) path modes mismatch (-want +got):\n%s", path, diff)
+	}
+}
+
+func modeOf(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", path, err)
+	}
+	return info.Mode()
 }
