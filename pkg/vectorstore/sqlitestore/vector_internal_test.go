@@ -1,10 +1,10 @@
 package sqlitestore
 
 import (
-	"errors"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/vectorstore"
 )
@@ -40,7 +40,7 @@ func TestDecodeVectorCorrupt(t *testing.T) {
 
 	// A 3-byte blob is not a whole number of 8-byte float64 values.
 	_, err := decodeVector([]byte{1, 2, 3})
-	if !errors.Is(err, ErrCorruptVector) {
-		t.Errorf("decodeVector(short blob) = %v, want ErrCorruptVector", err)
+	if diff := cmp.Diff(ErrCorruptVector, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("decodeVector(short blob) error mismatch (-want +got):\n%s", diff)
 	}
 }

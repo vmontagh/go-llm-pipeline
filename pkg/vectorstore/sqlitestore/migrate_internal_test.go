@@ -32,6 +32,19 @@ const (
 	// permWorldWritableDir is a directory writable by group and other (no sticky
 	// bit), the unsafe case Open must reject on a store-path component.
 	permWorldWritableDir os.FileMode = 0o777
+	// permStandardDir is a directory writable only by its owner but readable and
+	// searchable by everyone.
+	permStandardDir os.FileMode = 0o755
+	// permGroupWritableDir is a directory writable by its group.
+	permGroupWritableDir os.FileMode = 0o770
+	// permWorldReadableFile is a file readable by everyone, the permissive
+	// leftover Open must tighten.
+	permWorldReadableFile os.FileMode = 0o644
+	// otherUID is a UID that is neither the caller nor root.
+	otherUID = 1234
+	// nonRegularRejectTimeout bounds how long precreateSecure may take to reject a
+	// non-regular path before the test treats it as blocked.
+	nonRegularRejectTimeout = 2 * time.Second
 )
 
 // openStoreAt opens a Store at path for white-box tests and registers cleanup,
@@ -110,8 +123,8 @@ func TestMigrateSetsCurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("userVersion() = %v, want nil", err)
 	}
-	if want := len(schemaMigrations); got != want {
-		t.Errorf("user_version = %d, want %d", got, want)
+	if diff := cmp.Diff(len(schemaMigrations), got); diff != "" {
+		t.Errorf("user_version mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -136,8 +149,8 @@ func TestMigrateIdempotentReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("userVersion() after reopen = %v, want nil", err)
 	}
-	if want := len(schemaMigrations); got != want {
-		t.Errorf("user_version after reopen = %d, want %d", got, want)
+	if diff := cmp.Diff(len(schemaMigrations), got); diff != "" {
+		t.Errorf("user_version after reopen mismatch (-want +got):\n%s", diff)
 	}
 	// The schema is still usable after an idempotent reopen.
 	if _, err := second.Nearest(ctx, vectorstore.Vector{1, 0}, 1); err != nil {
@@ -208,15 +221,15 @@ func TestBusyTimeoutSurvivesReconnect(t *testing.T) {
 	}
 
 	wantMillis := int(busyTimeout.Milliseconds())
-	if got := readBusyTimeout(); got != wantMillis {
-		t.Fatalf("busy_timeout before reconnect = %d, want %d", got, wantMillis)
+	if diff := cmp.Diff(wantMillis, readBusyTimeout()); diff != "" {
+		t.Fatalf("busy_timeout before reconnect mismatch (-want +got):\n%s", diff)
 	}
 	// Force database/sql to close the pooled connection so the next query must
 	// open a fresh physical connection, exercising the reconnect path.
 	s.db.SetConnMaxLifetime(time.Nanosecond)
 	s.db.SetMaxIdleConns(0)
-	if got := readBusyTimeout(); got != wantMillis {
-		t.Errorf("busy_timeout after reconnect = %d, want %d", got, wantMillis)
+	if diff := cmp.Diff(wantMillis, readBusyTimeout()); diff != "" {
+		t.Errorf("busy_timeout after reconnect mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -279,8 +292,8 @@ func TestOpenRejectsEmptyPath(t *testing.T) {
 	t.Parallel()
 
 	_, err := Open(t.Context(), "")
-	if !errors.Is(err, errEmptyPath) {
-		t.Fatalf("Open(\"\") error = %v, want errEmptyPath", err)
+	if diff := cmp.Diff(errEmptyPath, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Open(%q) error mismatch (-want +got):\n%s", "", diff)
 	}
 }
 
@@ -294,38 +307,19 @@ func TestOpenHardensFileBeforeFailedMigration(t *testing.T) {
 	// Seed a database written by a newer build so migrate refuses it, and loosen
 	// perms to simulate a world-readable leftover.
 	setUserVersion(t, path, len(schemaMigrations)+1)
-	if err := os.Chmod(path, 0o644); err != nil {
+	if err := os.Chmod(path, permWorldReadableFile); err != nil {
 		t.Fatalf("Chmod = %v, want nil", err)
 	}
 	_, err := Open(ctx, path)
-	if !errors.Is(err, errSchemaTooNew) {
-		t.Fatalf("Open() error = %v, want errSchemaTooNew", err)
+	if diff := cmp.Diff(errSchemaTooNew, err, cmpopts.EquateErrors()); diff != "" {
+		t.Fatalf("Open() error mismatch (-want +got):\n%s", diff)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat = %v, want nil", err)
 	}
-	if got := info.Mode() & 0o777; got != ownerOnlyFileMode {
-		t.Errorf("mode after failed migration = %v, want %v", got, ownerOnlyFileMode)
-	}
-}
-
-func TestPrecreateSecureRejectsDirectory(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	before, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("Stat(dir) = %v, want nil", err)
-	}
-	if err := precreateSecure(dir); !errors.Is(err, errNotRegularFile) {
-		t.Errorf("precreateSecure(dir) = %v, want errors.Is(errNotRegularFile)", err)
-	}
-	after, err := os.Stat(dir)
-	if err != nil {
-		t.Fatalf("Stat(dir) = %v, want nil", err)
-	}
-	if before.Mode() != after.Mode() {
-		t.Errorf("precreateSecure(dir) changed mode %v -> %v, want unchanged", before.Mode(), after.Mode())
+	if diff := cmp.Diff(os.FileMode(ownerOnlyFileMode), info.Mode().Perm()); diff != "" {
+		t.Errorf("mode after failed migration mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -484,30 +478,76 @@ func TestDecodeMetadataRejectsCorruptBlob(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := decodeMetadata(tt.blob); !errors.Is(err, ErrCorruptMetadata) {
-				t.Errorf("decodeMetadata(%v) error = %v, want errors.Is ErrCorruptMetadata", tt.blob, err)
+			_, err := decodeMetadata(tt.blob)
+			if diff := cmp.Diff(ErrCorruptMetadata, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("decodeMetadata(%v) error mismatch (-want +got):\n%s", tt.blob, diff)
 			}
 		})
 	}
 }
 
-func TestPrecreateSecureRejectsFIFO(t *testing.T) {
+// TestPrecreateSecureRejectsNonRegularFile proves a path that is not a regular
+// file is rejected promptly (a FIFO open must not block waiting for a writer)
+// and left untouched.
+func TestPrecreateSecureRejectsNonRegularFile(t *testing.T) {
 	t.Parallel()
-	fifo := filepath.Join(t.TempDir(), "fifo.db")
-	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-		t.Fatalf("Mkfifo(%q) = %v, want nil", fifo, err)
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) string
+	}{
+		{name: "directory", setup: func(t *testing.T) string {
+			t.Helper()
+			return t.TempDir()
+		}},
+		{name: "fifo", setup: func(t *testing.T) string {
+			t.Helper()
+			fifo := filepath.Join(t.TempDir(), "fifo.db")
+			if err := syscall.Mkfifo(fifo, uint32(ownerOnlyFileMode)); err != nil {
+				t.Fatalf("Mkfifo(%q) = %v, want nil", fifo, err)
+			}
+			return fifo
+		}},
 	}
-	// precreateSecure must reject the FIFO promptly, not block on an uncancelable
-	// open that waits for a writer.
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := tt.setup(t)
+			before := statMode(t, path)
+
+			err := precreateSecureWithin(t, path, nonRegularRejectTimeout)
+
+			if diff := cmp.Diff(errNotRegularFile, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("precreateSecure(%s) error mismatch (-want +got):\n%s", tt.name, diff)
+			}
+			if diff := cmp.Diff(before, statMode(t, path)); diff != "" {
+				t.Errorf("precreateSecure(%s) changed mode (-before +after):\n%s", tt.name, diff)
+			}
+		})
+	}
+}
+
+// statMode returns the mode of path, failing the test if it cannot be read.
+func statMode(tb testing.TB, path string) os.FileMode {
+	tb.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		tb.Fatalf("Stat(%q) = %v, want nil", path, err)
+	}
+	return info.Mode()
+}
+
+// precreateSecureWithin runs precreateSecure and fails the test if it does not
+// return within timeout, so a blocking open is reported instead of hanging.
+func precreateSecureWithin(t *testing.T, path string, timeout time.Duration) error {
+	t.Helper()
 	done := make(chan error, 1)
-	go func() { done <- precreateSecure(fifo) }()
+	go func() { done <- precreateSecure(path) }()
 	select {
 	case err := <-done:
-		if !errors.Is(err, errNotRegularFile) {
-			t.Errorf("precreateSecure(fifo) = %v, want errors.Is(errNotRegularFile)", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("precreateSecure(fifo) blocked; want a prompt errNotRegularFile rejection")
+		return err
+	case <-time.After(timeout):
+		t.Fatalf("precreateSecure(%q) blocked for %v; want a prompt rejection", path, timeout)
+		return nil
 	}
 }
 
@@ -522,16 +562,16 @@ func TestDirComponentSafe(t *testing.T) {
 		owner     int
 		wantErr   error
 	}{
-		{name: "immediate owner-only owned by caller", immediate: true, mode: 0o700, owner: caller},
-		{name: "immediate owner-only owned by root", immediate: true, mode: 0o700, owner: rootUID},
-		{name: "immediate owned by other user", immediate: true, mode: 0o755, owner: 1234, wantErr: errParentDirUntrusted},
-		{name: "immediate group or other writable", immediate: true, mode: 0o770, owner: caller, wantErr: errParentDirWritable},
-		{name: "immediate sticky world-writable still rejected", immediate: true, mode: os.ModeSticky | 0o777, owner: caller, wantErr: errParentDirWritable},
-		{name: "ancestor owner-only owned by caller", mode: 0o755, owner: caller},
-		{name: "ancestor owner-only owned by root", mode: 0o755, owner: rootUID},
-		{name: "ancestor owned by other user", mode: 0o755, owner: 1234, wantErr: errParentDirUntrusted},
-		{name: "ancestor world-writable no sticky", mode: 0o777, owner: caller, wantErr: errParentDirWritable},
-		{name: "ancestor world-writable with sticky", mode: os.ModeSticky | 0o777, owner: caller},
+		{name: "immediate owner-only owned by caller", immediate: true, mode: permOwnerOnlyDir, owner: caller},
+		{name: "immediate owner-only owned by root", immediate: true, mode: permOwnerOnlyDir, owner: rootUID},
+		{name: "immediate owned by other user", immediate: true, mode: permStandardDir, owner: otherUID, wantErr: errParentDirUntrusted},
+		{name: "immediate group or other writable", immediate: true, mode: permGroupWritableDir, owner: caller, wantErr: errParentDirWritable},
+		{name: "immediate sticky world-writable still rejected", immediate: true, mode: os.ModeSticky | permWorldWritableDir, owner: caller, wantErr: errParentDirWritable},
+		{name: "ancestor owner-only owned by caller", mode: permStandardDir, owner: caller},
+		{name: "ancestor owner-only owned by root", mode: permStandardDir, owner: rootUID},
+		{name: "ancestor owned by other user", mode: permStandardDir, owner: otherUID, wantErr: errParentDirUntrusted},
+		{name: "ancestor world-writable no sticky", mode: permWorldWritableDir, owner: caller, wantErr: errParentDirWritable},
+		{name: "ancestor world-writable with sticky", mode: os.ModeSticky | permWorldWritableDir, owner: caller},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -557,7 +597,7 @@ func TestOpenDirectorySafety(t *testing.T) {
 			setup: func(t *testing.T) string {
 				t.Helper()
 				dir := filepath.Join(t.TempDir(), "sub")
-				if err := os.Mkdir(dir, 0o755); err != nil {
+				if err := os.Mkdir(dir, permStandardDir); err != nil {
 					t.Fatalf("Mkdir = %v, want nil", err)
 				}
 				if err := os.Chmod(dir, permWorldWritableDir); err != nil { // group/other-writable, no sticky
@@ -696,8 +736,11 @@ func TestPingRetryBackoff(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			gotDelay, gotRetry := pingRetryBackoff(tt.remaining)
-			if gotDelay != tt.wantDelay || gotRetry != tt.wantRetry {
-				t.Errorf("pingRetryBackoff(%v) = (%v, %t), want (%v, %t)", tt.remaining, gotDelay, gotRetry, tt.wantDelay, tt.wantRetry)
+			if diff := cmp.Diff(tt.wantDelay, gotDelay); diff != "" {
+				t.Errorf("pingRetryBackoff(%v) delay mismatch (-want +got):\n%s", tt.remaining, diff)
+			}
+			if diff := cmp.Diff(tt.wantRetry, gotRetry); diff != "" {
+				t.Errorf("pingRetryBackoff(%v) retry mismatch (-want +got):\n%s", tt.remaining, diff)
 			}
 		})
 	}

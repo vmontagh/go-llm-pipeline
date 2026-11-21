@@ -3,14 +3,16 @@
 package sqlitestore
 
 import (
-	"errors"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestOpenRejectsUnsupportedPlatform(t *testing.T) {
 	_, err := Open(t.Context(), filepath.Join(t.TempDir(), "store.db"))
-	if !errors.Is(err, errOwnerOnlyUnsupported) {
-		t.Errorf("Open() on unsupported platform = %v, want errors.Is(errOwnerOnlyUnsupported)", err)
+	if diff := cmp.Diff(errOwnerOnlyUnsupported, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Open() on unsupported platform error mismatch (-want +got):\n%s", diff)
 	}
 }

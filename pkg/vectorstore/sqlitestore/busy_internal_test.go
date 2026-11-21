@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	sqlitelib "modernc.org/sqlite/lib"
 )
 
@@ -29,8 +30,8 @@ func TestIsBusyCode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := isBusyCode(tt.code); got != tt.want {
-				t.Errorf("isBusyCode(%d) = %t, want %t", tt.code, got, tt.want)
+			if diff := cmp.Diff(tt.want, isBusyCode(tt.code)); diff != "" {
+				t.Errorf("isBusyCode(%d) mismatch (-want +got):\n%s", tt.code, diff)
 			}
 		})
 	}
