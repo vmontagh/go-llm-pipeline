@@ -34,10 +34,16 @@ var (
 	ErrGeneratorRequired      = errors.New("generator cannot be nil")
 )
 
+// JudgePromptBuilder builds the judge prompt for one attempt from the
+// caller's prompt, the drafts, and the feedback of earlier attempts. An
+// error, such as a template that fails to render, stops Analyze: the judge is
+// never asked with a wrong prompt.
+type JudgePromptBuilder[R any] func(ctx context.Context, generatorPrompt string, drafts []R, feedback []string, attempt int) (string, error)
+
 type judgeAnalyzer[R any] struct {
 	judge               Judge
 	generators          []Generator[R]
-	promptBuilder       func(ctx context.Context, generatorPrompt string, drafts []R, feedback []string, attempt int) string
+	promptBuilder       JudgePromptBuilder[R]
 	logger              *slog.Logger
 	tracer              Tracer
 	multimodalJudge     bool
@@ -90,11 +96,13 @@ func WithJudgeMaxAttempts[R any](maxAttempts int) JudgeOption[R] {
 	}
 }
 
-// NewJudgeAnalyzer creates a new judgeAnalyzer.
+// NewJudgeAnalyzer creates a new judgeAnalyzer. Analyze calls promptBuilder
+// once per attempt and returns its error, wrapped with the attempt number,
+// without asking the judge.
 func NewJudgeAnalyzer[R any](
 	judge Judge,
 	generators []Generator[R],
-	promptBuilder func(ctx context.Context, generatorPrompt string, drafts []R, feedback []string, attempt int) string,
+	promptBuilder JudgePromptBuilder[R],
 	options ...JudgeOption[R],
 ) (Generator[R], error) {
 	if judge == nil {
@@ -168,7 +176,10 @@ func (j *judgeAnalyzer[R]) Analyze(
 			return zero, err
 		}
 
-		judgePrompt := j.promptBuilder(ctx, prompt, drafts, feedbackHistory, attempt)
+		judgePrompt, err := j.promptBuilder(ctx, prompt, drafts, feedbackHistory, attempt)
+		if err != nil {
+			return zero, fmt.Errorf("building judge prompt (attempt %d/%d): %w", attempt, j.maxAttempts, err)
+		}
 
 		var judgeImageData []byte
 		if j.multimodalJudge {
