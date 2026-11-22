@@ -1,17 +1,77 @@
-// Package costtest prices the LLM calls recorded in go-vcr cassettes from a
-// test, so CI catches unpriced models and cost regressions without contacting
-// a provider:
+// Package costtest catches LLM cost regressions in ordinary Go tests, offline
+// and for free.
+//
+// # How it works
+//
+// It never calls a provider. It reads the go-vcr cassettes that pkg/llmvcr
+// (or go-vcr) already recorded: each recorded response body carries the
+// provider's token counts, for example
+//
+//	response:
+//	  body: '{"model":"gpt-4o-mini","usage":{"prompt_tokens":1000,"completion_tokens":500}}'
+//
+// [Check] parses those counts with [cost.ParseUsage], multiplies them by
+// your price table, sums them per model, and compares the total with a
+// baseline report you saved earlier. The cost changes only when the cassettes
+// are re-recorded, for example after a prompt change, so the check flags the
+// change in the same pull request that caused it.
+//
+// # Workflow
+//
+// Step 1: record cassettes once against the real provider (llmvcr record
+// mode) and commit them, as for any replay test.
+//
+// Step 2: commit a price table in USD per million tokens (see
+// [cost.LoadPrices]), for example testdata/prices.yaml:
+//
+//	models:
+//	  gpt-4o-mini: {input: 0.15, output: 0.60}
+//	  "llama*": {input: 0, output: 0}
+//
+// Step 3: add a test that checks the cassettes against a committed baseline
+// and rewrites the baseline on request:
+//
+//	var updateCost = flag.Bool("update-cost", false, "rewrite testdata/cost-baseline.json")
 //
 //	func TestPromptCost(t *testing.T) {
 //		prices, err := cost.LoadPrices(os.DirFS("testdata"), "prices.yaml")
 //		if err != nil {
 //			t.Fatal(err)
 //		}
-//		costtest.Check(t, os.DirFS("testdata/cassettes"), prices, costtest.Options{
-//			Baseline:           &baseline, // a cost.Report saved as JSON
-//			MaxIncreasePercent: 10,
-//		})
+//		opts := costtest.Options{MaxIncreasePercent: 10}
+//		if !*updateCost {
+//			src, err := os.ReadFile("testdata/cost-baseline.json")
+//			if err != nil {
+//				t.Fatalf("reading baseline (run with -update-cost to create it): %v", err)
+//			}
+//			var base cost.Report
+//			if err := json.Unmarshal(src, &base); err != nil {
+//				t.Fatal(err)
+//			}
+//			opts.Baseline = &base
+//		}
+//		report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, opts)
+//		if *updateCost {
+//			src, err := json.MarshalIndent(report, "", "  ")
+//			if err != nil {
+//				t.Fatal(err)
+//			}
+//			if err := os.WriteFile("testdata/cost-baseline.json", src, 0o644); err != nil {
+//				t.Fatal(err)
+//			}
+//		}
 //	}
+//
+// Step 4: run the test once with the flag and commit the baseline:
+//
+//	go test -run TestPromptCost -update-cost ./...
+//
+// From then on, the test fails when re-recorded cassettes cost more than
+// MaxIncreasePercent above the baseline, or when a call uses a model missing
+// from the price table (set AllowUnpriced to accept that). Run it with -v to
+// see the per-model table. When an increase is intended, rerun with
+// -update-cost and commit the new baseline with the change, so reviewers see
+// the cost difference in the diff.
 package costtest
 
 import (

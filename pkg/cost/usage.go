@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 )
 
 // Usage is the token usage of one or more calls.
@@ -121,6 +123,13 @@ func ParseUsage(body []byte) (string, Usage, error) {
 func parseUsageJSON(doc []byte) (string, Usage, error) {
 	var b usageBody
 	if err := json.Unmarshal(doc, &b); err != nil {
+		// A usage field holding a fractional, oversized, or non-numeric
+		// count is invalid usage, not missing usage: skipping it would
+		// understate the cost.
+		var typeErr *json.UnmarshalTypeError
+		if errors.As(err, &typeErr) && isUsageField(typeErr.Field) {
+			return "", Usage{}, fmt.Errorf("%w: %s: %w", ErrInvalidUsage, typeErr.Field, err)
+		}
 		return "", Usage{}, fmt.Errorf("%w: %w", ErrNoUsage, err)
 	}
 	var in, out []int
@@ -144,6 +153,16 @@ func parseUsageJSON(doc []byte) (string, Usage, error) {
 		return "", Usage{}, err
 	}
 	return cmp.Or(b.ModelVersion, b.Model), Usage{Input: inTotal, Output: outTotal}, nil
+}
+
+// usageFields are the top-level JSON fields that carry token counts.
+var usageFields = []string{"usage", "usageMetadata", "prompt_eval_count", "eval_count"}
+
+// isUsageField reports whether a JSON field path is, or is inside, a usage
+// field.
+func isUsageField(path string) bool {
+	top, _, _ := strings.Cut(path, ".")
+	return slices.Contains(usageFields, top)
 }
 
 func derefOrZero(p *int) int {

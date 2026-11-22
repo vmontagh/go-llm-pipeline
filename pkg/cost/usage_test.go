@@ -65,6 +65,12 @@ func TestParseUsage(t *testing.T) {
 		{name: "negative in stream", body: "{\"prompt_eval_count\":1}\n{\"prompt_eval_count\":-1}", wantErr: cost.ErrInvalidUsage},
 		{name: "fields overflow", body: `{"usage":{"prompt_tokens":9223372036854775807,"input_tokens":1}}`, wantErr: cost.ErrOverflow},
 		{name: "output fields overflow", body: `{"usageMetadata":{"candidatesTokenCount":9223372036854775807,"thoughtsTokenCount":1}}`, wantErr: cost.ErrOverflow},
+		{name: "oversized count", body: `{"model":"m","usage":{"prompt_tokens":9223372036854775808}}`, wantErr: cost.ErrInvalidUsage},
+		{name: "fractional count", body: `{"model":"m","eval_count":1.5}`, wantErr: cost.ErrInvalidUsage},
+		{name: "string count", body: `{"usageMetadata":{"promptTokenCount":"7"}}`, wantErr: cost.ErrInvalidUsage},
+		{name: "usage not an object", body: `{"usage":3}`, wantErr: cost.ErrInvalidUsage},
+		{name: "oversized count in stream", body: "{\"prompt_eval_count\":1}\n{\"prompt_eval_count\":1e30}", wantErr: cost.ErrInvalidUsage},
+		{name: "non-usage type mismatch", body: `{"model":5}`, wantErr: cost.ErrNoUsage},
 		{name: "stream overflow", body: "{\"prompt_eval_count\":9223372036854775807}\n{\"prompt_eval_count\":1}", wantErr: cost.ErrOverflow},
 	}
 	for _, tt := range tests {

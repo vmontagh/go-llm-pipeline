@@ -1,7 +1,9 @@
 package costtest_test
 
 import (
+	"encoding/json"
 	"errors"
+	"flag"
 	"os"
 	"testing"
 	"testing/fstest"
@@ -153,5 +155,38 @@ func TestCheck(t *testing.T) {
 				t.Errorf("Check(%q) logged no report", tt.dir)
 			}
 		})
+	}
+}
+
+var updateCost = flag.Bool("update-cost", false, "rewrite testdata/cost-baseline.json")
+
+// TestPromptCost is the workflow from the package documentation, run against
+// testdata so the documented code stays correct.
+func TestPromptCost(t *testing.T) {
+	prices, err := cost.LoadPrices(os.DirFS("testdata"), "prices.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := costtest.Options{MaxIncreasePercent: 10}
+	if !*updateCost {
+		src, err := os.ReadFile("testdata/cost-baseline.json")
+		if err != nil {
+			t.Fatalf("reading baseline (run with -update-cost to create it): %v", err)
+		}
+		var base cost.Report
+		if err := json.Unmarshal(src, &base); err != nil {
+			t.Fatal(err)
+		}
+		opts.Baseline = &base
+	}
+	report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, opts)
+	if *updateCost {
+		src, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile("testdata/cost-baseline.json", src, 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

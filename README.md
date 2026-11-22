@@ -151,6 +151,34 @@ defer func() {
 provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 ```
 
+#### Catching cost regressions in CI
+
+`pkg/cost/costtest` turns recorded cassettes into a cost check that runs in an ordinary `go test`,
+offline and for free. It never calls a provider. Each recorded response already contains the
+provider's token counts (for example `"usage":{"prompt_tokens":1000,"completion_tokens":500}`), so
+the check multiplies them by a price table you commit and compares the total with a committed
+baseline:
+
+1. Record cassettes once with `pkg/llmvcr` and commit them.
+2. Commit a price table in USD per million tokens, such as
+   `models: {gpt-4o-mini: {input: 0.15, output: 0.60}}`.
+3. Add a test that calls `costtest.Check`. The package documentation has a complete test with an
+   `-update-cost` flag that writes the baseline.
+4. Run that test once with `-update-cost` and commit `testdata/cost-baseline.json`.
+
+```go
+report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, costtest.Options{
+    Baseline:           &baseline, // the committed cost-baseline.json
+    MaxIncreasePercent: 10,
+})
+```
+
+The cost changes only when someone re-records cassettes, for example after editing a prompt. The
+test then fails if the new recordings cost more than the allowed increase, or if a call uses a model
+missing from the price table. Run it with `-v` to see the per-model table. When an increase is
+intended, rerun with `-update-cost` and commit the new baseline in the same pull request, so
+reviewers see the cost difference in the diff.
+
 #### Differential fuzzing of the schema layer
 
 `pkg/analyzer` derives a JSON schema from a Go type (`SchemaOf`), then later validates a
