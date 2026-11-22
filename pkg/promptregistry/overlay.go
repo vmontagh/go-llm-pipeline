@@ -265,12 +265,16 @@ func unrenderedSections(sections map[string][]string, out string) []string {
 			need[r]++
 		}
 	}
+	short := make(map[string]bool)
+	for r, n := range need {
+		if strings.Count(out, r) < n {
+			short[r] = true
+		}
+	}
 	missing := make(map[string]bool)
 	for name, rules := range sections {
-		for _, r := range rules {
-			if strings.Count(out, r) < need[r] {
-				missing[name] = true
-			}
+		if slices.ContainsFunc(rules, func(r string) bool { return short[r] }) {
+			missing[name] = true
 		}
 	}
 	return slices.Sorted(maps.Keys(missing))
