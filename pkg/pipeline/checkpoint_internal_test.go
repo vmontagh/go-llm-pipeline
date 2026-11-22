@@ -86,10 +86,10 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 		fail      fakeJournal
 		want      outcome
 	}{
-		{name: "write rolled back", syncEvery: 1, fail: fakeJournal{writeErr: errWrite}, want: outcome{Err: errWrite, Journal: first}},
-		{name: "rollback failed", syncEvery: 1, fail: fakeJournal{writeErr: errWrite, truncErr: errTruncate}, want: outcome{Err: errTruncate, Journal: first + `{"id"`, RetryErr: ErrCheckpointUnusable}},
-		{name: "sync failed", syncEvery: 1, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
-		{name: "scheduled sync failed", syncEvery: 2, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
+		{name: "writeRolledBack", syncEvery: 1, fail: fakeJournal{writeErr: errWrite}, want: outcome{Err: errWrite, Journal: first}},
+		{name: "rollbackFailed", syncEvery: 1, fail: fakeJournal{writeErr: errWrite, truncErr: errTruncate}, want: outcome{Err: errTruncate, Journal: first + `{"id"`, RetryErr: ErrCheckpointUnusable}},
+		{name: "syncFailed", syncEvery: 1, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
+		{name: "scheduledSyncFailed", syncEvery: 2, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -119,9 +119,9 @@ func TestFileCheckpointSyncCadence(t *testing.T) {
 		syncEvery int
 		wantSyncs int // including the one in Close
 	}{
-		{name: "every record", syncEvery: 1, wantSyncs: 8},
-		{name: "every third record", syncEvery: 3, wantSyncs: 3},
-		{name: "only on close", syncEvery: 0, wantSyncs: 1},
+		{name: "everyRecord", syncEvery: 1, wantSyncs: 8},
+		{name: "everyThirdRecord", syncEvery: 3, wantSyncs: 3},
+		{name: "onlyOnClose", syncEvery: 0, wantSyncs: 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

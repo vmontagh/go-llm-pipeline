@@ -49,8 +49,8 @@ type checkpointRecord struct {
 const defaultSyncEvery = 1
 
 // FileCheckpoint is a [Checkpoint] backed by an append-only JSON-lines
-// journal. A crash loses at most the record being written. It is safe for
-// concurrent use.
+// journal. With the default sync cadence a crash loses at most the record
+// being written; see [WithSyncEvery]. It is safe for concurrent use.
 type FileCheckpoint struct {
 	syncEvery int
 

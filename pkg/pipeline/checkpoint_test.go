@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -27,9 +28,9 @@ var (
 )
 
 // openCheckpoint opens the journal at path and closes it on cleanup.
-func openCheckpoint(t *testing.T, path string) *pipeline.FileCheckpoint {
+func openCheckpoint(t *testing.T, path string, opts ...pipeline.CheckpointOption) *pipeline.FileCheckpoint {
 	t.Helper()
-	cp, err := pipeline.OpenFileCheckpoint(path)
+	cp, err := pipeline.OpenFileCheckpoint(path, opts...)
 	if err != nil {
 		t.Fatalf("OpenFileCheckpoint(%q) = %v", path, err)
 	}
@@ -41,13 +42,14 @@ func openCheckpoint(t *testing.T, path string) *pipeline.FileCheckpoint {
 	return cp
 }
 
-// markDone marks every id, failing the test on error.
-func markDone(t *testing.T, cp pipeline.Checkpoint, ids ...string) {
+// markAll marks ids through Checkpointed with the given number of workers.
+func markAll(t *testing.T, cp pipeline.Checkpoint, ids []string, workers int) {
 	t.Helper()
-	for _, id := range ids {
-		if err := cp.MarkDone(id); err != nil {
-			t.Fatalf("MarkDone(%q) = %v", id, err)
-		}
+	process := pipeline.Checkpointed(cp, func(id string) string { return id },
+		func(context.Context, string) error { return nil },
+		func(id string, err error) { t.Errorf("item %q: %v", id, err) })
+	if err := pipeline.ConsumeAll(t.Context(), ids, workers, process); err != nil {
+		t.Fatalf("ConsumeAll() = %v", err)
 	}
 }
 
@@ -84,16 +86,26 @@ func writeJournal(t *testing.T, path, content string) {
 
 func TestFileCheckpointReopen(t *testing.T) {
 	t.Parallel()
+	const manyItems = 50
+	many := make([]string, 0, manyItems)
+	for i := range manyItems {
+		many = append(many, strconv.Itoa(i))
+	}
+	slices.Sort(many)
 	tests := []struct {
 		name     string
 		journal  string // existing content; empty means no file yet
+		opts     []pipeline.CheckpointOption
 		mark     []string
+		workers  int
 		wantDone []string
 	}{
-		{name: "new journal", mark: []string{"a", "b", "a"}, wantDone: []string{"a", "b"}},
-		{name: "existing records", journal: "{\"id\":\"a\"}\n\n{\"id\":\"b\"}\n", mark: []string{"c"}, wantDone: []string{"a", "b", "c"}},
-		{name: "partial last record dropped", journal: "{\"id\":\"a\"}\n{\"id\":", mark: []string{"c"}, wantDone: []string{"a", "c"}},
-		{name: "only a partial record", journal: "{\"id\":\"a\"", mark: []string{"c"}, wantDone: []string{"c"}},
+		{name: "newJournal", mark: []string{"a", "b", "a"}, wantDone: []string{"a", "b"}},
+		{name: "existingRecords", journal: "{\"id\":\"a\"}\n\n{\"id\":\"b\"}\n", mark: []string{"c"}, wantDone: []string{"a", "b", "c"}},
+		{name: "partialLastRecordDropped", journal: "{\"id\":\"a\"}\n{\"id\":", mark: []string{"c"}, wantDone: []string{"a", "c"}},
+		{name: "onlyPartialRecord", journal: "{\"id\":\"a\"", mark: []string{"c"}, wantDone: []string{"c"}},
+		{name: "nilOptionIgnored", opts: []pipeline.CheckpointOption{nil}, mark: []string{"a"}, wantDone: []string{"a"}},
+		{name: "concurrentWorkersWithDuplicates", mark: slices.Concat(many, many), workers: 8, wantDone: many},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -102,12 +114,13 @@ func TestFileCheckpointReopen(t *testing.T) {
 			if tt.journal != "" {
 				writeJournal(t, path, tt.journal)
 			}
-			cp := openCheckpoint(t, path)
-			markDone(t, cp, tt.mark...)
+			cp := openCheckpoint(t, path, tt.opts...)
+			markAll(t, cp, tt.mark, tt.workers)
 
 			got := reopen(t, cp, path)
 
-			if diff := cmp.Diff(tt.wantDone, doneOf(got, "a", "b", "c")); diff != "" {
+			ids := slices.Sorted(slices.Values(slices.Concat([]string{"a", "b", "c"}, tt.mark)))
+			if diff := cmp.Diff(tt.wantDone, doneOf(got, slices.Compact(ids)...)); diff != "" {
 				t.Errorf("Done after reopen (-want +got):\n%s", diff)
 			}
 			if got.Len() != len(tt.wantDone) {
@@ -117,70 +130,53 @@ func TestFileCheckpointReopen(t *testing.T) {
 	}
 }
 
-func TestOpenFileCheckpointErrors(t *testing.T) {
+func TestOpenFileCheckpoint(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name        string
-		journal     string
-		pathIsDir   bool
-		alreadyOpen bool
-		wantErr     error
+		name           string
+		journal        string
+		noJournal      bool // the journal's directory does not exist yet
+		pathIsDir      bool
+		alreadyOpen    bool
+		unreadableRoot bool // the temp dir above the journal's directory
+		wantErr        error
 	}{
-		{name: "corrupt middle record", journal: "oops\n{\"id\":\"a\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
-		{name: "record without id", journal: "{}\n", wantErr: pipeline.ErrCorruptCheckpoint},
-		{name: "invalid UTF-8 id", journal: "{\"id\":\"asset-\xff\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
-		{name: "path is a directory", pathIsDir: true, wantErr: appendfile.ErrNotRegularFile},
-		{name: "already open", alreadyOpen: true, wantErr: pipeline.ErrCheckpointInUse},
+		{name: "unreadableAncestorSkipped", unreadableRoot: true},
+		{name: "createsDirectoryInUnreadable", noJournal: true, unreadableRoot: true, wantErr: fs.ErrPermission},
+		{name: "corruptMiddleRecord", journal: "oops\n{\"id\":\"a\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
+		{name: "recordWithoutID", journal: "{}\n", wantErr: pipeline.ErrCorruptCheckpoint},
+		{name: "invalidUTF8ID", journal: "{\"id\":\"asset-\xff\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
+		{name: "pathIsDirectory", pathIsDir: true, wantErr: appendfile.ErrNotRegularFile},
+		{name: "alreadyOpen", alreadyOpen: true, wantErr: pipeline.ErrCheckpointInUse},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			path := filepath.Join(t.TempDir(), journalName)
+			root := t.TempDir()
+			path := filepath.Join(root, journalName)
 			switch {
 			case tt.pathIsDir:
-				path = t.TempDir()
+				path = root
 			case tt.alreadyOpen:
 				openCheckpoint(t, path)
-			default:
+			case !tt.noJournal:
 				writeJournal(t, path, tt.journal)
 			}
+			if tt.unreadableRoot {
+				makeUnreadable(t, root)
+			}
 
-			_, err := pipeline.OpenFileCheckpoint(path)
+			cp, err := pipeline.OpenFileCheckpoint(path)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("OpenFileCheckpoint() error (-want +got):\n%s", diff)
 			}
+			if err == nil {
+				if err := cp.Close(); err != nil {
+					t.Errorf("Close() = %v", err)
+				}
+			}
 		})
-	}
-}
-
-// TestFileCheckpointConcurrentWorkers shares one checkpoint across workers,
-// with every ID queued twice, and checks the journal after reopening.
-func TestFileCheckpointConcurrentWorkers(t *testing.T) {
-	const (
-		itemCount = 50
-		workers   = 8
-	)
-	path := filepath.Join(t.TempDir(), journalName)
-	cp := openCheckpoint(t, path)
-	var ids []string
-	for i := range itemCount {
-		ids = append(ids, strconv.Itoa(i))
-	}
-	process := pipeline.Checkpointed(cp, func(id string) string { return id },
-		func(context.Context, string) error { return nil },
-		func(id string, err error) { t.Errorf("item %q: %v", id, err) })
-
-	if err := pipeline.ConsumeAll(t.Context(), append(ids, ids...), workers, process); err != nil {
-		t.Fatalf("ConsumeAll() = %v", err)
-	}
-	cp = reopen(t, cp, path)
-
-	if diff := cmp.Diff(ids, doneOf(cp, ids...)); diff != "" {
-		t.Errorf("Done after reopen (-want +got):\n%s", diff)
-	}
-	if got := cp.Len(); got != itemCount {
-		t.Errorf("Len() after reopen = %d, want %d", got, itemCount)
 	}
 }
 
@@ -207,48 +203,6 @@ func makeUnreadable(t *testing.T, dir string) {
 	t.Skip("directory read permission is not enforced")
 }
 
-func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
-	tests := []struct {
-		name         string
-		journalExist bool
-		wantErr      error
-	}{
-		{name: "existingDirectory", journalExist: true},
-		{name: "createsDirectory", wantErr: fs.ErrPermission},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			root := t.TempDir()
-			path := filepath.Join(root, journalName)
-			if tt.journalExist {
-				writeJournal(t, path, "")
-			}
-			makeUnreadable(t, root)
-
-			cp, err := pipeline.OpenFileCheckpoint(path)
-
-			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("OpenFileCheckpoint() error (-want +got):\n%s", diff)
-			}
-			if err == nil {
-				if err := cp.Close(); err != nil {
-					t.Errorf("Close() = %v", err)
-				}
-			}
-		})
-	}
-}
-
-func TestOpenFileCheckpointNilOption(t *testing.T) {
-	cp, err := pipeline.OpenFileCheckpoint(filepath.Join(t.TempDir(), journalName), nil)
-	if err != nil {
-		t.Fatalf("OpenFileCheckpoint(nil option) = %v", err)
-	}
-	if err := cp.Close(); err != nil {
-		t.Errorf("Close() = %v", err)
-	}
-}
-
 func TestFileCheckpointMarkDoneErrors(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -257,8 +211,8 @@ func TestFileCheckpointMarkDoneErrors(t *testing.T) {
 		closed  bool
 		wantErr error
 	}{
-		{name: "empty id", wantErr: pipeline.ErrInvalidCheckpointID},
-		{name: "invalid UTF-8 id", id: "asset-\xff", wantErr: pipeline.ErrInvalidCheckpointID},
+		{name: "emptyID", wantErr: pipeline.ErrInvalidCheckpointID},
+		{name: "invalidUTF8ID", id: "asset-\xff", wantErr: pipeline.ErrInvalidCheckpointID},
 		{name: "closed", id: "a", closed: true, wantErr: os.ErrClosed},
 	}
 	for _, tt := range tests {
@@ -311,21 +265,28 @@ func TestCheckpointed(t *testing.T) {
 		alreadyDone bool
 		processErr  error
 		markErr     error
+		nilOnError  bool
 		want        outcome
 	}{
-		{name: "already done is skipped", alreadyDone: true, want: outcome{Done: true}},
-		{name: "success is marked", want: outcome{Processed: true, Done: true}},
-		{name: "process failure is reported", processErr: errProcess, want: outcome{Processed: true, Err: errProcess}},
-		{name: "checkpoint failure is reported", markErr: errMark, want: outcome{Processed: true, Err: errMark}},
+		{name: "alreadyDoneSkipped", alreadyDone: true, want: outcome{Done: true}},
+		{name: "successMarked", want: outcome{Processed: true, Done: true}},
+		{name: "processFailureReported", processErr: errProcess, want: outcome{Processed: true, Err: errProcess}},
+		{name: "checkpointFailureReported", markErr: errMark, want: outcome{Processed: true, Err: errMark}},
+		{name: "processFailureWithoutHandler", processErr: errProcess, nilOnError: true, want: outcome{Processed: true}},
+		{name: "checkpointFailureWithoutHandler", markErr: errMark, nilOnError: true, want: outcome{Processed: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			cp := &fakeCheckpoint{done: map[string]bool{id: tt.alreadyDone}, markErr: tt.markErr}
 			var got outcome
+			onError := func(_ string, err error) { got.Err = err }
+			if tt.nilOnError {
+				onError = nil
+			}
 			process := pipeline.Checkpointed(cp, func(s string) string { return s },
 				func(context.Context, string) error { got.Processed = true; return tt.processErr },
-				func(_ string, err error) { got.Err = err })
+				onError)
 
 			process(t.Context(), id)
 

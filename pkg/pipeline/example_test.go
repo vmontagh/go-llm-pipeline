@@ -137,7 +137,11 @@ func ExampleCheckpointed() {
 		fmt.Println(err)
 		return
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Println(err)
+		}
+	}()
 	path := filepath.Join(dir, "done.jsonl")
 	assets := []string{"a", "b", "c"}
 

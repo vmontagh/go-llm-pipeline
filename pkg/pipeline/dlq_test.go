@@ -241,7 +241,11 @@ func readDLQFile(t *testing.T, path string) []pipeline.DLQEntry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = file.Close() })
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	})
 	entries, err := pipeline.ReadDLQ(file)
 	if err != nil {
 		t.Fatalf("ReadDLQ() = %v", err)
@@ -261,8 +265,8 @@ func TestDeadLetterQueueAdd(t *testing.T) {
 		want    []pipeline.DLQEntry
 		wantErr error
 	}{
-		{name: "entries round trip", want: entries},
-		{name: "after close", closed: true, wantErr: os.ErrClosed},
+		{name: "entriesRoundTrip", want: entries},
+		{name: "afterClose", closed: true, wantErr: os.ErrClosed},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -293,7 +297,7 @@ func TestReadDLQ(t *testing.T) {
 	}{
 		{name: "empty"},
 		{name: "entries", input: "{\"item_id\":\"a\"}\n{\"item_id\":\"b\"}\n", want: []pipeline.DLQEntry{{ItemID: "a"}, {ItemID: "b"}}},
-		{name: "malformed line", input: "{\"item_id\":\"a\"}\nnot json\n", wantSyntaxErr: true},
+		{name: "malformedLine", input: "{\"item_id\":\"a\"}\nnot json\n", wantSyntaxErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
