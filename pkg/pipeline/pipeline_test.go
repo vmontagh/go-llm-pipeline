@@ -396,12 +396,14 @@ func TestConsumeAll(t *testing.T) {
 		Err error
 	}
 	tests := []struct {
-		name      string
-		cancelled bool
-		want      outcome
+		name       string
+		cancelled  bool
+		nilProcess bool
+		want       outcome
 	}{
 		{name: "processesAll", want: outcome{Sum: 6}},
 		{name: "cancelled", cancelled: true, want: outcome{Err: context.Canceled}},
+		{name: "nilProcessReturns", nilProcess: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -417,6 +419,9 @@ func TestConsumeAll(t *testing.T) {
 				if ctx.Err() == nil {
 					sum.Add(n)
 				}
+			}
+			if tt.nilProcess {
+				process = nil
 			}
 
 			err := ConsumeAll(ctx, []int64{1, 2, 3}, 2, process)
