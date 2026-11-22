@@ -12,14 +12,16 @@ var (
 	errWrite    = errors.New("disk full")
 	errSync     = errors.New("fsync failed")
 	errTruncate = errors.New("truncate failed")
+	errClose    = errors.New("close failed")
 )
 
 // fakeJournal is an in-memory journal whose operations can fail once. A
 // failed write still stores half the record, like a short write.
 type fakeJournal struct {
-	data                        []byte
-	writeErr, syncErr, truncErr error
-	syncs                       int
+	data                                  []byte
+	writeErr, syncErr, truncErr, closeErr error
+	syncs                                 int
+	closed                                bool
 }
 
 func (f *fakeJournal) WriteAt(p []byte, off int64) (int, error) {
@@ -48,7 +50,10 @@ func (f *fakeJournal) Truncate(size int64) error {
 	return nil
 }
 
-func (*fakeJournal) Close() error { return nil }
+func (f *fakeJournal) Close() error {
+	f.closed = true
+	return f.closeErr
+}
 
 // newFakeCheckpoint returns a FileCheckpoint that writes to an in-memory
 // journal.
@@ -76,6 +81,7 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 	const first = `{"id":"a"}` + "\n"
 	type outcome struct {
 		Err      error
+		Unusable bool
 		Done     bool
 		Journal  string
 		RetryErr error
@@ -87,9 +93,10 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 		want      outcome
 	}{
 		{name: "writeRolledBack", syncEvery: 1, fail: fakeJournal{writeErr: errWrite}, want: outcome{Err: errWrite, Journal: first}},
-		{name: "rollbackFailed", syncEvery: 1, fail: fakeJournal{writeErr: errWrite, truncErr: errTruncate}, want: outcome{Err: errTruncate, Journal: first + `{"id"`, RetryErr: ErrCheckpointUnusable}},
-		{name: "syncFailed", syncEvery: 1, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
-		{name: "scheduledSyncFailed", syncEvery: 2, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Journal: first, RetryErr: ErrCheckpointUnusable}},
+		{name: "rollbackFailed", syncEvery: 1, fail: fakeJournal{writeErr: errWrite, truncErr: errTruncate}, want: outcome{Err: errTruncate, Unusable: true, Journal: first + `{"id"`, RetryErr: ErrCheckpointUnusable}},
+		{name: "syncFailed", syncEvery: 1, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Unusable: true, Journal: first, RetryErr: ErrCheckpointUnusable}},
+		{name: "scheduledSyncFailed", syncEvery: 2, fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Unusable: true, Journal: first, RetryErr: ErrCheckpointUnusable}},
+		{name: "syncAndRollbackFailed", syncEvery: 1, fail: fakeJournal{syncErr: errSync, truncErr: errTruncate}, want: outcome{Err: errTruncate, Unusable: true, Journal: first + `{"id":"b"}` + "\n", RetryErr: ErrCheckpointUnusable}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,7 +107,7 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 
 			err := c.MarkDone("b")
 
-			got := outcome{Err: err, Done: c.Done("b"), Journal: string(journal.data)}
+			got := outcome{Err: err, Unusable: errors.Is(err, ErrCheckpointUnusable), Done: c.Done("b"), Journal: string(journal.data)}
 			journal.truncErr = nil
 			got.RetryErr = c.MarkDone("b")
 			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
@@ -135,6 +142,40 @@ func TestFileCheckpointSyncCadence(t *testing.T) {
 
 			if journal.syncs != tt.wantSyncs {
 				t.Errorf("Sync calls = %d, want %d", journal.syncs, tt.wantSyncs)
+			}
+		})
+	}
+}
+
+// TestFileCheckpointClose is white-box because Sync and Close failures cannot
+// be produced through a real file.
+func TestFileCheckpointClose(t *testing.T) {
+	t.Parallel()
+	type outcome struct {
+		Err    error
+		Closed bool
+	}
+	tests := []struct {
+		name string
+		fail fakeJournal
+		want outcome
+	}{
+		{name: "closes", want: outcome{Closed: true}},
+		{name: "syncFailed", fail: fakeJournal{syncErr: errSync}, want: outcome{Err: errSync, Closed: true}},
+		{name: "closeFailed", fail: fakeJournal{closeErr: errClose}, want: outcome{Err: errClose, Closed: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			c, journal := newFakeCheckpoint(0)
+			markDone(t, c, "a")
+			journal.syncErr, journal.closeErr = tt.fail.syncErr, tt.fail.closeErr
+
+			err := c.Close()
+
+			got := outcome{Err: err, Closed: journal.closed}
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Close() (-want +got):\n%s", diff)
 			}
 		})
 	}
