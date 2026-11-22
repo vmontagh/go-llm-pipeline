@@ -29,8 +29,9 @@
 //	{{end}}
 //
 // Overlays fail closed: a rule that does not appear verbatim in the rendered
-// prompt returns [ErrUnusedRules], and rules over [WithOverlayLimit] return
-// [ErrOverlayTooLarge] instead of being truncated. [VersionID] names the exact
+// prompt returns [ErrUnusedRules], rules over [WithOverlayLimit] return
+// [ErrOverlayTooLarge], and a prompt over [WithOutputLimit] returns
+// [ErrOutputTooLarge]; nothing is truncated. [VersionID] names the exact
 // template and rules behind an output, such as
 // "judge/v3+photo-rules@7#3f2a9c1b0d4e", so it can be stored for rollback.
 //
@@ -408,6 +409,9 @@ func validateFuncs(funcs template.FuncMap) (err error) {
 // rule whose exact text also appears in the caller's data, the template, or a
 // longer rule can pass without being rendered from the overlay.
 //
+// With WithOutputLimit, Render returns ErrOutputTooLarge when the rendered
+// prompt exceeds the limit, with or without an overlay.
+//
 // The context is checked for cancellation before execution begins but is not
 // stored; because text/template exposes no execution hook, an already-started
 // render is not interrupted mid-flight. The parameter keeps room for a future
@@ -442,6 +446,9 @@ func (r *Registry) Render(ctx context.Context, name, version string, data any, o
 		return "", fmt.Errorf("%w: %s/%s: %w", ErrRenderFailed, name, version, err)
 	}
 	out := buf.String()
+	if cfg.outputLimit > 0 && len(out) > cfg.outputLimit {
+		return "", fmt.Errorf("%w: %s/%s rendered %d bytes, limit %d", ErrOutputTooLarge, name, version, len(out), cfg.outputLimit)
+	}
 	if cfg.overlay != nil {
 		if missing := unrenderedSections(cfg.overlay.sections, out); len(missing) > 0 {
 			return "", fmt.Errorf("%w: %s/%s: %s sections %q", ErrUnusedRules, name, version, cfg.overlay.ID(), missing)

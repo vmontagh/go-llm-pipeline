@@ -30,6 +30,9 @@ var (
 	// ErrOverlayTooLarge is returned by Render when the overlay's rules exceed
 	// the limit set with WithOverlayLimit. Rules are never truncated.
 	ErrOverlayTooLarge = errors.New("overlay too large")
+	// ErrOutputTooLarge is returned by Render when the rendered prompt exceeds
+	// the limit set with WithOutputLimit. Output is never truncated.
+	ErrOutputTooLarge = errors.New("rendered output too large")
 )
 
 // idHashLen is the number of hex digits of the content hash shown in an ID.
@@ -215,8 +218,9 @@ func cloneSections(sections map[string][]string) map[string][]string {
 type RenderOption func(*renderConfig)
 
 type renderConfig struct {
-	overlay *Overlay
-	limit   int
+	overlay     *Overlay
+	limit       int
+	outputLimit int
 }
 
 // WithOverlay renders the template with overlay o. The template then sees the
@@ -233,6 +237,14 @@ func WithOverlay(o *Overlay) RenderOption {
 // means no limit.
 func WithOverlayLimit(maxBytes int) RenderOption {
 	return func(c *renderConfig) { c.limit = maxBytes }
+}
+
+// WithOutputLimit makes Render fail with ErrOutputTooLarge when the rendered
+// prompt, including any overlay rules, is longer than maxBytes bytes. Unlike
+// WithOverlayLimit it measures the template's formatting too, so it applies
+// with or without an overlay. A maxBytes of zero or less means no limit.
+func WithOutputLimit(maxBytes int) RenderOption {
+	return func(c *renderConfig) { c.outputLimit = maxBytes }
 }
 
 // overlayData is the data a template rendered with an overlay receives.

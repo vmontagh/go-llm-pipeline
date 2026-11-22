@@ -408,6 +408,13 @@ func TestRenderWithOverlay(t *testing.T) {
 			wantErr:  promptregistry.ErrOverlayTooLarge,
 		},
 		{
+			name:     "output limit counts rules and formatting",
+			src:      `{{range .Rules.guidelines}}- {{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"1234"}},
+			opts:     []promptregistry.RenderOption{promptregistry.WithOverlayLimit(4), promptregistry.WithOutputLimit(5)},
+			wantErr:  promptregistry.ErrOutputTooLarge,
+		},
+		{
 			name:     "zero limit is no limit",
 			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"1234", "567"}},
@@ -450,6 +457,9 @@ func TestRenderWithoutOverlay(t *testing.T) {
 	}{
 		{name: "nil overlay renders plain", opts: []promptregistry.RenderOption{promptregistry.WithOverlay(nil)}, src: `{{.Title}}`, want: "beach"},
 		{name: "limit alone renders plain", opts: []promptregistry.RenderOption{promptregistry.WithOverlayLimit(1)}, src: `{{.Title}}`, want: "beach"},
+		{name: "within output limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(5)}, src: `{{.Title}}`, want: "beach"},
+		{name: "over output limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(4)}, src: `{{.Title}}`, wantErr: promptregistry.ErrOutputTooLarge},
+		{name: "zero output limit is no limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(0)}, src: `{{.Title}}`, want: "beach"},
 		{name: "overlay template needs overlay", src: `{{.Data.Title}}{{.Rules.guidelines}}`, wantErr: promptregistry.ErrMissingField},
 	}
 	for _, tt := range tests {
