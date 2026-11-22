@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"math"
 	"slices"
 	"strings"
 
@@ -68,6 +70,13 @@ func LoadDataset[In, Out any](fsys fs.FS, name string) ([]Example[In, Out], erro
 	if err := dec.Decode(&examples); err != nil {
 		return nil, fmt.Errorf("decoding dataset %q: %w", name, err)
 	}
+	var extra any
+	switch err := dec.Decode(&extra); {
+	case err == nil:
+		return nil, fmt.Errorf("dataset %q: %w: more than one YAML document", name, ErrInvalidDataset)
+	case !errors.Is(err, io.EOF):
+		return nil, fmt.Errorf("decoding dataset %q: %w", name, err)
+	}
 	if err := validateExamples(examples); err != nil {
 		return nil, fmt.Errorf("dataset %q: %w", name, err)
 	}
@@ -84,6 +93,9 @@ func validateExamples[In, Out any](examples []Example[In, Out]) error {
 func validateEvaluators[Out any](evaluators []Evaluator[Out]) error {
 	if len(evaluators) == 0 {
 		return fmt.Errorf("%w: none given", ErrInvalidEvaluators)
+	}
+	if slices.Contains(evaluators, nil) {
+		return fmt.Errorf("%w: nil evaluator", ErrInvalidEvaluators)
 	}
 	return checkNames(ErrInvalidEvaluators, len(evaluators), func(i int) string { return evaluators[i].Name() })
 }
@@ -131,9 +143,9 @@ type Report struct {
 }
 
 // Check returns an error wrapping ErrBelowThreshold when the pass rate is
-// under minPassRate.
+// under minPassRate or minPassRate is NaN.
 func (r *Report) Check(minPassRate float64) error {
-	if r.PassRate < minPassRate {
+	if math.IsNaN(minPassRate) || r.PassRate < minPassRate {
 		return fmt.Errorf("%w: %.3f < %.3f", ErrBelowThreshold, r.PassRate, minPassRate)
 	}
 	return nil
@@ -164,6 +176,9 @@ func Run[In, Out any](ctx context.Context, examples []Example[In, Out], target T
 
 func runExample[In, Out any](ctx context.Context, ex Example[In, Out], target Target[In, Out], evaluators []Evaluator[Out]) (ExampleResult, error) {
 	res := ExampleResult{Name: ex.Name}
+	if err := ctx.Err(); err != nil {
+		return res, err
+	}
 	got, err := target(ctx, ex.Input)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return res, ctxErr
@@ -177,6 +192,9 @@ func runExample[In, Out any](ctx context.Context, ex Example[In, Out], target Ta
 		s, err := ev.Evaluate(ctx, ex.Want, got)
 		if err != nil {
 			return res, fmt.Errorf("evaluator %q: %w", ev.Name(), err)
+		}
+		if err := ctx.Err(); err != nil {
+			return res, err
 		}
 		s.Evaluator = ev.Name()
 		res.Pass = res.Pass && s.Pass

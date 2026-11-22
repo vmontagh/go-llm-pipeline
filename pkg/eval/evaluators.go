@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,7 +35,8 @@ func (FieldMatch[Out]) Evaluate(_ context.Context, want, got Out) (Score, error)
 	}
 	s := Score{Value: 1, Pass: true, Fields: make(map[string]bool, len(w))}
 	for k, v := range w {
-		s.Fields[k] = reflect.DeepEqual(v, g[k])
+		gv, ok := g[k]
+		s.Fields[k] = ok && reflect.DeepEqual(v, gv)
 	}
 	for k := range g {
 		if _, ok := w[k]; !ok {
@@ -60,8 +62,11 @@ func fields(v any) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encoding: %w", err)
 	}
+	// UseNumber keeps large integers exact instead of rounding to float64.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
 	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil || m == nil {
+	if err := dec.Decode(&m); err != nil || m == nil {
 		return nil, ErrNotObject
 	}
 	return m, nil
@@ -93,9 +98,9 @@ type Judge[Out any] struct {
 
 // NewJudge returns a judge named id. An example passes when its score is at
 // least minScore. It returns ErrInvalidEvaluators for an empty id, a nil
-// scorer or prompt, or a minScore outside [0, 1].
+// scorer or prompt, or a minScore that is NaN or outside [0, 1].
 func NewJudge[Out any](id string, scorer Scorer, prompt JudgePrompt[Out], minScore float64) (*Judge[Out], error) {
-	if id == "" || scorer == nil || prompt == nil || minScore < 0 || minScore > 1 {
+	if id == "" || scorer == nil || prompt == nil || !inUnitRange(minScore) {
 		return nil, fmt.Errorf("%w: judge %q needs a name, scorer, prompt, and minScore in [0, 1]", ErrInvalidEvaluators, id)
 	}
 	return &Judge[Out]{id: id, scorer: scorer, prompt: prompt, minScore: minScore}, nil
@@ -117,8 +122,11 @@ func (j *Judge[Out]) Evaluate(ctx context.Context, want, got Out) (Score, error)
 	if resp == nil {
 		return Score{}, fmt.Errorf("%w: no score returned", ErrScoreRange)
 	}
-	if resp.Score < 0 || resp.Score > 1 {
+	if !inUnitRange(resp.Score) {
 		return Score{}, fmt.Errorf("%w: %v", ErrScoreRange, resp.Score)
 	}
 	return Score{Value: resp.Score, Pass: resp.Score >= j.minScore, Feedback: resp.Feedback}, nil
 }
+
+// inUnitRange reports whether v is in [0, 1]. NaN fails both comparisons.
+func inUnitRange(v float64) bool { return v >= 0 && v <= 1 }

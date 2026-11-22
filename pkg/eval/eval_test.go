@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io/fs"
+	"math"
 	"testing"
 	"testing/fstest"
 
@@ -28,17 +29,28 @@ var (
 	dogPhoto  = photo{Heading: "Dog", Tags: []string{"dog"}}
 )
 
-// stubEvaluator returns a fixed score or error.
+// stubEvaluator calls onEval, if set, then returns a fixed score or error.
 type stubEvaluator struct {
-	name  string
-	score eval.Score
-	err   error
+	name   string
+	score  eval.Score
+	err    error
+	onEval func()
 }
 
 func (s *stubEvaluator) Name() string { return s.name }
 func (s *stubEvaluator) Evaluate(context.Context, photo, photo) (eval.Score, error) {
+	if s.onEval != nil {
+		s.onEval()
+	}
 	return s.score, s.err
 }
+
+// Where TestRun cancels the context.
+const (
+	cancelBeforeRun = "beforeRun"
+	cancelInTarget  = "inTarget"
+	cancelInEval    = "inEvaluator"
+)
 
 func TestLoadDataset(t *testing.T) {
 	tests := []struct {
@@ -57,6 +69,7 @@ func TestLoadDataset(t *testing.T) {
 		{name: "empty", file: "[]\n", wantErr: eval.ErrInvalidDataset},
 		{name: "missingName", file: "- input: a.jpg\n", wantErr: eval.ErrInvalidDataset},
 		{name: "duplicateName", file: "- name: a\n- name: a\n", wantErr: eval.ErrInvalidDataset},
+		{name: "multipleDocuments", file: "- name: a\n---\n- name: b\n", wantErr: eval.ErrInvalidDataset},
 		{name: "unknownField", file: "- name: a\n  inptu: a.jpg\n", wantYAMLErr: true},
 	}
 	for _, tt := range tests {
@@ -100,7 +113,7 @@ func TestRun(t *testing.T) {
 		name       string
 		examples   []example
 		evaluators []eval.Evaluator[photo]
-		cancel     bool
+		cancelAt   string
 		want       *eval.Report
 		wantErr    error
 	}{
@@ -157,20 +170,21 @@ func TestRun(t *testing.T) {
 		{name: "noExamples", evaluators: []eval.Evaluator[photo]{fieldMatch}, wantErr: eval.ErrInvalidDataset},
 		{name: "duplicateExample", examples: []example{{Name: "a"}, {Name: "a"}}, evaluators: []eval.Evaluator[photo]{fieldMatch}, wantErr: eval.ErrInvalidDataset},
 		{name: "noEvaluators", examples: []example{{Name: "a"}}, wantErr: eval.ErrInvalidEvaluators},
+		{name: "nilEvaluator", examples: []example{{Name: "a"}}, evaluators: []eval.Evaluator[photo]{nil}, wantErr: eval.ErrInvalidEvaluators},
 		{name: "duplicateEvaluator", examples: []example{{Name: "a"}}, evaluators: []eval.Evaluator[photo]{fieldMatch, fieldMatch}, wantErr: eval.ErrInvalidEvaluators},
 		{name: "evaluatorError", examples: []example{{Name: "a", Input: "cat.jpg"}}, evaluators: []eval.Evaluator[photo]{&stubEvaluator{name: "broken", err: errBroken}}, wantErr: errBroken},
-		{name: "canceled", examples: []example{{Name: "a", Input: "cat.jpg"}}, evaluators: []eval.Evaluator[photo]{fieldMatch}, cancel: true, wantErr: context.Canceled},
+		{name: "canceledBeforeRun", examples: []example{{Name: "a", Input: "cat.jpg"}}, evaluators: []eval.Evaluator[photo]{fieldMatch}, cancelAt: cancelBeforeRun, wantErr: context.Canceled},
+		{name: "canceledInTarget", examples: []example{{Name: "a", Input: "cat.jpg"}}, evaluators: []eval.Evaluator[photo]{fieldMatch}, cancelAt: cancelInTarget, wantErr: context.Canceled},
+		{name: "canceledInEvaluator", examples: []example{{Name: "a", Input: "cat.jpg"}}, cancelAt: cancelInEval, wantErr: context.Canceled},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			if tt.cancel {
-				cancel()
-			}
+			run, evaluators := withCancel(t, tt.cancelAt, cancel, target, tt.evaluators)
 
-			got, err := eval.Run(ctx, tt.examples, target, tt.evaluators...)
+			got, err := eval.Run(ctx, tt.examples, run, evaluators...)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Fatalf("Run() error mismatch (-want +got):\n%s", diff)
@@ -180,6 +194,33 @@ func TestRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+// withCancel wires cancel into the run at the point cancelAt names. Work
+// started after cancellation fails the test.
+func withCancel(t *testing.T, cancelAt string, cancel context.CancelFunc, target eval.Target[string, photo], evaluators []eval.Evaluator[photo]) (eval.Target[string, photo], []eval.Evaluator[photo]) {
+	t.Helper()
+	switch cancelAt {
+	case cancelBeforeRun:
+		cancel()
+		return func(context.Context, string) (photo, error) {
+			t.Error("target called after cancel")
+			return photo{}, nil
+		}, evaluators
+	case cancelInTarget:
+		return func(ctx context.Context, in string) (photo, error) {
+			cancel()
+			return target(ctx, in)
+		}, []eval.Evaluator[photo]{
+			&stubEvaluator{name: "after", onEval: func() { t.Error("evaluator called after cancel") }},
+		}
+	case cancelInEval:
+		return target, []eval.Evaluator[photo]{
+			&stubEvaluator{name: "canceler", score: eval.Score{Value: 1, Pass: true}, onEval: cancel},
+			&stubEvaluator{name: "after", onEval: func() { t.Error("evaluator called after cancel") }},
+		}
+	}
+	return target, evaluators
 }
 
 func matchScore(heading, tags bool) eval.Score {
@@ -196,6 +237,7 @@ func TestReportCheck(t *testing.T) {
 		{name: "above", passRate: 0.9, min: 0.8},
 		{name: "equal", passRate: 0.8, min: 0.8},
 		{name: "below", passRate: 0.7, min: 0.8, wantErr: eval.ErrBelowThreshold},
+		{name: "nanThreshold", passRate: 1, min: math.NaN(), wantErr: eval.ErrBelowThreshold},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

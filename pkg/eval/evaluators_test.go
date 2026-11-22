@@ -3,6 +3,7 @@ package eval_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -28,6 +29,8 @@ func TestFieldMatch(t *testing.T) {
 		{name: "bothEmpty", want: map[string]any{}, got: map[string]any{}, wantRes: eval.Score{Value: 1, Pass: true, Fields: map[string]bool{}}},
 		{name: "missingInGot", want: map[string]any{"a": 1, "b": 2}, got: map[string]any{"a": 1}, wantRes: eval.Score{Value: 0.5, Fields: map[string]bool{"a": true, "b": false}}},
 		{name: "extraInGot", want: map[string]any{"a": 1}, got: map[string]any{"a": 1, "b": 2}, wantRes: eval.Score{Value: 0.5, Fields: map[string]bool{"a": true, "b": false}}},
+		{name: "nullVsMissing", want: map[string]any{"a": nil}, got: map[string]any{}, wantRes: eval.Score{Fields: map[string]bool{"a": false}}},
+		{name: "largeIntsDiffer", want: map[string]any{"id": int64(9007199254740993)}, got: map[string]any{"id": int64(9007199254740992)}, wantRes: eval.Score{Fields: map[string]bool{"id": false}}},
 		{name: "wantNotObject", want: 1, got: map[string]any{}, wantErr: eval.ErrNotObject},
 		{name: "gotNotObject", want: map[string]any{}, got: []int{1}, wantErr: eval.ErrNotObject},
 		{name: "gotNull", want: map[string]any{}, got: nil, wantErr: eval.ErrNotObject},
@@ -73,6 +76,7 @@ func TestNewJudge(t *testing.T) {
 		{name: "nilScorer", id: "j", prompt: echoPrompt},
 		{name: "nilPrompt", id: "j", scorer: &fakeScorer{}},
 		{name: "minBelowZero", id: "j", scorer: &fakeScorer{}, prompt: echoPrompt, minScore: -0.1},
+		{name: "minNaN", id: "j", scorer: &fakeScorer{}, prompt: echoPrompt, minScore: math.NaN()},
 		{name: "minAboveOne", id: "j", scorer: &fakeScorer{}, prompt: echoPrompt, minScore: 1.1},
 	}
 	for _, tt := range tests {
@@ -102,6 +106,7 @@ func TestJudgeEvaluate(t *testing.T) {
 		{name: "fail", scorer: &fakeScorer{resp: &eval.JudgeScore{Score: 0.2}}, want: eval.Score{Value: 0.2}, wantPrompt: "w|g"},
 		{name: "scoreAboveOne", scorer: &fakeScorer{resp: &eval.JudgeScore{Score: 1.5}}, wantPrompt: "w|g", wantErr: eval.ErrScoreRange},
 		{name: "scoreBelowZero", scorer: &fakeScorer{resp: &eval.JudgeScore{Score: -0.5}}, wantPrompt: "w|g", wantErr: eval.ErrScoreRange},
+		{name: "scoreNaN", scorer: &fakeScorer{resp: &eval.JudgeScore{Score: math.NaN()}}, wantPrompt: "w|g", wantErr: eval.ErrScoreRange},
 		{name: "nilResponse", scorer: &fakeScorer{}, wantPrompt: "w|g", wantErr: eval.ErrScoreRange},
 		{name: "scorerError", scorer: &fakeScorer{err: errScorer}, wantPrompt: "w|g", wantErr: errScorer},
 		{name: "promptError", scorer: &fakeScorer{}, prompt: func(string, string) (string, error) { return "", errPrompt }, wantErr: errPrompt},
