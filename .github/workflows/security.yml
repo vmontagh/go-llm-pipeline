@@ -1,9 +1,11 @@
 name: Security
 
 on:
-  # Every branch: a pushed commit is public whether or not a PR exists.
+  # Every branch and tag: a pushed commit is public whether or not a PR exists,
+  # and a tag can point at a commit that no branch contains.
   push:
     branches: ['**']
+    tags: ['**']
   pull_request:
     branches: [main]
   schedule:
@@ -64,8 +66,9 @@ jobs:
                 revs="$BEFORE..HEAD"
               fi
               ;;
-            # Scheduled and manual runs rescan all history with current rules.
-            *) revs="HEAD" ;;
+            # Scheduled and manual runs rescan every branch and tag, not just
+            # the checked-out one, so a gitleaks upgrade re-checks all of it.
+            *) revs="--all" ;;
           esac
           echo "revs=$revs" >> "$GITHUB_OUTPUT"
       - name: Scan the tree and those commits for secrets

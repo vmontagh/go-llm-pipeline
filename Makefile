@@ -3,7 +3,8 @@
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
 # SECRETS_REVS selects the commits `make secrets` scans, as `git log` revision
-# arguments: SECRETS_REVS=HEAD scans all history, HEAD..HEAD only the tree.
+# arguments: SECRETS_REVS=--all scans every branch and tag, HEAD..HEAD only
+# the tree.
 SECRETS_REVS ?= origin/main..HEAD
 
 build:

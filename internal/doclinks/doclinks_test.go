@@ -72,7 +72,7 @@ func TestCheck(t *testing.T) {
 	fsys := fstest.MapFS{
 		"README.md":           {Data: []byte("[ok](docs/a.md) [abs](/LICENSE) [web](https://x.test/y.md) [anchor](#top) [mail](mailto:a@x.test) [proto](//x.test/a.md) [file](file:///missing.md)\n[gone](docs/missing.md)")},
 		"LICENSE":             {},
-		"docs/a.md":           {Data: []byte("[up](../README.md#usage) [esc](../../outside.md) [enc](my%20file.md) [root](/docs/../LICENSE) [pct](100%.md) [ref](caf&eacute;&#46;md) [pctgone](50%.md)")},
+		"docs/a.md":           {Data: []byte("[up](../README.md#usage) [esc](../../outside.md) [enc](my%20file.md) [root](/docs/../LICENSE) [pct](100%.md) [ref](caf&eacute;&#46;md) [pctgone](50%.md) [dir](../docs/) [slashfile](../LICENSE/)")},
 		"docs/100%.md":        {},
 		"docs/café.md":        {},
 		"docs/my file.md":     {},
@@ -83,6 +83,7 @@ func TestCheck(t *testing.T) {
 		{File: "README.md", Target: "docs/missing.md"},
 		{File: "docs/a.md", Target: "../../outside.md"},
 		{File: "docs/a.md", Target: "50%.md"},
+		{File: "docs/a.md", Target: "../LICENSE/"},
 	}
 
 	got, err := doclinks.Check(fsys)

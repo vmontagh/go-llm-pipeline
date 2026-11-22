@@ -135,6 +135,10 @@ func exists(fsys fs.FS, file, target string) bool {
 	if strings.HasPrefix(u.Path, "/") {
 		base = "."
 	}
-	_, err = fs.Stat(fsys, path.Join(base, strings.TrimPrefix(u.Path, "/")))
-	return err == nil
+	info, err := fs.Stat(fsys, path.Join(base, strings.TrimPrefix(u.Path, "/")))
+	if err != nil {
+		return false
+	}
+	// path.Join drops a trailing slash, but GitHub serves "README.md/" as 404.
+	return info.IsDir() || !strings.HasSuffix(u.Path, "/")
 }
