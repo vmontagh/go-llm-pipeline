@@ -77,7 +77,10 @@ func fields(v any) (map[string]any, error) {
 func jsonEqual(a, b any) bool {
 	switch av := a.(type) {
 	case json.Number:
-		bv, _ := b.(json.Number) // A non-number gives "", which fails SetString.
+		bv, ok := b.(json.Number)
+		if !ok {
+			return false
+		}
 		ar, aok := new(big.Rat).SetString(av.String())
 		br, bok := new(big.Rat).SetString(bv.String())
 		return aok && bok && ar.Cmp(br) == 0
