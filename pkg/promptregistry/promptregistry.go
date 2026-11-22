@@ -43,6 +43,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"path"
@@ -439,22 +440,48 @@ func (r *Registry) Render(ctx context.Context, name, version string, data any, o
 		data = overlayData{Data: data, Rules: cloneSections(cfg.overlay.sections)}
 	}
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
+	var w io.Writer = &buf
+	if cfg.outputLimit > 0 {
+		w = &limitWriter{w: &buf, remaining: cfg.outputLimit}
+	}
+	if err := tmpl.Execute(w, data); err != nil {
+		if errors.Is(err, errOutputLimit) {
+			return "", fmt.Errorf("%w: %s/%s exceeds %d bytes", ErrOutputTooLarge, name, version, cfg.outputLimit)
+		}
 		if errors.Is(err, errStrictIndexMissing) || isMissingKeyError(err) {
 			return "", fmt.Errorf("%w: %s/%s: %w", ErrMissingField, name, version, err)
 		}
 		return "", fmt.Errorf("%w: %s/%s: %w", ErrRenderFailed, name, version, err)
 	}
 	out := buf.String()
-	if cfg.outputLimit > 0 && len(out) > cfg.outputLimit {
-		return "", fmt.Errorf("%w: %s/%s rendered %d bytes, limit %d", ErrOutputTooLarge, name, version, len(out), cfg.outputLimit)
-	}
 	if cfg.overlay != nil {
 		if missing := unrenderedSections(cfg.overlay.sections, out); len(missing) > 0 {
 			return "", fmt.Errorf("%w: %s/%s: %s sections %q", ErrUnusedRules, name, version, cfg.overlay.ID(), missing)
 		}
 	}
 	return out, nil
+}
+
+// errOutputLimit is returned by limitWriter once its budget is spent.
+var errOutputLimit = errors.New("output limit reached")
+
+// limitWriter stops a render as soon as it would exceed remaining bytes, so
+// an oversized prompt is never fully buffered.
+type limitWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if len(p) > l.remaining {
+		return 0, errOutputLimit
+	}
+	l.remaining -= len(p)
+	n, err := l.w.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("writing output: %w", err)
+	}
+	return n, nil
 }
 
 // missingKeyMarkers are the substrings text/template uses to report a

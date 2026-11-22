@@ -459,6 +459,7 @@ func TestRenderWithoutOverlay(t *testing.T) {
 		{name: "limit alone renders plain", opts: []promptregistry.RenderOption{promptregistry.WithOverlayLimit(1)}, src: `{{.Title}}`, want: "beach"},
 		{name: "within output limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(5)}, src: `{{.Title}}`, want: "beach"},
 		{name: "over output limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(4)}, src: `{{.Title}}`, wantErr: promptregistry.ErrOutputTooLarge},
+		{name: "output limit stops render early", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(9)}, src: `{{.Title}}{{.Title}}{{.Missing}}`, wantErr: promptregistry.ErrOutputTooLarge},
 		{name: "zero output limit is no limit", opts: []promptregistry.RenderOption{promptregistry.WithOutputLimit(0)}, src: `{{.Title}}`, want: "beach"},
 		{name: "overlay template needs overlay", src: `{{.Data.Title}}{{.Rules.guidelines}}`, wantErr: promptregistry.ErrMissingField},
 	}
