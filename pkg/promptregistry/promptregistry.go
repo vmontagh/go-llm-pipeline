@@ -18,6 +18,23 @@
 // [ErrInvalidTemplate]) returned wrapped with %w so callers can classify it
 // with [errors.Is].
 //
+// An [Overlay] adds a separately versioned set of rules, such as rules learned
+// from user feedback, on top of a template without editing it. Build one with
+// [NewOverlay] or load it from YAML with [LoadOverlay], then render with
+// [WithOverlay]. The template then reads the caller's data as {{.Data}} and
+// the rules as {{.Rules.<section>}}:
+//
+//	{{.Data.Title}}
+//	{{range .Rules.guidelines}}- {{.}}
+//	{{end}}
+//
+// Overlays fail closed: a rule that does not appear verbatim in the rendered
+// prompt returns [ErrUnusedRules], rules over [WithOverlayLimit] return
+// [ErrOverlayTooLarge], and a prompt over [WithOutputLimit] returns
+// [ErrOutputTooLarge]; nothing is truncated. [VersionID] names the exact
+// template and rules behind an output, such as
+// "judge/v3+photo-rules@7#3f2a9c1b0d4e", so it can be stored for rollback.
+//
 // A Registry is immutable after construction, so [Registry.Render] is safe for
 // concurrent use by multiple goroutines.
 package promptregistry
@@ -26,6 +43,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math"
 	"path"
@@ -384,26 +402,86 @@ func validateFuncs(funcs template.FuncMap) (err error) {
 // map key (including via the strict index function), and ErrRenderFailed for
 // any other execution failure.
 //
+// With WithOverlay, the template receives the data as {{.Data}} and the
+// overlay's sections as {{.Rules}}. Render then also returns ErrOverlayTooLarge
+// when the rules exceed WithOverlayLimit, and ErrUnusedRules when any rule
+// does not appear verbatim in the output, for example because the template
+// skips a section or transforms the rule text. The check matches text, so a
+// rule whose exact text also appears in the caller's data, the template, or a
+// longer rule can pass without being rendered from the overlay.
+//
+// With WithOutputLimit, Render returns ErrOutputTooLarge when the rendered
+// prompt exceeds the limit, with or without an overlay.
+//
 // The context is checked for cancellation before execution begins but is not
 // stored; because text/template exposes no execution hook, an already-started
 // render is not interrupted mid-flight. The parameter keeps room for a future
 // remote loader without changing the signature.
-func (r *Registry) Render(ctx context.Context, name, version string, data any) (string, error) {
+func (r *Registry) Render(ctx context.Context, name, version string, data any, opts ...RenderOption) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", fmt.Errorf("promptregistry: %w", err)
 	}
-	tmpl, ok := r.templates[Ref{Name: name, Version: version}]
+	ref := Ref{Name: name, Version: version}
+	tmpl, ok := r.templates[ref]
 	if !ok {
 		return "", fmt.Errorf("%w: %s/%s", ErrTemplateNotFound, name, version)
 	}
+	var cfg renderConfig
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.overlay != nil {
+		if err := cfg.checkLimit(); err != nil {
+			return "", fmt.Errorf("%s/%s: %w", name, version, err)
+		}
+		// A copy keeps caller-supplied template funcs from mutating the overlay.
+		data = overlayData{Data: data, Rules: cloneSections(cfg.overlay.sections)}
+	}
 	var buf strings.Builder
-	if err := tmpl.Execute(&buf, data); err != nil {
+	var w io.Writer = &buf
+	if cfg.outputLimit > 0 {
+		w = &limitWriter{w: &buf, remaining: cfg.outputLimit}
+	}
+	if err := tmpl.Execute(w, data); err != nil {
+		if errors.Is(err, errOutputLimit) {
+			return "", fmt.Errorf("%w: %s/%s exceeds %d bytes", ErrOutputTooLarge, name, version, cfg.outputLimit)
+		}
 		if errors.Is(err, errStrictIndexMissing) || isMissingKeyError(err) {
 			return "", fmt.Errorf("%w: %s/%s: %w", ErrMissingField, name, version, err)
 		}
 		return "", fmt.Errorf("%w: %s/%s: %w", ErrRenderFailed, name, version, err)
 	}
-	return buf.String(), nil
+	out := buf.String()
+	if cfg.overlay != nil {
+		if missing := unrenderedSections(cfg.overlay.sections, out); len(missing) > 0 {
+			return "", fmt.Errorf("%w: %s/%s: %s sections %q", ErrUnusedRules, name, version, cfg.overlay.ID(), missing)
+		}
+	}
+	return out, nil
+}
+
+// errOutputLimit is returned by limitWriter once its budget is spent.
+var errOutputLimit = errors.New("output limit reached")
+
+// limitWriter stops a render as soon as it would exceed remaining bytes, so
+// an oversized prompt is never fully buffered.
+type limitWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (l *limitWriter) Write(p []byte) (int, error) {
+	if len(p) > l.remaining {
+		return 0, errOutputLimit
+	}
+	l.remaining -= len(p)
+	n, err := l.w.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("writing output: %w", err)
+	}
+	return n, nil
 }
 
 // missingKeyMarkers are the substrings text/template uses to report a
