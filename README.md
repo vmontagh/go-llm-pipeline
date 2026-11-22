@@ -233,10 +233,22 @@ commit them.
 `pkg/eval` scores pipeline output against a labeled dataset, so a prompt or model change that makes
 results worse fails the build. With a cassette replay client the run is offline and free.
 
-1. Write `testdata/dataset.yaml` as a list of `name`, `input`, and `want` entries.
-2. Pick evaluators: `eval.FieldMatch` checks each top-level field, and `eval.NewJudge` asks a judge
-   model for a score from 0 to 1. Any analyzer whose result type is `*eval.JudgeScore` can be the
-   judge.
+1. Write `testdata/dataset.yaml`. Each entry is an input and the result you expect, in the same
+   shape as your result type:
+
+   ```yaml
+   - name: cat
+     input: cat.jpg
+     want: {heading: Cute Cat, tags: [cat, pet]}
+   ```
+
+2. Pick evaluators. They score your pipeline's actual result against `want`:
+   - `eval.FieldMatch` checks each top-level field exactly. If the pipeline returns
+     `{heading: Cute Cat, tags: [cat]}`, `heading` matches and `tags` does not, so the example
+     scores 0.5 and fails.
+   - `eval.NewJudge` asks a judge model for a score from 0 to 1, which suits free text such as a
+     differently worded heading. Any analyzer whose result type is `*eval.JudgeScore` can be the
+     judge.
 3. Run them and fail the test below a pass rate:
 
 ```go
