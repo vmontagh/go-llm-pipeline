@@ -117,6 +117,9 @@ borderline conditions surface without blocking automation.
 | `pkg/logger` | Helpers for creating `*slog.Logger` instances. |
 | `pkg/vectorstore` | Optional, dependency-free local vector store: in-memory nearest-neighbor search, deduplication, and threshold clustering over caller-supplied embeddings. |
 | `pkg/promptregistry` | Versioned, offline-rendered prompt templates loaded from an `fs.FS`, with versioned rule overlays (`WithOverlay`, `VersionID`), byte budgets and golden-file tests. |
+| `pkg/cost` | Token usage and exact cost estimates: parses provider-reported usage, prices it with a caller-supplied `PriceTable`, aggregates per asset and model in a `Tracker` (optionally exporting metrics), and compares reports against a baseline. |
+| `pkg/cost/costtest` | Test helper that prices the calls recorded in cassettes and fails the test on unpriced models or a cost regression over a saved baseline, offline (`costtest.Check`). Responses without provider-reported usage (for example Gemini streams or SSE) are skipped and not counted. |
+| `contrib/tiktoken` | Optional separate module: an exact OpenAI `cost.Counter` built on tiktoken-go with embedded encodings. The core module does not depend on it. |
 | `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 
 ### Determinism and testing
@@ -147,6 +150,37 @@ defer func() {
 }()
 provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 ```
+
+#### Catching cost regressions in CI
+
+`pkg/cost/costtest` turns recorded cassettes into a cost check that runs in an ordinary `go test`,
+offline and for free. It never calls a provider. Each recorded response already contains the
+provider's token counts (for example `"usage":{"prompt_tokens":1000,"completion_tokens":500}`), so
+the check multiplies them by a price table you commit and compares the total with a committed
+baseline:
+
+1. Record cassettes once with `pkg/llmvcr` and commit them.
+2. Commit a price table in USD per million tokens, such as
+   `models: {gpt-4o-mini: {input: 0.15, output: 0.60}}`.
+3. Add a test that calls `costtest.Check`. The package documentation has a complete test with an
+   `-update-cost` flag that writes the baseline.
+4. Run that test once with `-update-cost`, naming only its package (for example
+   `go test ./myapp -run TestPromptCost -update-cost`, not `./...`, because other test binaries
+   reject the unknown flag), and commit `testdata/cost-baseline.json`.
+
+```go
+report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, costtest.Options{
+    Baseline:           &baseline, // the committed cost-baseline.json
+    MaxIncreasePercent: 10,
+})
+```
+
+Responses that carry no provider-reported usage are skipped, so they add nothing to the total; check
+the `CALLS` column in the `-v` output if a model looks under-counted. The cost changes only when someone re-records cassettes, for example after editing a prompt. The
+test then fails if the new recordings cost more than the allowed increase, or if a call uses a model
+missing from the price table. Run it with `-v` to see the per-model table. When an increase is
+intended, rerun with `-update-cost` and commit the new baseline in the same pull request, so
+reviewers see the cost difference in the diff.
 
 #### Differential fuzzing of the schema layer
 

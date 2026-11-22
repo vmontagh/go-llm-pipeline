@@ -1,4 +1,4 @@
-.PHONY: build test test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
+.PHONY: build test test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
 
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
@@ -12,6 +12,12 @@ build:
 
 test:
 	go test ./... -v -count=1 -race
+
+# test-contrib tests the optional contrib modules, which have their own go.mod
+# so their dependencies stay out of the core module.
+CONTRIB_MODULES := contrib/tiktoken
+test-contrib:
+	@for m in $(CONTRIB_MODULES); do (cd $$m && go vet ./... && go test ./... -count=1 -race) || exit 1; done
 
 test-unit-cover:
 	go test -race -coverprofile=coverage.out ./...

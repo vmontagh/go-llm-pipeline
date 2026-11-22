@@ -1,0 +1,30 @@
+{
+  "models": [
+    {
+      "model": "gpt-4o-mini",
+      "calls": 1,
+      "usage": {
+        "input": 1000,
+        "output": 500
+      },
+      "cost_picodollars": 450000000
+    },
+    {
+      "model": "llama3.2",
+      "calls": 1,
+      "usage": {
+        "input": 40,
+        "output": 10
+      },
+      "cost_picodollars": 0
+    }
+  ],
+  "total": {
+    "calls": 2,
+    "usage": {
+      "input": 1040,
+      "output": 510
+    },
+    "cost_picodollars": 450000000
+  }
+}
