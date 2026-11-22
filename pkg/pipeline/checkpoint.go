@@ -17,20 +17,19 @@ import (
 	"github.com/vmontagh/go-llm-pipeline/internal/appendfile"
 )
 
-// ErrCorruptCheckpoint is returned when a checkpoint journal has an
-// unreadable record before its last line.
-var ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
-
-// ErrCheckpointUnusable is returned by MarkDone after a failed sync or
-// rollback; reopen the checkpoint to continue.
-var ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
-
-// ErrCheckpointInUse is returned when another FileCheckpoint has the journal
-// open.
-var ErrCheckpointInUse = errors.New("checkpoint journal in use")
-
-// ErrInvalidCheckpointID is returned for an empty or non-UTF-8 ID.
-var ErrInvalidCheckpointID = errors.New("invalid checkpoint ID")
+var (
+	// ErrCorruptCheckpoint is returned when a checkpoint journal has an
+	// unreadable record before its last line.
+	ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
+	// ErrCheckpointUnusable is returned by MarkDone after a failed sync or
+	// rollback; reopen the checkpoint to continue.
+	ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
+	// ErrCheckpointInUse is returned when another FileCheckpoint has the
+	// journal open.
+	ErrCheckpointInUse = errors.New("checkpoint journal in use")
+	// ErrInvalidCheckpointID is returned for an empty or non-UTF-8 ID.
+	ErrInvalidCheckpointID = errors.New("invalid checkpoint ID")
+)
 
 // Checkpoint records which items a run has completed, so a restarted run can
 // skip them. Implementations must be safe for concurrent use.
@@ -102,6 +101,11 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 			err = ErrCheckpointInUse
 		}
 		return nil, errors.Join(fmt.Errorf("locking checkpoint %q: %w", path, err), file.Close())
+	}
+	// Sync the journal's directory even if the file already existed: a run
+	// that crashed right after creating it may never have synced the entry.
+	if len(created) == 0 {
+		created = []string{path}
 	}
 	for _, p := range created {
 		if err := appendfile.SyncDir(filepath.Dir(p)); err != nil {

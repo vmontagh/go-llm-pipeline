@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -113,53 +112,25 @@ func ExamplePauseGate_drain() {
 
 var errRateLimited = errors.New("rate limited")
 
-// runBatch processes ids once, resuming from the checkpoint in dir and
-// sending failures to the dead letter queue there. fail names an asset that
-// fails in this run.
-func runBatch(dir, fail string, ids []string) (processed []string, done int, err error) {
-	cp, err := pipeline.OpenFileCheckpoint(filepath.Join(dir, "done.jsonl"))
+// runBatch analyzes assets one at a time, skipping those already recorded in
+// the checkpoint at path, and prints what happens.
+func runBatch(path string, assets []string, analyze func(string) error) error {
+	cp, err := pipeline.OpenFileCheckpoint(path)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
-	defer func() { err = errors.Join(err, cp.Close()) }()
-	dlq, err := pipeline.NewDeadLetterQueue(filepath.Join(dir, "dlq.jsonl"), nil)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer func() { err = errors.Join(err, dlq.Close()) }()
-
-	var mu sync.Mutex
-	analyze := func(_ context.Context, id string) error {
-		mu.Lock()
-		defer mu.Unlock()
-		processed = append(processed, id)
-		if id == fail {
-			return errRateLimited
-		}
-		return nil
-	}
-	recordFailure := func(id string, err error) {
-		if err := dlq.Add(&pipeline.DLQEntry{ItemID: id, Stage: "analyze", Error: err.Error(), Attempts: 1}); err != nil {
-			log.Print(err)
-		}
-	}
-
-	input := make(chan string)
-	var wg sync.WaitGroup
-	pipeline.Consume(context.Background(), input, 2, &wg,
-		pipeline.Checkpointed(cp, func(id string) string { return id }, analyze, recordFailure))
-	for _, id := range ids {
-		input <- id
-	}
-	close(input)
-	wg.Wait()
-	sort.Strings(processed)
-	return processed, cp.Len(), nil
+	process := pipeline.Checkpointed(cp, func(id string) string { return id },
+		func(_ context.Context, id string) error {
+			fmt.Println("analyzing", id)
+			return analyze(id)
+		},
+		func(id string, err error) { fmt.Println("failed", id+":", err) })
+	err = pipeline.ConsumeAll(context.Background(), assets, 1, process)
+	return errors.Join(err, cp.Close())
 }
 
-// ExampleCheckpointed shows a batch that resumes after an interruption: the
-// second run skips the assets the first run completed and retries only the
-// failure, which the first run also sent to the dead letter queue.
+// ExampleCheckpointed resumes a batch: the second run analyzes only the asset
+// that failed in the first.
 func ExampleCheckpointed() {
 	dir, err := os.MkdirTemp("", "checkpoint")
 	if err != nil {
@@ -167,32 +138,30 @@ func ExampleCheckpointed() {
 		return
 	}
 	defer os.RemoveAll(dir)
-	ids := []string{"a", "b", "c"}
+	path := filepath.Join(dir, "done.jsonl")
+	assets := []string{"a", "b", "c"}
 
-	for _, fail := range []string{"b", ""} {
-		processed, done, err := runBatch(dir, fail, ids)
-		if err != nil {
-			fmt.Println(err)
-			return
+	fmt.Println("first run:")
+	if err := runBatch(path, assets, func(id string) error {
+		if id == "b" {
+			return errRateLimited
 		}
-		fmt.Println("processed:", processed, "done:", done)
-	}
-
-	f, err := os.Open(filepath.Join(dir, "dlq.jsonl"))
-	if err != nil {
+		return nil
+	}); err != nil {
 		fmt.Println(err)
 		return
 	}
-	defer f.Close()
-	failed, err := pipeline.ReadDLQ(f)
-	if err != nil {
+	fmt.Println("second run:")
+	if err := runBatch(path, assets, func(string) error { return nil }); err != nil {
 		fmt.Println(err)
-		return
 	}
-	fmt.Println("dead letters:", failed[0].ItemID, failed[0].Error)
 
 	// Output:
-	// processed: [a b c] done: 2
-	// processed: [b] done: 3
-	// dead letters: b rate limited
+	// first run:
+	// analyzing a
+	// analyzing b
+	// failed b: rate limited
+	// analyzing c
+	// second run:
+	// analyzing b
 }

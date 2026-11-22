@@ -6,7 +6,7 @@
 // # Resuming a batch
 //
 // Wrap the process function with [Checkpointed] and a [Checkpoint] such as
-// [FileCheckpoint]. Completed items are recorded as they finish; a rerun with
+// [FileCheckpoint], then run it with [ConsumeAll]. Completed items are recorded as they finish; a rerun with
 // the same checkpoint skips them and processes only unfinished or failed
 // items. Failures go to the caller's error handler, typically a
 // [DeadLetterQueue] entry, and stay unmarked so the next run retries them.
@@ -168,4 +168,27 @@ func Consume[T any](ctx context.Context, input <-chan T, concurrency int, wg *sy
 			}
 		}()
 	}
+}
+
+// ConsumeAll runs process over items with concurrency workers, as [Consume]
+// does, and waits for the workers. If ctx ends, the remaining items are
+// skipped and ConsumeAll returns ctx.Err().
+func ConsumeAll[T any](ctx context.Context, items []T, concurrency int, process func(context.Context, T)) error {
+	if process == nil {
+		return nil
+	}
+	input := make(chan T)
+	var wg sync.WaitGroup
+	Consume(ctx, input, concurrency, &wg, process)
+feed:
+	for _, item := range items {
+		select {
+		case input <- item:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(input)
+	wg.Wait()
+	return ctx.Err()
 }

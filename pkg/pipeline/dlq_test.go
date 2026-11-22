@@ -234,59 +234,80 @@ func decodeLines[T any](t *testing.T, data []byte) []T {
 	}
 }
 
-func TestDeadLetterQueueAddReadDLQ(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), dlqFileName)
-	dlq, err := pipeline.NewDeadLetterQueue(path, nil)
-	if err != nil {
-		t.Fatalf("NewDeadLetterQueue() = %v", err)
-	}
-	want := []pipeline.DLQEntry{
-		{Timestamp: recordedAt, ItemID: itemFirst, Stage: stageFetch, Error: errFetch.Error(), Attempts: 3},
-		{Timestamp: recordedAt, ItemID: itemSecond, Stage: stageParse, Error: "bad json"},
-	}
-	for _, e := range want {
-		if err := dlq.Add(&e); err != nil {
-			t.Fatalf("Add(%+v) = %v", e, err)
-		}
-	}
-	if err := dlq.Close(); err != nil {
-		t.Fatalf("Close() = %v", err)
-	}
+// readDLQFile decodes the dead letter queue at path.
+func readDLQFile(t *testing.T, path string) []pipeline.DLQEntry {
+	t.Helper()
 	file, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = file.Close() })
-
-	got, err := pipeline.ReadDLQ(file)
+	entries, err := pipeline.ReadDLQ(file)
 	if err != nil {
 		t.Fatalf("ReadDLQ() = %v", err)
 	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("ReadDLQ() (-want +got):\n%s", diff)
+	return entries
+}
+
+func TestDeadLetterQueueAdd(t *testing.T) {
+	t.Parallel()
+	entries := []pipeline.DLQEntry{
+		{Timestamp: recordedAt, ItemID: itemFirst, Stage: stageFetch, Error: errFetch.Error(), Attempts: 3},
+		{Timestamp: recordedAt, ItemID: itemSecond, Stage: stageParse, Error: "bad json"},
+	}
+	tests := []struct {
+		name    string
+		closed  bool
+		want    []pipeline.DLQEntry
+		wantErr error
+	}{
+		{name: "entries round trip", want: entries},
+		{name: "after close", closed: true, wantErr: os.ErrClosed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), dlqFileName)
+			dlq := openDLQ(t, path, nil, tt.closed)
+
+			for _, e := range entries {
+				if diff := cmp.Diff(tt.wantErr, dlq.Add(&e), cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("Add(%q) error (-want +got):\n%s", e.ItemID, diff)
+				}
+			}
+
+			if diff := cmp.Diff(tt.want, readDLQFile(t, path)); diff != "" {
+				t.Errorf("ReadDLQ() (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 
-func TestReadDLQMalformed(t *testing.T) {
+func TestReadDLQ(t *testing.T) {
 	t.Parallel()
-	_, err := pipeline.ReadDLQ(strings.NewReader("{\"item_id\":\"a\"}\nnot json\n"))
-	var syntaxErr *json.SyntaxError
-	if !errors.As(err, &syntaxErr) {
-		t.Errorf("ReadDLQ(malformed) = %v, want a *json.SyntaxError", err)
+	tests := []struct {
+		name          string
+		input         string
+		want          []pipeline.DLQEntry
+		wantSyntaxErr bool
+	}{
+		{name: "empty"},
+		{name: "entries", input: "{\"item_id\":\"a\"}\n{\"item_id\":\"b\"}\n", want: []pipeline.DLQEntry{{ItemID: "a"}, {ItemID: "b"}}},
+		{name: "malformed line", input: "{\"item_id\":\"a\"}\nnot json\n", wantSyntaxErr: true},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestDeadLetterQueueAddClosed(t *testing.T) {
-	t.Parallel()
-	dlq, err := pipeline.NewDeadLetterQueue(filepath.Join(t.TempDir(), dlqFileName), nil)
-	if err != nil {
-		t.Fatalf("NewDeadLetterQueue() = %v", err)
-	}
-	if err := dlq.Close(); err != nil {
-		t.Fatalf("Close() = %v", err)
-	}
-	if diff := cmp.Diff(os.ErrClosed, dlq.Add(&pipeline.DLQEntry{ItemID: itemFirst}), cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("Add after Close error (-want +got):\n%s", diff)
+			got, err := pipeline.ReadDLQ(strings.NewReader(tt.input))
+
+			var syntaxErr *json.SyntaxError
+			if errors.As(err, &syntaxErr) != tt.wantSyntaxErr {
+				t.Errorf("ReadDLQ(%q) error = %v, want syntax error: %t", tt.input, err, tt.wantSyntaxErr)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("ReadDLQ(%q) (-want +got):\n%s", tt.input, diff)
+			}
+		})
 	}
 }

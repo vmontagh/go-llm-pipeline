@@ -71,12 +71,6 @@ cp, err := pipeline.OpenFileCheckpoint("state/done.jsonl")
 if err != nil {
 	return err
 }
-defer func() {
-	if err := cp.Close(); err != nil { // the final flush can fail too
-		logger.Error("closing checkpoint", "err", err)
-	}
-}()
-
 process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analyze,
 	func(a Asset, err error) {
 		entry := pipeline.DLQEntry{ItemID: a.ID, Stage: "analyze", Error: err.Error()}
@@ -84,20 +78,8 @@ process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analy
 			logger.Error("recording failed asset", "asset", a.ID, "err", err)
 		}
 	})
-
-input := make(chan Asset)
-var wg sync.WaitGroup
-pipeline.Consume(ctx, input, 8, &wg, process)
-feed:
-for _, a := range assets {
-	select {
-	case input <- a:
-	case <-ctx.Done(): // workers have stopped; unsent assets run next time
-		break feed
-	}
-}
-close(input)
-wg.Wait() // before the deferred cp.Close, so every completion is recorded
+err = pipeline.ConsumeAll(ctx, assets, 8, process) // 8 workers; returns ctx.Err() if stopped early
+return errors.Join(err, cp.Close())                // Close flushes the journal
 ```
 
 Records reach the operating system as soon as an item completes, so a process crash loses nothing;

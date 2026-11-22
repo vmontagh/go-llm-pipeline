@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestConsume(t *testing.T) {
@@ -385,5 +386,31 @@ func TestConsume(t *testing.T) {
 			t.Parallel()
 			tc.run(t)
 		})
+	}
+}
+
+func TestConsumeAll(t *testing.T) {
+	t.Parallel()
+	var sum atomic.Int64
+
+	err := ConsumeAll(t.Context(), []int64{1, 2, 3}, 2, func(_ context.Context, n int64) { sum.Add(n) })
+
+	if err != nil {
+		t.Fatalf("ConsumeAll() = %v", err)
+	}
+	if got := sum.Load(); got != 6 {
+		t.Errorf("sum of processed items = %d, want 6", got)
+	}
+}
+
+func TestConsumeAllCancelled(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := ConsumeAll(ctx, []int{1, 2, 3}, 2, func(context.Context, int) {})
+
+	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("ConsumeAll(cancelled) error (-want +got):\n%s", diff)
 	}
 }
