@@ -91,7 +91,8 @@ func WithSyncEvery(n int) CheckpointOption {
 // it already holds. The path rules match [NewDeadLetterQueue]. It returns
 // ErrCorruptCheckpoint if a record before the last line is unreadable, and
 // ErrCheckpointInUse if another FileCheckpoint holds the journal; the journal
-// stays locked until Close. Directories and the journal it creates are synced before it returns, so
+// stays locked until Close. On platforms without file locking it fails
+// with errors.ErrUnsupported. Directories and the journal it creates are synced before it returns, so
 // they survive a machine crash.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
 	created, err := missingPaths(path)

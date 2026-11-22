@@ -2,7 +2,11 @@
 
 package appendfile
 
-import "os"
+import (
+	"errors"
+	"os"
+)
 
-// Lock is a no-op on platforms without file locking.
-func Lock(*os.File) error { return nil }
+// Lock returns [errors.ErrUnsupported] on platforms without file locking, so
+// callers that need exclusive ownership refuse to proceed unprotected.
+func Lock(*os.File) error { return errors.ErrUnsupported }
