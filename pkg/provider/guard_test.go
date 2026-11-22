@@ -621,74 +621,64 @@ func coolKey(t *testing.T, pool *provider.KeyPool[string], index int, d time.Dur
 func TestGuardCallMessages(t *testing.T) {
 	t.Parallel()
 	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
+	fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
+	mg := &messageGuarded{fakeGuarded: fake}
+	g := wrapInGuards(t, mg, fake.clock, 1)
+
+	got := g.CallMessages(t.Context(), nil, msgs)
+
+	if diff := cmp.Diff(okResult, got, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(msgs, mg.got); diff != "" {
+		t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
-		name      string
-		messages  bool
-		nested    bool
-		canceled  bool // rejection must not wait, so a canceled context still gets it
-		want      provider.CallResult
-		wantCalls int
-		wantMsgs  []provider.Message
+		name   string
+		guards int
 	}{
-		{
-			name:      "forwards to a MessageCaller",
-			messages:  true,
-			want:      okResult,
-			wantCalls: 1,
-			wantMsgs:  msgs,
-		},
-		{
-			name:     "rejects a nested guard over other providers",
-			nested:   true,
-			canceled: true,
-			want:     provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
-		},
-		{
-			name:     "rejects other providers",
-			canceled: true,
-			want:     provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
-		},
+		{name: "one guard", guards: 1},
+		{name: "nested guards", guards: 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
-			inner := provider.Provider[string](fake)
-			mg := &messageGuarded{fakeGuarded: fake}
-			if tt.messages {
-				inner = mg
-			}
-			if tt.nested {
-				innerGuard, err := provider.NewGuard(inner, provider.WithGuardClock(fake.clock))
-				if err != nil {
-					t.Fatalf("NewGuard() error = %v", err)
-				}
-				inner = innerGuard
-			}
-			g, err := provider.NewGuard(inner, provider.WithGuardClock(fake.clock))
-			if err != nil {
-				t.Fatalf("NewGuard() error = %v", err)
-			}
-
+			g := wrapInGuards(t, fake, fake.clock, tt.guards)
+			// A canceled context proves the rejection does not wait.
 			ctx, cancel := context.WithCancel(t.Context())
-			if tt.canceled {
-				cancel()
-			}
-			defer cancel()
+			cancel()
 
-			got := g.CallMessages(ctx, nil, msgs)
+			got := g.CallMessages(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
 
-			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+			want := provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal}
+			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
 			}
-			if diff := cmp.Diff(tt.wantCalls, fake.callCount()); diff != "" {
-				t.Errorf("calls mismatch (-want +got):\n%s", diff)
-			}
-			if diff := cmp.Diff(tt.wantMsgs, mg.got); diff != "" {
-				t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
+			if got := fake.callCount(); got != 0 {
+				t.Errorf("calls = %d, want 0", got)
 			}
 		})
 	}
+}
+
+// wrapInGuards wraps p in n Guards (n >= 1) that share clk.
+func wrapInGuards(t *testing.T, p provider.Provider[string], clk provider.GuardClock, n int) *provider.Guard[string] {
+	t.Helper()
+	var g *provider.Guard[string]
+	for range n {
+		var err error
+		g, err = provider.NewGuard(p, provider.WithGuardClock(clk))
+		if err != nil {
+			t.Fatalf("NewGuard() error = %v", err)
+		}
+		p = g
+	}
+	return g
 }
 
 func TestGuardCallMessagesDropsUnusedLease(t *testing.T) {
