@@ -2,6 +2,7 @@ package eval_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"testing"
@@ -31,6 +32,18 @@ func TestFieldMatch(t *testing.T) {
 		{name: "extraInGot", want: map[string]any{"a": 1}, got: map[string]any{"a": 1, "b": 2}, wantRes: eval.Score{Value: 0.5, Fields: map[string]bool{"a": true, "b": false}}},
 		{name: "nullVsMissing", want: map[string]any{"a": nil}, got: map[string]any{}, wantRes: eval.Score{Fields: map[string]bool{"a": false}}},
 		{name: "largeIntsDiffer", want: map[string]any{"id": int64(9007199254740993)}, got: map[string]any{"id": int64(9007199254740992)}, wantRes: eval.Score{Fields: map[string]bool{"id": false}}},
+		{
+			name:    "equivalentNumbers",
+			want:    map[string]any{"a": json.Number("1.0"), "n": map[string]any{"x": []any{json.Number("1e0")}}, "z": math.Copysign(0, -1)},
+			got:     map[string]any{"a": 1, "n": map[string]any{"x": []any{1}}, "z": 0.0},
+			wantRes: eval.Score{Value: 1, Pass: true, Fields: map[string]bool{"a": true, "n": true, "z": true}},
+		},
+		{name: "nestedValueDiffers", want: map[string]any{"n": map[string]any{"x": []any{1, 2}}}, got: map[string]any{"n": map[string]any{"x": []any{1, 3}}}, wantRes: eval.Score{Fields: map[string]bool{"n": false}}},
+		{name: "nestedLengthDiffers", want: map[string]any{"x": []any{1}}, got: map[string]any{"x": []any{1, 1}}, wantRes: eval.Score{Fields: map[string]bool{"x": false}}},
+		{name: "nestedKeyMissing", want: map[string]any{"n": map[string]any{"a": nil, "b": 1}}, got: map[string]any{"n": map[string]any{"b": 1, "c": nil}}, wantRes: eval.Score{Fields: map[string]bool{"n": false}}},
+		{name: "nestedKeyCountDiffers", want: map[string]any{"n": map[string]any{"b": 1}}, got: map[string]any{"n": map[string]any{"b": 1, "c": 2}}, wantRes: eval.Score{Fields: map[string]bool{"n": false}}},
+		{name: "typeDiffers", want: map[string]any{"a": 1, "b": []any{}, "c": map[string]any{}}, got: map[string]any{"a": "1", "b": map[string]any{}, "c": []any{}}, wantRes: eval.Score{Fields: map[string]bool{"a": false, "b": false, "c": false}}},
+		{name: "stringsAndBools", want: map[string]any{"s": "x", "b": true}, got: map[string]any{"s": "x", "b": false}, wantRes: eval.Score{Value: 0.5, Fields: map[string]bool{"s": true, "b": false}}},
 		{name: "wantNotObject", want: 1, got: map[string]any{}, wantErr: eval.ErrNotObject},
 		{name: "gotNotObject", want: map[string]any{}, got: []int{1}, wantErr: eval.ErrNotObject},
 		{name: "gotNull", want: map[string]any{}, got: nil, wantErr: eval.ErrNotObject},

@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
+	"math/big"
 )
 
 var (
@@ -36,7 +36,7 @@ func (FieldMatch[Out]) Evaluate(_ context.Context, want, got Out) (Score, error)
 	s := Score{Value: 1, Pass: true, Fields: make(map[string]bool, len(w))}
 	for k, v := range w {
 		gv, ok := g[k]
-		s.Fields[k] = ok && reflect.DeepEqual(v, gv)
+		s.Fields[k] = ok && jsonEqual(v, gv)
 	}
 	for k := range g {
 		if _, ok := w[k]; !ok {
@@ -70,6 +70,44 @@ func fields(v any) (map[string]any, error) {
 		return nil, ErrNotObject
 	}
 	return m, nil
+}
+
+// jsonEqual compares decoded JSON values, treating numbers as exact values so
+// 1, 1.0, and 1e0 match while large integers stay distinct.
+func jsonEqual(a, b any) bool {
+	switch av := a.(type) {
+	case json.Number:
+		bv, _ := b.(json.Number) // A non-number gives "", which fails SetString.
+		ar, aok := new(big.Rat).SetString(av.String())
+		br, bok := new(big.Rat).SetString(bv.String())
+		return aok && bok && ar.Cmp(br) == 0
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			w, ok := bv[k]
+			if !ok || !jsonEqual(v, w) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !jsonEqual(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		// Strings, bools, and nil are comparable.
+		return a == b
+	}
 }
 
 // JudgeScore is the structured verdict a judge model returns.

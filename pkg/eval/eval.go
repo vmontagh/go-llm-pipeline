@@ -156,10 +156,10 @@ func (r *Report) Check(minPassRate float64) error {
 // an evaluator error or a canceled ctx stops the run.
 func Run[In, Out any](ctx context.Context, examples []Example[In, Out], target Target[In, Out], evaluators ...Evaluator[Out]) (*Report, error) {
 	if err := validateExamples(examples); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validating examples: %w", err)
 	}
 	if err := validateEvaluators(evaluators); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validating evaluators: %w", err)
 	}
 
 	results := make([]ExampleResult, 0, len(examples))
