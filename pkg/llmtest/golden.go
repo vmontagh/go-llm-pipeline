@@ -58,7 +58,7 @@ func readGolden(file string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening %s: %w", goldenDir, err)
 	}
-	defer root.Close()
+	defer root.Close() // Error ignored: Close only drops the directory handle; ReadFile/WriteFile close the file.
 	data, err := root.ReadFile(file)
 	if err != nil {
 		return "", fmt.Errorf("reading golden: %w", err)
@@ -75,7 +75,7 @@ func writeGolden(file string, data []byte) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", goldenDir, err)
 	}
-	defer root.Close()
+	defer root.Close() // Error ignored: Close only drops the directory handle; ReadFile/WriteFile close the file.
 	if err := root.MkdirAll(filepath.Dir(file), permDir); err != nil {
 		return fmt.Errorf("creating golden dir: %w", err)
 	}
