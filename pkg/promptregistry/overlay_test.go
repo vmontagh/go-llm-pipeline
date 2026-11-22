@@ -87,6 +87,32 @@ func TestNewOverlay(t *testing.T) {
 	}
 }
 
+func TestNewOverlayJoinsErrors(t *testing.T) {
+	t.Parallel()
+	spec := promptregistry.OverlaySpec{
+		Name:     "a+b",
+		Version:  "",
+		Sections: map[string][]string{"no-dash": {" ", "x", "x"}},
+	}
+	const wantErrs = 5 // name, version, section, blank rule, duplicate rule
+
+	_, err := promptregistry.NewOverlay(spec)
+
+	joined, ok := err.(interface{ Unwrap() []error })
+	if !ok {
+		t.Fatalf("NewOverlay(%+v) error = %v, want a joined error", spec, err)
+	}
+	errs := joined.Unwrap()
+	if diff := cmp.Diff(wantErrs, len(errs)); diff != "" {
+		t.Errorf("NewOverlay(%+v) joined error count mismatch (-want +got):\n%s", spec, diff)
+	}
+	for _, e := range errs {
+		if !errors.Is(e, promptregistry.ErrInvalidOverlay) {
+			t.Errorf("NewOverlay(%+v) joined error %v does not wrap ErrInvalidOverlay", spec, e)
+		}
+	}
+}
+
 func TestOverlayCopiesSections(t *testing.T) {
 	t.Parallel()
 	spec := promptregistry.OverlaySpec{Name: "r", Version: "1", Sections: map[string][]string{"s": {"a"}}}
@@ -296,6 +322,18 @@ func TestRenderWithOverlay(t *testing.T) {
 			src:      `{{index .Rules.guidelines 1}}; {{index .Rules.guidelines 0}}`,
 			sections: map[string][]string{"guidelines": {"no blur", "no blur at night"}},
 			want:     "no blur at night; no blur",
+		},
+		{
+			name:     "rules overlapping where the longest match first fails",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"ab", "aba"}},
+			want:     "ababa",
+		},
+		{
+			name:     "rules too long to fit without overlapping",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"ab", "aba"}, "rejection": {"bab"}},
+			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
 			name:     "rule shared by two sections rendered once",
