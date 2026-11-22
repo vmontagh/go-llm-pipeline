@@ -184,6 +184,66 @@ func TestTemplate_Analyze(t *testing.T) {
 	}
 }
 
+func TestTemplate_AnalyzeMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{
+		provider.TextMessage(provider.RoleSystem, "s"),
+		{Role: provider.RoleUser, Parts: []provider.Part{{Text: "u"}, {Image: []byte("img")}}},
+	}
+	tests := []struct {
+		name     string
+		messages bool
+		msgs     []provider.Message
+		want     parsedResult
+		wantMsgs []provider.Message
+		wantLog  string
+		wantErr  error
+	}{
+		{
+			name:     "sends messages to a MessageCaller",
+			messages: true,
+			msgs:     msgs,
+			want:     parsedResult{Value: "ok"},
+			wantMsgs: msgs,
+			wantLog:  "system: s\n\tuser: u [image]",
+		},
+		{name: "rejects invalid messages", messages: true, wantErr: provider.ErrInvalidMessages},
+		{name: "rejects a provider without messages", msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock := newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess, Text: "ok"})
+			mp := &messageProvider{mockProvider: mock}
+			p := provider.Provider[string](mock)
+			if tt.messages {
+				p = mp
+			}
+			logs := &capturingHandler{}
+			parse := func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }
+			tmpl, err := NewTemplate[string, parsedResult](p, parse, WithTemplateLogger(slog.New(logs)))
+			if err != nil {
+				t.Fatalf("NewTemplate() = %v, want nil", err)
+			}
+
+			got, err := tmpl.AnalyzeMessages(t.Context(), tt.msgs, "job", nil)
+
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("AnalyzeMessages() error mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("AnalyzeMessages() mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantMsgs, mp.got); diff != "" {
+				t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantLog, logs.attr("prompt sent", "body")); diff != "" {
+				t.Errorf("logged prompt mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -261,7 +321,7 @@ func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 				t.Fatalf("NewTemplate() = %v, want nil", err)
 			}
 
-			_, err = tmpl.callOnce(context.Background(), &callOnceParams{prompt: "prompt"})
+			_, err = tmpl.callOnce(context.Background(), &callOnceParams[string]{prompt: "prompt"})
 			if diff := cmp.Diff(provider.ErrAllKeysCoolingDown, err, cmpopts.EquateErrors()); diff != "" {
 				t.Fatalf("callOnce error mismatch (-want +got):\n%s", diff)
 			}
@@ -340,6 +400,21 @@ type capturingHandler struct {
 type logRecord struct {
 	msg   string
 	attrs []slog.Attr
+}
+
+// attr returns the value of key in the first record with message msg, or "".
+func (h *capturingHandler) attr(msg, key string) string {
+	for _, r := range h.records {
+		if r.msg != msg {
+			continue
+		}
+		for _, a := range r.attrs {
+			if a.Key == key {
+				return a.Value.String()
+			}
+		}
+	}
+	return ""
 }
 
 func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }

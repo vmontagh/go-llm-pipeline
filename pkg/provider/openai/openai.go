@@ -224,8 +224,22 @@ func (t *transport) EnrichError(tier provpkg.ErrorTier, rawErr error, _ []byte) 
 
 // Call performs a single chat-completions POST against OpenAI
 func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prompt string, imageData []byte) provpkg.CallResult {
+	return t.CallMessages(ctx, lease, []provpkg.Message{promptMessage(prompt, imageData)})
+}
+
+// promptMessage is the user message Call sends: the prompt, then the image.
+func promptMessage(prompt string, imageData []byte) provpkg.Message {
+	m := provpkg.TextMessage(provpkg.RoleUser, prompt)
+	if len(imageData) > 0 {
+		m.Parts = append(m.Parts, provpkg.Part{Image: imageData})
+	}
+	return m
+}
+
+// CallMessages implements provpkg.MessageCaller with native chat roles.
+func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	req := buildRequest(t.model, prompt, imageData, t.responseSchemaName, t.responseSchema)
+	req := buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema)
 	reqB, err := json.Marshal(req)
 	if err != nil {
 		return provpkg.CallResult{
@@ -303,18 +317,26 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 }
 
 // buildRequest constructs the chat-completions payload sent to OpenAI.
-func buildRequest(model, prompt string, imageData []byte, responseSchemaName string, responseSchema any) *ChatGPTRequest {
-	contents := []Content{{Type: "text", Text: prompt}}
-	if len(imageData) > 0 {
-		data64 := base64.StdEncoding.EncodeToString(imageData)
-		contents = append(contents, Content{
-			Type:     "image_url",
-			ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
-		})
+func buildRequest(model string, msgs []provpkg.Message, responseSchemaName string, responseSchema any) *ChatGPTRequest {
+	messages := make([]RequestMessage, 0, len(msgs))
+	for _, m := range msgs {
+		contents := make([]Content, 0, len(m.Parts))
+		for _, p := range m.Parts {
+			if len(p.Image) == 0 {
+				contents = append(contents, Content{Type: "text", Text: p.Text})
+				continue
+			}
+			data64 := base64.StdEncoding.EncodeToString(p.Image)
+			contents = append(contents, Content{
+				Type:     "image_url",
+				ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
+			})
+		}
+		messages = append(messages, RequestMessage{Role: m.Role.String(), Content: contents})
 	}
 	req := &ChatGPTRequest{
 		Model:     model,
-		Messages:  []RequestMessage{{Role: "user", Content: contents}},
+		Messages:  messages,
 		MaxTokens: provpkg.DefaultMaxTokens,
 	}
 	if responseSchema != nil {

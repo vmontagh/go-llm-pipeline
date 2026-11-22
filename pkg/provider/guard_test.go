@@ -126,6 +126,19 @@ func (f *fakeGuarded) Call(_ context.Context, lease *provider.Lease[string], _ s
 	return s.res
 }
 
+func (f *fakeGuarded) ProviderLabel() string { return "fake" }
+
+// messageGuarded is a fakeGuarded that also takes typed messages.
+type messageGuarded struct {
+	*fakeGuarded
+	got []provider.Message
+}
+
+func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease[string], msgs []provider.Message) provider.CallResult {
+	m.got = msgs
+	return m.Call(ctx, lease, "", nil)
+}
+
 func (f *fakeGuarded) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -602,4 +615,55 @@ func coolKey(t *testing.T, pool *provider.KeyPool[string], index int, d time.Dur
 		}
 	}
 	t.Fatalf("no lease on key %d", index)
+}
+
+func TestGuardCallMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
+	tests := []struct {
+		name      string
+		messages  bool
+		want      provider.CallResult
+		wantCalls int
+		wantMsgs  []provider.Message
+	}{
+		{
+			name:      "forwards to a MessageCaller",
+			messages:  true,
+			want:      okResult,
+			wantCalls: 1,
+			wantMsgs:  msgs,
+		},
+		{
+			name: "rejects other providers",
+			want: provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
+			inner := provider.Provider[string](fake)
+			mg := &messageGuarded{fakeGuarded: fake}
+			if tt.messages {
+				inner = mg
+			}
+			g, err := provider.NewGuard(inner, provider.WithGuardClock(fake.clock))
+			if err != nil {
+				t.Fatalf("NewGuard() error = %v", err)
+			}
+
+			got := g.CallMessages(t.Context(), nil, msgs)
+
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantCalls, fake.callCount()); diff != "" {
+				t.Errorf("calls mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantMsgs, mg.got); diff != "" {
+				t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }

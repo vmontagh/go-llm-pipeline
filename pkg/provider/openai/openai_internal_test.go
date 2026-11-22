@@ -280,20 +280,42 @@ func TestTransport_MetadataAndOptions(t *testing.T) {
 
 func TestBuildRequest(t *testing.T) {
 	t.Parallel()
+	imageURL := &ImageURL{URL: "data:image/jpeg;base64,aW1n"}
 	tests := []struct {
-		name      string
-		imageData []byte
-		wantParts int
+		name string
+		msgs []provpkg.Message
+		want []RequestMessage
 	}{
-		{name: "text only", wantParts: 1},
-		{name: "text and image", imageData: []byte("img"), wantParts: 2},
+		{
+			name: "prompt only",
+			msgs: []provpkg.Message{promptMessage("p", nil)},
+			want: []RequestMessage{{Role: "user", Content: []Content{{Type: "text", Text: "p"}}}},
+		},
+		{
+			name: "prompt and image",
+			msgs: []provpkg.Message{promptMessage("p", []byte("img"))},
+			want: []RequestMessage{{Role: "user", Content: []Content{{Type: "text", Text: "p"}, {Type: "image_url", ImageURL: imageURL}}}},
+		},
+		{
+			name: "multi-turn roles",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleSystem, "s"),
+				provpkg.TextMessage(provpkg.RoleUser, "u"),
+				provpkg.TextMessage(provpkg.RoleAssistant, "a"),
+			},
+			want: []RequestMessage{
+				{Role: "system", Content: []Content{{Type: "text", Text: "s"}}},
+				{Role: "user", Content: []Content{{Type: "text", Text: "u"}}},
+				{Role: "assistant", Content: []Content{{Type: "text", Text: "a"}}},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			req := buildRequest("m", "p", tt.imageData, "", nil)
-			if diff := cmp.Diff(tt.wantParts, len(req.Messages[0].Content)); diff != "" {
-				t.Fatalf("content parts mismatch (-want +got):\n%s", diff)
+			req := buildRequest("m", tt.msgs, "", nil)
+			if diff := cmp.Diff(tt.want, req.Messages); diff != "" {
+				t.Fatalf("buildRequest messages mismatch (-want +got):\n%s", diff)
 			}
 			if req.ResponseFormat != nil {
 				t.Errorf("ResponseFormat should be nil when no schema is set, got %+v", req.ResponseFormat)
@@ -350,7 +372,7 @@ func TestBuildRequest_ResponseSchema(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			req := buildRequest("m", "p", nil, tt.schemaName, tt.schema)
+			req := buildRequest("m", []provpkg.Message{promptMessage("p", nil)}, tt.schemaName, tt.schema)
 			if tt.wantNil {
 				if req.ResponseFormat != nil {
 					t.Errorf("ResponseFormat = %+v, want nil", req.ResponseFormat)

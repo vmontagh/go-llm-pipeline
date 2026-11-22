@@ -151,18 +151,44 @@ func (t *Template[T, R]) Analyze(
 	jobID string,
 	publish func(eventType, itemID, message string, isError bool),
 ) (R, error) {
+	return t.run(ctx, &callOnceParams[T]{prompt: prompt, imageData: imageData, jobID: jobID, publish: publish})
+}
+
+// AnalyzeMessages is Analyze for a typed multi-turn conversation. The
+// provider must implement provider.MessageCaller; otherwise it returns
+// provider.ErrMessagesUnsupported.
+func (t *Template[T, R]) AnalyzeMessages(
+	ctx context.Context,
+	msgs []provider.Message,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) (R, error) {
+	var zero R
+	if err := provider.ValidateMessages(msgs); err != nil {
+		return zero, err
+	}
+	mc, ok := t.provider.(provider.MessageCaller[T])
+	if !ok {
+		return zero, fmt.Errorf("%w: %s", provider.ErrMessagesUnsupported, t.provider.ProviderLabel())
+	}
+	return t.run(ctx, &callOnceParams[T]{messages: msgs, caller: mc, jobID: jobID, publish: publish})
+}
+
+// run traces the analysis and retries callOnce until the parser accepts a
+// response.
+func (t *Template[T, R]) run(ctx context.Context, p *callOnceParams[T]) (R, error) {
 	defer t.tracer.StartRegion(ctx, t.provider.TraceRegionName()).End()
 
-	if publish != nil {
-		publish(llmStartedEventType, jobID, "Started analysis using "+t.provider.ProviderLabel(), false)
+	if p.publish != nil {
+		p.publish(llmStartedEventType, p.jobID, "Started analysis using "+t.provider.ProviderLabel(), false)
 	}
 
 	retryStart := time.Now()
 	attempt := 0
 	return ExecuteWithRetries[R](ctx, &RetryConfig{
 		ModelName:       t.provider.Model(),
-		JobID:           jobID,
-		Publish:         publish,
+		JobID:           p.jobID,
+		Publish:         p.publish,
 		Logger:          t.logger,
 		MaxElapsedTime:  t.maxElapsedTime,
 		MaxParseRetries: t.maxParseRetries,
@@ -170,13 +196,9 @@ func (t *Template[T, R]) Analyze(
 	}, func() (string, error) {
 		rc := provider.RetryContext{Attempt: attempt, Elapsed: time.Since(retryStart)}
 		attempt++
-		return t.callOnce(ctx, &callOnceParams{
-			prompt:    prompt,
-			imageData: imageData,
-			jobID:     jobID,
-			publish:   publish,
-			rc:        rc,
-		})
+		params := *p
+		params.rc = rc
+		return t.callOnce(ctx, &params)
 	}, t.parser)
 }
 
@@ -216,20 +238,52 @@ func joinPromptPayload(prompt string, payload []byte) string {
 	}
 }
 
-type callOnceParams struct {
+// messagesText renders msgs as "role: text" lines for debug logs. Images
+// are shown as "[image]".
+func messagesText(msgs []provider.Message) string {
+	var b strings.Builder
+	for _, m := range msgs {
+		b.WriteString(m.Role.String())
+		b.WriteString(":")
+		for _, part := range m.Parts {
+			b.WriteString(" ")
+			if len(part.Image) > 0 {
+				b.WriteString("[image]")
+				continue
+			}
+			b.WriteString(part.Text)
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+type callOnceParams[T any] struct {
 	prompt    string
 	imageData []byte
+	messages  []provider.Message // sent by caller, when set, instead of prompt and imageData
+	caller    provider.MessageCaller[T]
 	jobID     string
 	publish   func(eventType, itemID, message string, isError bool)
 	rc        provider.RetryContext
 }
 
-func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams) (string, error) {
+func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams[T]) (string, error) {
 	prompt := p.prompt
 	imageData := p.imageData
 	jobID := p.jobID
 	publish := p.publish
 	rc := p.rc
+	call := func(lease *provider.Lease[T]) provider.CallResult {
+		return t.provider.Call(ctx, lease, prompt, imageData)
+	}
+	logText := prompt
+	if p.caller != nil {
+		call = func(lease *provider.Lease[T]) provider.CallResult {
+			return p.caller.CallMessages(ctx, lease, p.messages)
+		}
+		logText = messagesText(p.messages)
+	}
 	lease, err := t.provider.Keys().Acquire(ctx)
 	if err != nil {
 		if errors.Is(err, provider.ErrMissingAPIKey) {
@@ -243,15 +297,15 @@ func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams) (strin
 		return "", backoff.Permanent(err)
 	}
 
-	scrubbed := t.scrubFn(prompt)
+	scrubbed := t.scrubFn(logText)
 	t.logger.DebugContext(ctx, "prompt sent",
 		"jobID", jobID,
 		"provider", t.provider.Name(),
-		"len", len(prompt),
+		"len", len(logText),
 		"body", strings.ReplaceAll(strings.TrimSpace(scrubbed), "\n", "\n\t"),
 	)
 
-	result := t.provider.Call(ctx, lease, prompt, imageData)
+	result := call(lease)
 
 	scrubbedResp := t.scrubFn(result.Text)
 	t.logger.DebugContext(ctx, "response received",

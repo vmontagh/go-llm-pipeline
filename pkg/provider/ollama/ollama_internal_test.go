@@ -340,6 +340,50 @@ func TestTransport_Call(t *testing.T) {
 	}
 }
 
+func TestTransport_CallMessages(t *testing.T) {
+	t.Parallel()
+	var gotPath string
+	var gotBody map[string]any
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"message":{"role":"assistant","content":"ok"}}`)),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+	msgs := []provpkg.Message{
+		provpkg.TextMessage(provpkg.RoleSystem, "s"),
+		{Role: provpkg.RoleUser, Parts: []provpkg.Part{{Text: "u1"}, {Text: "u2"}, {Image: []byte("img")}}},
+		provpkg.TextMessage(provpkg.RoleAssistant, "a"),
+	}
+
+	got := tr.CallMessages(t.Context(), &provpkg.Lease[struct{}]{}, msgs)
+
+	want := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "ok"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(chatPath, gotPath); diff != "" {
+		t.Errorf("path mismatch (-want +got):\n%s", diff)
+	}
+	wantMessages := []any{
+		map[string]any{"role": "system", "content": "s"},
+		map[string]any{"role": "user", "content": "u1\nu2", "images": []any{"aW1n"}},
+		map[string]any{"role": "assistant", "content": "a"},
+	}
+	if diff := cmp.Diff(wantMessages, gotBody["messages"]); diff != "" {
+		t.Errorf("messages mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("m", gotBody["model"]); diff != "" {
+		t.Errorf("model mismatch (-want +got):\n%s", diff)
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
