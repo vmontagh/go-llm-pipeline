@@ -26,7 +26,7 @@ var skippedDirs = map[string]bool{".git": true, "testdata": true, "node_modules"
 // Broken is a relative link whose target does not exist.
 type Broken struct {
 	File   string // Markdown file containing the link, slash-separated.
-	Target string // Link target, with backslash escapes removed.
+	Target string // Link target, with escapes and character references decoded.
 }
 
 // Targets returns the distinct link and image targets in a Markdown document in
@@ -41,7 +41,7 @@ func Targets(markdown string) []string {
 	var targets []string
 	seen := make(map[string]bool)
 	add := func(dest []byte) {
-		if t := string(util.UnescapePunctuations(dest)); !seen[t] {
+		if t := decode(dest); !seen[t] {
 			seen[t] = true
 			targets = append(targets, t)
 		}
@@ -58,6 +58,14 @@ func Targets(markdown string) []string {
 		add([]byte(d))
 	}
 	return targets
+}
+
+// decode resolves backslash escapes and character references in a link
+// destination, as a CommonMark renderer would, so "a&#46;md" checks "a.md".
+func decode(dest []byte) string {
+	dest = util.UnescapePunctuations(dest)
+	dest = util.ResolveNumericReferences(dest)
+	return string(util.ResolveEntityNames(dest))
 }
 
 // addLinks calls add with the destination of every link and image under n.
@@ -111,7 +119,9 @@ func Check(fsys fs.FS) ([]Broken, error) {
 // Targets with a scheme or host are external and count as existing; a leading
 // slash is relative to the root of fsys.
 func exists(fsys fs.FS, file, target string) bool {
-	u, err := url.Parse(target)
+	// Markdown allows characters a URL does not, such as a literal "100%.md";
+	// escape them as goldmark's renderer does, keeping existing %XX escapes.
+	u, err := url.Parse(string(util.URLEscape([]byte(target), false)))
 	if err != nil {
 		return false
 	}

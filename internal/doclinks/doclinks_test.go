@@ -34,6 +34,9 @@ func TestTargets(t *testing.T) {
 		{name: "parenthesized title", markdown: "[g](missing.md (Guide))", want: []string{"missing.md"}},
 		{name: "balanced parentheses", markdown: "[g](docs/guide(v2).md)", want: []string{"docs/guide(v2).md"}},
 		{name: "escaped parenthesis", markdown: `[g](docs/guide\(.md)`, want: []string{"docs/guide(.md"}},
+		{name: "numeric character reference", markdown: "[x](docs/a&#46;md)", want: []string{"docs/a.md"}},
+		{name: "named character reference", markdown: "[x](a&amp;b.md)", want: []string{"a&b.md"}},
+		{name: "reference definition character reference", markdown: "[x]: caf&eacute;&#x2E;md\n", want: []string{"café.md"}},
 		{name: "angle brackets", markdown: "[x](<a b.md>)", want: []string{"a b.md"}},
 		{name: "several per line", markdown: "[a](a.md) and [b](b.md#top)", want: []string{"a.md", "b.md#top"}},
 		{name: "duplicates reported once", markdown: "[a](a.md) [again](a.md)", want: []string{"a.md"}},
@@ -67,7 +70,9 @@ func TestCheck(t *testing.T) {
 	fsys := fstest.MapFS{
 		"README.md":           {Data: []byte("[ok](docs/a.md) [abs](/LICENSE) [web](https://x.test/y.md) [anchor](#top) [mail](mailto:a@x.test) [proto](//x.test/a.md) [file](file:///missing.md)\n[gone](docs/missing.md)")},
 		"LICENSE":             {},
-		"docs/a.md":           {Data: []byte("[up](../README.md#usage) [esc](../../outside.md) [enc](my%20file.md) [root](/docs/../LICENSE)")},
+		"docs/a.md":           {Data: []byte("[up](../README.md#usage) [esc](../../outside.md) [enc](my%20file.md) [root](/docs/../LICENSE) [pct](100%.md) [ref](caf&eacute;&#46;md) [pctgone](50%.md)")},
+		"docs/100%.md":        {},
+		"docs/café.md":        {},
 		"docs/my file.md":     {},
 		"docs/notes.txt":      {Data: []byte("[ignored](missing.md)")},
 		"testdata/fixture.md": {Data: []byte("[fixture](missing.md)")},
@@ -75,6 +80,7 @@ func TestCheck(t *testing.T) {
 	want := []doclinks.Broken{
 		{File: "README.md", Target: "docs/missing.md"},
 		{File: "docs/a.md", Target: "../../outside.md"},
+		{File: "docs/a.md", Target: "50%.md"},
 	}
 
 	got, err := doclinks.Check(fsys)
