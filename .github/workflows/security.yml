@@ -1,8 +1,9 @@
 name: Security
 
 on:
+  # Every branch: a pushed commit is public whether or not a PR exists.
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
     branches: [main]
   schedule:
@@ -13,12 +14,8 @@ on:
 permissions:
   contents: read
 
-# A newer PR run rescans all of the PR's commits, so it may cancel an older one.
-# Every other run scans only the commits its push added, so each gets its own
-# group; canceling one could skip the only scan of a leaked commit.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+# No concurrency group: every run scans commits no other run covers (a push's
+# new commits, or a PR's commits before a force-push), so none may be canceled.
 
 jobs:
   govulncheck:
@@ -47,8 +44,31 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Scan the tree and new commits for secrets
+      - name: Choose commits to scan
+        id: revs
         env:
-          # PRs scan their own commits; pushes scan what the push added.
-          SECRETS_BASE: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD' }}
-        run: make secrets SECRETS_BASE="$SECRETS_BASE"
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$EVENT" in
+            pull_request) revs="$PR_BASE..HEAD" ;;
+            push)
+              if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+                # A new branch: everything not already on the default branch.
+                revs="origin/$DEFAULT_BRANCH..HEAD"
+              else
+                # A force-pushed tip is no longer on any branch, so fetch it.
+                git fetch --no-tags --quiet origin "$BEFORE"
+                revs="$BEFORE..HEAD"
+              fi
+              ;;
+            # Scheduled and manual runs rescan all history with current rules.
+            *) revs="HEAD" ;;
+          esac
+          echo "revs=$revs" >> "$GITHUB_OUTPUT"
+      - name: Scan the tree and those commits for secrets
+        env:
+          REVS: ${{ steps.revs.outputs.revs }}
+        run: make secrets SECRETS_REVS="$REVS"

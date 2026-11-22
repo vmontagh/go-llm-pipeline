@@ -22,7 +22,7 @@ All common tasks are wired to `make` targets:
 | `make lint` | Run `golangci-lint`. |
 | `make lint-arch` | Run the architecture linter (`go-arch-lint`). |
 | `make vuln` | Report reachable known vulnerabilities (`govulncheck`). |
-| `make secrets` | Scan the tree and commits since `origin/main` for secrets (`gitleaks`). |
+| `make secrets` | Scan the tree and commits since `origin/main` (or `SECRETS_REVS`) for secrets (`gitleaks`). |
 | `make fmt` | Format the code with `gofmt`. |
 | `make vet` | Run `go vet`. |
 | `make tidy` | Run `go mod tidy`. |

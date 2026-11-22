@@ -2,8 +2,9 @@
 
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
-# SECRETS_BASE is the ref whose descendants `make secrets` scans commit by commit.
-SECRETS_BASE ?= origin/main
+# SECRETS_REVS selects the commits `make secrets` scans, as `git log` revision
+# arguments: SECRETS_REVS=HEAD scans all history, HEAD..HEAD only the tree.
+SECRETS_REVS ?= origin/main..HEAD
 
 build:
 	go build ./...
@@ -38,15 +39,16 @@ lint-arch:
 vuln:
 	$(GOVULNCHECK) ./...
 
-# secrets scans the working tree and every commit after SECRETS_BASE for
+# secrets scans the working tree and the commits in SECRETS_REVS for
 # credentials. Deliberate fake keys in tests carry a `gitleaks:allow` comment.
-# gitleaks treats an unknown base as zero commits and passes, so verify it
-# first. -m includes changes made in merge commits, such as conflict fixes.
+# gitleaks treats an unknown revision as zero commits and passes, so verify the
+# revisions first. -m includes changes made in merge commits, such as conflict
+# fixes.
 secrets:
 	$(GITLEAKS) dir . --no-banner --redact
-	@git rev-parse --verify --quiet "$(SECRETS_BASE)^{commit}" >/dev/null || \
-		{ echo "secrets: SECRETS_BASE $(SECRETS_BASE) is not a commit in this clone" >&2; exit 1; }
-	$(GITLEAKS) git . --no-banner --redact --log-opts="-m $(SECRETS_BASE)..HEAD"
+	@git rev-list --quiet $(SECRETS_REVS) || \
+		{ echo "secrets: SECRETS_REVS '$(SECRETS_REVS)' names a commit missing from this clone" >&2; exit 1; }
+	$(GITLEAKS) git . --no-banner --redact --log-opts="-m $(SECRETS_REVS)"
 
 fmt:
 	gofmt -w .
