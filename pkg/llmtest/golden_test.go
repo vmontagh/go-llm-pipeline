@@ -58,9 +58,11 @@ func TestGolden(t *testing.T) {
 			if tt.golden != "" {
 				writeFile(t, goldenPath, tt.golden)
 			}
+			update := "" // overrides any value inherited from the shell
 			if tt.update {
-				t.Setenv(llmtest.UpdateEnv, "1")
+				update = "1"
 			}
+			t.Setenv(llmtest.UpdateEnv, update)
 
 			tb := &fakeTB{}
 			llmtest.Golden(tb, "sub/r", tt.got)
