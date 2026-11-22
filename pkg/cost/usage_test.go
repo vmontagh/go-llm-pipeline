@@ -73,6 +73,7 @@ func TestParseUsage(t *testing.T) {
 		{name: "null openai count", body: `{"model":"m","usage":{"prompt_tokens":null,"completion_tokens":3}}`, wantErr: cost.ErrInvalidUsage},
 		{name: "null gemini count", body: `{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":null}}`, wantErr: cost.ErrInvalidUsage},
 		{name: "null ollama count", body: `{"prompt_eval_count":4,"eval_count":null}`, wantErr: cost.ErrInvalidUsage},
+		{name: "null non-count key inside usage", body: `{"model":"m","usage":{"prompt_tokens":2,"completion_tokens":1,"eval_count":null}}`, wantModel: "m", want: cost.Usage{Input: 2, Output: 1}},
 		{name: "top-level array", body: `[1,2]`, wantErr: cost.ErrNoUsage},
 		{name: "null usage object", body: `{"model":"m","usage":null}`, wantErr: cost.ErrNoUsage},
 		{name: "non-usage type mismatch", body: `{"model":5}`, wantErr: cost.ErrNoUsage},

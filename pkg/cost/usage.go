@@ -180,10 +180,14 @@ func checkNullCounts(doc []byte) error {
 	for obj, keys := range countKeys {
 		fields := top
 		if obj != "" {
-			// An absent or non-object usage field is handled by the caller.
-			if err := json.Unmarshal(top[obj], &fields); err != nil {
+			// Decode into a fresh map: unmarshaling into top would merge the
+			// nested keys into it. An absent or non-object usage field is
+			// handled by the caller.
+			var nested map[string]json.RawMessage
+			if err := json.Unmarshal(top[obj], &nested); err != nil {
 				continue
 			}
+			fields = nested
 		}
 		for _, k := range keys {
 			if v, ok := fields[k]; ok && bytes.Equal(bytes.TrimSpace(v), jsonNull) {
