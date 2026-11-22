@@ -4,9 +4,11 @@ package doclinks
 
 import (
 	"fmt"
+	"html"
 	"io/fs"
 	"net/url"
 	"path"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -60,12 +62,34 @@ func Targets(markdown string) []string {
 	return targets
 }
 
+// entityPattern matches a CommonMark character reference. Unlike HTML,
+// CommonMark requires the closing semicolon.
+var entityPattern = regexp.MustCompile(`&(?:#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[A-Za-z][A-Za-z0-9]{0,31});`)
+
 // decode resolves backslash escapes and character references in a link
-// destination, as a CommonMark renderer would, so "a&#46;md" checks "a.md".
+// destination in one left-to-right pass, as CommonMark does, so "a&#46;md"
+// checks "a.md". Each character is decoded at most once: an escaped "\&amp;"
+// stays "&amp;", and "&#38;amp;" becomes "&amp;", not "&". Percent escapes
+// are a URL concern, decoded later by url.Parse just as a browser decodes
+// the rendered href.
 func decode(dest []byte) string {
-	dest = util.UnescapePunctuations(dest)
-	dest = util.ResolveNumericReferences(dest)
-	return string(util.ResolveEntityNames(dest))
+	s := string(dest)
+	var b strings.Builder
+	start := 0
+	flush := func(end int) {
+		b.WriteString(entityPattern.ReplaceAllStringFunc(s[start:end], html.UnescapeString))
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] != '\\' || i+1 == len(s) || !util.IsPunct(s[i+1]) {
+			continue
+		}
+		flush(i)
+		b.WriteByte(s[i+1])
+		i++
+		start = i + 1
+	}
+	flush(len(s))
+	return b.String()
 }
 
 // addLinks calls add with the destination of every link and image under n.
