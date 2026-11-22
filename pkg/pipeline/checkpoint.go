@@ -115,6 +115,10 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	if c.done, c.size, err = load(file); err != nil {
 		return nil, errors.Join(fmt.Errorf("loading checkpoint %q: %w", path, err), file.Close())
 	}
+	// A previous run may have crashed before syncing what was just replayed.
+	if err := file.Sync(); err != nil {
+		return nil, errors.Join(fmt.Errorf("syncing checkpoint %q: %w", path, err), file.Close())
+	}
 	return c, nil
 }
 
