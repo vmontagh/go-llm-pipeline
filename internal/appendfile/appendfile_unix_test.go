@@ -172,3 +172,24 @@ func makeSymlink(t *testing.T, dir string) string {
 func missingParent(_ *testing.T, dir string) string {
 	return filepath.Join(dir, "missing", fileName)
 }
+
+func TestSyncDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tests := []struct {
+		name    string
+		dir     string
+		wantErr error
+	}{
+		{name: "existing", dir: dir},
+		{name: "missing", dir: filepath.Join(dir, "missing"), wantErr: fs.ErrNotExist},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if diff := cmp.Diff(tt.wantErr, appendfile.SyncDir(tt.dir), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("SyncDir(%q) error (-want +got):\n%s", tt.dir, diff)
+			}
+		})
+	}
+}

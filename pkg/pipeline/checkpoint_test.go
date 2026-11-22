@@ -3,6 +3,7 @@ package pipeline_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -153,13 +154,15 @@ func TestFileCheckpointErrors(t *testing.T) {
 			t.Errorf("OpenFileCheckpoint(dir) error (-want +got):\n%s", diff)
 		}
 	})
-	t.Run("empty id", func(t *testing.T) {
-		t.Parallel()
-		cp := openCheckpoint(t, filepath.Join(t.TempDir(), journalName))
-		if diff := cmp.Diff(pipeline.ErrEmptyCheckpointID, cp.MarkDone(""), cmpopts.EquateErrors()); diff != "" {
-			t.Errorf("MarkDone(\"\") error (-want +got):\n%s", diff)
-		}
-	})
+	for _, id := range []string{"", "asset-\xff"} {
+		t.Run(fmt.Sprintf("invalid id %q", id), func(t *testing.T) {
+			t.Parallel()
+			cp := openCheckpoint(t, filepath.Join(t.TempDir(), journalName))
+			if diff := cmp.Diff(pipeline.ErrInvalidCheckpointID, cp.MarkDone(id), cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("MarkDone(%q) error (-want +got):\n%s", id, diff)
+			}
+		})
+	}
 	t.Run("closed", func(t *testing.T) {
 		t.Parallel()
 		cp := openCheckpoint(t, filepath.Join(t.TempDir(), journalName))

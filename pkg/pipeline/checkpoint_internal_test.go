@@ -19,6 +19,7 @@ var (
 type fakeJournal struct {
 	data                        []byte
 	writeErr, syncErr, truncErr error
+	syncs                       int
 }
 
 func (f *fakeJournal) Write(p []byte) (int, error) {
@@ -32,6 +33,7 @@ func (f *fakeJournal) Write(p []byte) (int, error) {
 }
 
 func (f *fakeJournal) Sync() error {
+	f.syncs++
 	err := f.syncErr
 	f.syncErr = nil
 	return err
@@ -54,6 +56,7 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 	const first = `{"id":"a"}` + "\n"
 	tests := []struct {
 		name        string
+		syncEvery   int
 		journal     fakeJournal
 		wantErrs    []error
 		wantJournal string
@@ -79,12 +82,20 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 			wantJournal: first,
 			wantRetry:   ErrCheckpointUnusable,
 		},
+		{
+			name:        "scheduled sync failed",
+			syncEvery:   2,
+			journal:     fakeJournal{syncErr: errSync},
+			wantErrs:    []error{errSync},
+			wantJournal: first,
+			wantRetry:   ErrCheckpointUnusable,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			journal := &fakeJournal{}
-			c := &FileCheckpoint{syncEvery: 1, file: journal, done: map[string]struct{}{}}
+			c := &FileCheckpoint{syncEvery: max(tt.syncEvery, 1), file: journal, done: map[string]struct{}{}}
 			if err := c.MarkDone("a"); err != nil {
 				t.Fatalf("MarkDone(\"a\") = %v", err)
 			}
@@ -106,6 +117,43 @@ func TestFileCheckpointMarkDoneFailure(t *testing.T) {
 			journal.truncErr = nil
 			if diff := cmp.Diff(tt.wantRetry, c.MarkDone("b"), cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("retried MarkDone(\"b\") error (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestFileCheckpointSyncCadence is white-box because fsync calls are not
+// observable through a real file.
+func TestFileCheckpointSyncCadence(t *testing.T) {
+	t.Parallel()
+	ids := []string{"a", "b", "a", "c", "d", "e", "f", "g"} // "a" repeats; 7 unique
+	tests := []struct {
+		name      string
+		syncEvery int
+		wantSyncs int // during MarkDone; Close adds one more
+	}{
+		{name: "every record", syncEvery: 1, wantSyncs: 7},
+		{name: "every third record", syncEvery: 3, wantSyncs: 2},
+		{name: "only on close", syncEvery: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			journal := &fakeJournal{}
+			c := &FileCheckpoint{syncEvery: tt.syncEvery, file: journal, done: map[string]struct{}{}}
+
+			for _, id := range ids {
+				if err := c.MarkDone(id); err != nil {
+					t.Fatalf("MarkDone(%q) = %v", id, err)
+				}
+			}
+			gotSyncs := journal.syncs
+			if err := c.Close(); err != nil {
+				t.Fatalf("Close() = %v", err)
+			}
+
+			if diff := cmp.Diff([]int{tt.wantSyncs, tt.wantSyncs + 1}, []int{gotSyncs, journal.syncs}); diff != "" {
+				t.Errorf("syncs after MarkDone, after Close (-want +got):\n%s", diff)
 			}
 		})
 	}

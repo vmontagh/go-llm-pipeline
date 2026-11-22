@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/vmontagh/go-llm-pipeline/internal/appendfile"
 )
@@ -24,8 +26,10 @@ var ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
 // no longer be trusted to match Done, so the checkpoint must be reopened.
 var ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
 
-// ErrEmptyCheckpointID is returned when MarkDone is given an empty ID.
-var ErrEmptyCheckpointID = errors.New("checkpoint ID is empty")
+// ErrInvalidCheckpointID is returned when MarkDone is given an empty ID or
+// one that is not valid UTF-8, which the JSON journal could not store
+// losslessly.
+var ErrInvalidCheckpointID = errors.New("invalid checkpoint ID")
 
 // Checkpoint records which items a run has completed, so a restarted run can
 // skip them. Implementations must be safe for concurrent use.
@@ -82,13 +86,24 @@ func WithSyncEvery(n int) CheckpointOption {
 // OpenFileCheckpoint opens or creates the journal at path and loads the IDs
 // it already holds. The path rules match [NewDeadLetterQueue]. It returns
 // ErrCorruptCheckpoint if a record before the last line is unreadable.
+// Directories and the journal it creates are synced before it returns, so
+// they survive a machine crash.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
+	created, err := missingPaths(path)
+	if err != nil {
+		return nil, fmt.Errorf("checking checkpoint path: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating checkpoint directory: %w", err)
 	}
 	file, err := appendfile.OpenReadWrite(path, filePermissions)
 	if err != nil {
 		return nil, fmt.Errorf("opening checkpoint: %w", err)
+	}
+	for _, p := range created {
+		if err := appendfile.SyncDir(filepath.Dir(p)); err != nil {
+			return nil, errors.Join(fmt.Errorf("syncing checkpoint directory: %w", err), file.Close())
+		}
 	}
 	c := &FileCheckpoint{syncEvery: defaultSyncEvery, file: file}
 	for _, opt := range opts {
@@ -98,6 +113,25 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 		return nil, errors.Join(fmt.Errorf("loading checkpoint %q: %w", path, err), file.Close())
 	}
 	return c, nil
+}
+
+// missingPaths returns path and each of its ancestors that does not exist
+// yet, deepest first: the entries OpenFileCheckpoint will create.
+func missingPaths(path string) ([]string, error) {
+	var missing []string
+	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
+		_, err := os.Lstat(p)
+		if err == nil {
+			return missing, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		missing = append(missing, p)
+		if filepath.Dir(p) == p {
+			return missing, nil
+		}
+	}
 }
 
 // load reads every complete record and truncates a partial final line, so
@@ -144,13 +178,13 @@ func (c *FileCheckpoint) Len() int {
 }
 
 // MarkDone appends id to the journal. Marking an ID that is already done is a
-// no-op. An empty id is rejected because it could not be told apart on
-// reload. On error id is not marked done. A failed write is rolled back so
+// no-op. An empty or invalid UTF-8 id is rejected with
+// ErrInvalidCheckpointID because it could not be reloaded unchanged. On error id is not marked done. A failed write is rolled back so
 // MarkDone can be retried; a failed sync, or a rollback that fails, makes
 // every later MarkDone return ErrCheckpointUnusable.
 func (c *FileCheckpoint) MarkDone(id string) error {
-	if id == "" {
-		return ErrEmptyCheckpointID
+	if id == "" || !utf8.ValidString(id) {
+		return ErrInvalidCheckpointID
 	}
 	line, err := json.Marshal(checkpointRecord{ID: id})
 	if err != nil {

@@ -71,7 +71,11 @@ cp, err := pipeline.OpenFileCheckpoint("state/done.jsonl")
 if err != nil {
 	return err
 }
-defer cp.Close()
+defer func() {
+	if err := cp.Close(); err != nil { // the final flush can fail too
+		logger.Error("closing checkpoint", "err", err)
+	}
+}()
 
 process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analyze,
 	func(a Asset, err error) {
@@ -84,8 +88,13 @@ process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analy
 input := make(chan Asset)
 var wg sync.WaitGroup
 pipeline.Consume(ctx, input, 8, &wg, process)
+feed:
 for _, a := range assets {
-	input <- a
+	select {
+	case input <- a:
+	case <-ctx.Done(): // workers have stopped; unsent assets run next time
+		break feed
+	}
 }
 close(input)
 wg.Wait() // before the deferred cp.Close, so every completion is recorded

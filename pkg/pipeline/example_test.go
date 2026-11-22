@@ -121,12 +121,12 @@ func runBatch(dir, fail string, ids []string) (processed []string, done int, err
 	if err != nil {
 		return nil, 0, err
 	}
-	defer cp.Close()
+	defer func() { err = errors.Join(err, cp.Close()) }()
 	dlq, err := pipeline.NewDeadLetterQueue(filepath.Join(dir, "dlq.jsonl"), nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer dlq.Close()
+	defer func() { err = errors.Join(err, dlq.Close()) }()
 
 	var mu sync.Mutex
 	analyze := func(_ context.Context, id string) error {
