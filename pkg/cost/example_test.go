@@ -19,11 +19,14 @@ func Example() {
 	tracker := cost.NewTracker(prices, cost.WithMetrics(metrics))
 
 	body := []byte(`{"model":"gpt-4o-mini-2024-07-18","usage":{"prompt_tokens":1200,"completion_tokens":300}}`)
-	if model, usage, ok := cost.ParseUsage(body); ok {
-		if _, err := tracker.Record("asset-1", model, usage); err != nil {
-			fmt.Println(err)
-			return
-		}
+	model, usage, err := cost.ParseUsage(body)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	if _, err := tracker.Record("asset-1", model, usage); err != nil {
+		fmt.Println(err)
+		return
 	}
 	estimated, err := cost.Estimate(cost.Heuristic{}, "gpt-4o-mini", "a prompt of 32 bytes, roughly 8.", "ok")
 	if err != nil {

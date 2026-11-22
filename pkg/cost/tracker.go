@@ -18,14 +18,22 @@ type Totals struct {
 	Unpriced int `json:"unpriced,omitempty"`
 }
 
-func (t Totals) add(u Usage, c Amount, priced bool) Totals {
+// add returns t plus one call, or ErrOverflow if any total does not fit.
+func (t Totals) add(u Usage, c Amount, priced bool) (Totals, error) {
+	usage, err := t.Usage.Add(u)
+	if err != nil {
+		return Totals{}, err
+	}
+	cost, ok := checkedAdd(t.Cost, c)
+	if !ok {
+		return Totals{}, fmt.Errorf("%w: cost", ErrOverflow)
+	}
 	t.Calls++
-	t.Usage = t.Usage.Add(u)
-	t.Cost += c
+	t.Usage, t.Cost = usage, cost
 	if !priced {
 		t.Unpriced++
 	}
-	return t
+	return t, nil
 }
 
 // ModelTotals is the Totals of one model.
@@ -110,12 +118,16 @@ func (t *Tracker) Record(asset, model string, u Usage) (Amount, error) {
 	priced := err == nil
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.total.Cost > maxAmount-c {
-		return 0, fmt.Errorf("%w: batch total", ErrOverflow)
+	// Compute every total before committing any, so an overflow leaves the
+	// tracker unchanged.
+	next := [...]Totals{t.byAsset[asset], t.byModel[model], t.total}
+	for i := range next {
+		var addErr error
+		if next[i], addErr = next[i].add(u, c, priced); addErr != nil {
+			return 0, fmt.Errorf("recording %q: %w", model, addErr)
+		}
 	}
-	t.byAsset[asset] = t.byAsset[asset].add(u, c, priced)
-	t.byModel[model] = t.byModel[model].add(u, c, priced)
-	t.total = t.total.add(u, c, priced)
+	t.byAsset[asset], t.byModel[model], t.total = next[0], next[1], next[2]
 	if t.metrics != nil {
 		t.metrics.Add(MetricCalls, 1)
 		t.metrics.Add(MetricInputTokens, int64(u.Input))

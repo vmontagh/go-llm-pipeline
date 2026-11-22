@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -16,9 +17,15 @@ type Usage struct {
 	Estimated bool `json:"estimated,omitempty"`
 }
 
-// Add returns the sum of u and v.
-func (u Usage) Add(v Usage) Usage {
-	return Usage{Input: u.Input + v.Input, Output: u.Output + v.Output, Estimated: u.Estimated || v.Estimated}
+// Add returns the sum of u and v, or ErrOverflow if a count does not fit in
+// an int.
+func (u Usage) Add(v Usage) (Usage, error) {
+	in, inOK := checkedAdd(u.Input, v.Input)
+	out, outOK := checkedAdd(u.Output, v.Output)
+	if !inOK || !outOK {
+		return Usage{}, fmt.Errorf("%w: token count", ErrOverflow)
+	}
+	return Usage{Input: in, Output: out, Estimated: u.Estimated || v.Estimated}, nil
 }
 
 // Counter counts the tokens text uses on model. Implementations include
@@ -38,7 +45,8 @@ type Heuristic struct{}
 
 // Count implements Counter.
 func (Heuristic) Count(_, text string) (int, error) {
-	return (len(text) + heuristicBytesPerToken - 1) / heuristicBytesPerToken, nil
+	n := len(text)
+	return n/heuristicBytesPerToken + min(n%heuristicBytesPerToken, 1), nil
 }
 
 // Estimate counts input and output with c and marks the result Estimated.
@@ -79,9 +87,11 @@ type usageBody struct {
 
 // ParseUsage extracts the model and provider-reported usage from an OpenAI,
 // Gemini, or Ollama response body. Newline-delimited JSON, as Ollama streams,
-// is summed line by line. It returns false when the body reports no usage,
-// for example a non-LLM response or an unsupported server-sent-event stream.
-func ParseUsage(body []byte) (string, Usage, bool) {
+// is summed line by line. It returns ErrNoUsage when the body reports no
+// usage, for example a non-LLM response or an unsupported server-sent-event
+// stream, ErrInvalidUsage for negative counts, and ErrOverflow when a sum
+// does not fit in an int.
+func ParseUsage(body []byte) (string, Usage, error) {
 	if json.Valid(body) {
 		return parseUsageJSON(body)
 	}
@@ -89,41 +99,72 @@ func ParseUsage(body []byte) (string, Usage, bool) {
 	var total Usage
 	found := false
 	for line := range bytes.SplitSeq(body, []byte("\n")) {
-		m, u, ok := parseUsageJSON(line)
-		if !ok {
+		m, u, err := parseUsageJSON(line)
+		if errors.Is(err, ErrNoUsage) {
 			continue
+		}
+		if err != nil {
+			return "", Usage{}, err
+		}
+		if total, err = total.Add(u); err != nil {
+			return "", Usage{}, fmt.Errorf("summing stream: %w", err)
 		}
 		found = true
 		model = cmp.Or(model, m)
-		total = total.Add(u)
 	}
-	return model, total, found
+	if !found {
+		return "", Usage{}, ErrNoUsage
+	}
+	return model, total, nil
 }
 
-func parseUsageJSON(doc []byte) (string, Usage, bool) {
+func parseUsageJSON(doc []byte) (string, Usage, error) {
 	var b usageBody
 	if err := json.Unmarshal(doc, &b); err != nil {
-		return "", Usage{}, false
+		return "", Usage{}, fmt.Errorf("%w: %w", ErrNoUsage, err)
 	}
-	model := cmp.Or(b.ModelVersion, b.Model)
+	var in, out []int
 	switch {
 	case b.Usage != nil:
-		return model, Usage{
-			Input:  b.Usage.PromptTokens + b.Usage.InputTokens,
-			Output: b.Usage.CompletionTokens + b.Usage.OutputTokens,
-		}, true
+		in = []int{b.Usage.PromptTokens, b.Usage.InputTokens}
+		out = []int{b.Usage.CompletionTokens, b.Usage.OutputTokens}
 	case b.UsageMetadata != nil:
 		m := b.UsageMetadata
-		return model, Usage{Input: m.PromptTokenCount, Output: m.CandidatesTokenCount + m.ThoughtsTokenCount}, true
+		in = []int{m.PromptTokenCount}
+		out = []int{m.CandidatesTokenCount, m.ThoughtsTokenCount}
 	case b.PromptEvalCount != nil || b.EvalCount != nil:
-		var u Usage
-		if b.PromptEvalCount != nil {
-			u.Input = *b.PromptEvalCount
-		}
-		if b.EvalCount != nil {
-			u.Output = *b.EvalCount
-		}
-		return model, u, true
+		in = []int{derefOrZero(b.PromptEvalCount)}
+		out = []int{derefOrZero(b.EvalCount)}
+	default:
+		return "", Usage{}, ErrNoUsage
 	}
-	return "", Usage{}, false
+	inTotal, inErr := sumTokens(in)
+	outTotal, outErr := sumTokens(out)
+	if err := errors.Join(inErr, outErr); err != nil {
+		return "", Usage{}, err
+	}
+	return cmp.Or(b.ModelVersion, b.Model), Usage{Input: inTotal, Output: outTotal}, nil
+}
+
+func derefOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// sumTokens adds reported token counts, rejecting negative counts and
+// overflow.
+func sumTokens(counts []int) (int, error) {
+	total := 0
+	for _, c := range counts {
+		if c < 0 {
+			return 0, fmt.Errorf("%w: negative token count %d", ErrInvalidUsage, c)
+		}
+		var ok bool
+		if total, ok = checkedAdd(total, c); !ok {
+			return 0, fmt.Errorf("%w: token count", ErrOverflow)
+		}
+	}
+	return total, nil
 }

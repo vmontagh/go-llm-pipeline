@@ -1,6 +1,7 @@
 package cost_test
 
 import (
+	"math"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -82,19 +83,36 @@ func TestTracker(t *testing.T) {
 	}
 }
 
-func TestTrackerTotalOverflow(t *testing.T) {
+func TestTrackerOverflow(t *testing.T) {
 	t.Parallel()
-	tr := cost.NewTracker(newTable(t, map[string]cost.Rate{"m": {Input: 1 << 62}}))
-	u := cost.Usage{Input: 1}
-	if _, err := tr.Record("a", "m", u); err != nil {
-		t.Fatalf("first Record() = %v", err)
+	tests := []struct {
+		name        string
+		rate        cost.Rate
+		first, next cost.Usage
+	}{
+		{name: "cost", rate: cost.Rate{Input: 1 << 62}, first: cost.Usage{Input: 1}, next: cost.Usage{Input: 1}},
+		{name: "free input tokens", first: cost.Usage{Input: math.MaxInt}, next: cost.Usage{Input: 1}},
+		{name: "free output tokens", first: cost.Usage{Output: math.MaxInt}, next: cost.Usage{Output: 1}},
 	}
-	_, err := tr.Record("a", "m", u)
-	if diff := cmp.Diff(cost.ErrOverflow, err, cmpopts.EquateErrors()); diff != "" {
-		t.Fatalf("second Record() error (-want +got):\n%s", diff)
-	}
-	if got := tr.Report().Total.Calls; got != 1 {
-		t.Errorf("Report().Total.Calls = %d after overflow, want 1", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tr := cost.NewTracker(newTable(t, map[string]cost.Rate{"m": tt.rate}))
+			if _, err := tr.Record("a", "m", tt.first); err != nil {
+				t.Fatalf("first Record() = %v", err)
+			}
+			want := tr.Report()
+			_, err := tr.Record("b", "m", tt.next)
+			if diff := cmp.Diff(cost.ErrOverflow, err, cmpopts.EquateErrors()); diff != "" {
+				t.Fatalf("second Record() error (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(want, tr.Report()); diff != "" {
+				t.Errorf("Report() changed after overflow (-want +got):\n%s", diff)
+			}
+			if _, ok := tr.Asset("b"); ok {
+				t.Errorf("Asset(%q) recorded after overflow", "b")
+			}
+		})
 	}
 }
 
@@ -213,6 +231,10 @@ func TestCompare(t *testing.T) {
 		{name: "disabled", base: 1, cur: 1000, maxIncrease: -1},
 		{name: "huge current", base: 1, cur: cost.Amount(1 << 62), wantErr: cost.ErrCostRegression},
 		{name: "huge limit", base: cost.Amount(1 << 62), cur: cost.Amount(1 << 62), maxIncrease: 10},
+		{name: "large baseline regressed", base: 100_000_000_000_000_000, cur: 101_000_000_000_000_000, wantErr: cost.ErrCostRegression},
+		{name: "large baseline within", base: 100_000_000_000_000_000, cur: 101_000_000_000_000_000, maxIncrease: 1},
+		{name: "max percent", base: 100, cur: math.MaxInt64, maxIncrease: math.MaxInt},
+		{name: "max costs", base: math.MaxInt64, cur: math.MaxInt64},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

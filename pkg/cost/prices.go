@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"math"
@@ -29,11 +30,13 @@ var (
 	ErrInvalidPrices = errors.New("invalid price table")
 	// ErrUnknownModel is returned when a model has no price.
 	ErrUnknownModel = errors.New("unknown model")
+	// ErrNoUsage is returned by ParseUsage when a body reports no usage.
+	ErrNoUsage = errors.New("no usage in response")
 	// ErrUnpriced is returned by Report.CheckPriced when calls had no price.
 	ErrUnpriced = errors.New("unpriced calls")
 	// ErrInvalidUsage is returned for negative token counts.
 	ErrInvalidUsage = errors.New("invalid usage")
-	// ErrOverflow is returned when a cost does not fit in an Amount.
+	// ErrOverflow is returned when a cost or token count does not fit.
 	ErrOverflow = errors.New("cost overflow")
 	// ErrCostRegression is returned by Compare when cost grew past the
 	// allowed increase.
@@ -58,11 +61,19 @@ type Amount int64
 // String formats a as dollars rounded to six decimal places, for example
 // "$0.001250".
 func (a Amount) String() string {
-	sign := ""
-	if a < 0 {
-		sign, a = "-", -a
+	// Rounding the quotient half away from zero, rather than adding an offset
+	// first, cannot overflow anywhere in the int64 range.
+	micros, rem := int64(a)/picosPerMicro, int64(a)%picosPerMicro
+	switch {
+	case rem >= picosPerMicro/2:
+		micros++
+	case rem <= -picosPerMicro/2:
+		micros--
 	}
-	micros := (int64(a) + picosPerMicro/2) / picosPerMicro
+	sign := ""
+	if micros < 0 {
+		sign, micros = "-", -micros
+	}
 	return fmt.Sprintf("%s$%d.%06d", sign, micros/microsPerUSD, micros%microsPerUSD)
 }
 
@@ -135,7 +146,7 @@ func (t *PriceTable) Cost(model string, u Usage) (Amount, error) {
 	// micro-dollars per million tokens times tokens is picodollars.
 	in, inOK := mulInt64(int64(u.Input), r.Input)
 	out, outOK := mulInt64(int64(u.Output), r.Output)
-	total, sumOK := addInt64(in, out)
+	total, sumOK := checkedAdd(in, out)
 	if !inOK || !outOK || !sumOK {
 		return 0, fmt.Errorf("%w: %q", ErrOverflow, model)
 	}
@@ -175,7 +186,7 @@ func LoadPrices(fsys fs.FS, name string) (*PriceTable, error) {
 		return nil, fmt.Errorf("%w: decoding %q: %w", ErrInvalidPrices, name, err)
 	}
 	var extra any
-	if dec.Decode(&extra) == nil {
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("%w: %q must hold exactly one YAML document", ErrInvalidPrices, name)
 	}
 	rates := make(map[string]Rate, len(f.Models))
@@ -229,10 +240,11 @@ func mulInt64(a, b int64) (int64, bool) {
 	return a * b, true
 }
 
-// addInt64 returns a+b for non-negative a and b, or false on overflow.
-func addInt64(a, b int64) (int64, bool) {
-	if a > math.MaxInt64-b {
+// checkedAdd returns a+b, or false if the sum overflows.
+func checkedAdd[T ~int | ~int64](a, b T) (T, bool) {
+	s := a + b
+	if (b > 0 && s < a) || (b < 0 && s > a) {
 		return 0, false
 	}
-	return a + b, true
+	return s, true
 }

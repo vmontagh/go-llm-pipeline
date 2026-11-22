@@ -2,6 +2,7 @@ package cost_test
 
 import (
 	"io/fs"
+	"math"
 	"testing"
 	"testing/fstest"
 
@@ -23,6 +24,10 @@ func TestAmountString(t *testing.T) {
 		{in: 500_000, want: "$0.000001"},
 		{in: 12_345_678_000_000, want: "$12.345678"},
 		{in: -1_000_000, want: "-$0.000001"},
+		{in: math.MaxInt64, want: "$9223372.036855"},
+		{in: math.MinInt64, want: "-$9223372.036855"},
+		{in: -499_999, want: "$0.000000"},
+		{in: -500_000, want: "-$0.000001"},
 	}
 	for _, tt := range tests {
 		if got := tt.in.String(); got != tt.want {
@@ -133,6 +138,7 @@ func TestLoadPricesErrors(t *testing.T) {
 	}{
 		{name: "unknown field", src: "models: {m: {input: 1, output: 1, cache: 1}}"},
 		{name: "two documents", src: "models: {}\n---\nmodels: {}"},
+		{name: "malformed second document", src: "models: {}\n---\nmodels: ["},
 		{name: "too many decimals", src: "models: {m: {input: 0.0000001, output: 1}}"},
 		{name: "negative", src: "models: {m: {input: -1, output: 1}}"},
 		{name: "plus sign", src: `models: {m: {input: "+1", output: 1}}`},
