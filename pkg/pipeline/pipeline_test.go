@@ -391,26 +391,40 @@ func TestConsume(t *testing.T) {
 
 func TestConsumeAll(t *testing.T) {
 	t.Parallel()
-	var sum atomic.Int64
-
-	err := ConsumeAll(t.Context(), []int64{1, 2, 3}, 2, func(_ context.Context, n int64) { sum.Add(n) })
-
-	if err != nil {
-		t.Fatalf("ConsumeAll() = %v", err)
+	type outcome struct {
+		Sum int64
+		Err error
 	}
-	if got := sum.Load(); got != 6 {
-		t.Errorf("sum of processed items = %d, want 6", got)
+	tests := []struct {
+		name      string
+		cancelled bool
+		want      outcome
+	}{
+		{name: "processesAll", want: outcome{Sum: 6}},
+		{name: "cancelled", cancelled: true, want: outcome{Err: context.Canceled}},
 	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			if tt.cancelled {
+				cancel()
+			}
+			defer cancel()
+			var sum atomic.Int64
+			// Count only items processed on a live ctx.
+			process := func(ctx context.Context, n int64) {
+				if ctx.Err() == nil {
+					sum.Add(n)
+				}
+			}
 
-func TestConsumeAllCancelled(t *testing.T) {
-	t.Parallel()
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
+			err := ConsumeAll(ctx, []int64{1, 2, 3}, 2, process)
 
-	err := ConsumeAll(ctx, []int{1, 2, 3}, 2, func(context.Context, int) {})
-
-	if diff := cmp.Diff(context.Canceled, err, cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("ConsumeAll(cancelled) error (-want +got):\n%s", diff)
+			got := outcome{Sum: sum.Load(), Err: err}
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("ConsumeAll() (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
