@@ -185,6 +185,7 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - vcrpatch
+      - llmtest
 
   scrub:
     anyProjectDeps: false
