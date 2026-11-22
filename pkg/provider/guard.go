@@ -194,7 +194,7 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 	for {
 		probe, err := g.acquire(ctx)
 		if err != nil {
-			return canceledResult(err)
+			return canceledResult(lease, err)
 		}
 		keyWait, ready := lease.ensureReady()
 		if ready {
@@ -209,16 +209,20 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 			return res
 		}
 		g.release(probe, nil, 0)
+		timer := g.cfg.clock.After(keyWait)
 		g.add(MetricGuardWaits)
 		select {
 		case <-ctx.Done():
-			return canceledResult(ctx.Err())
-		case <-g.cfg.clock.After(keyWait):
+			return canceledResult(lease, ctx.Err())
+		case <-timer:
 		}
 	}
 }
 
-func canceledResult(err error) CallResult {
+// canceledResult drops the unused lease so the caller's Release cannot clear
+// a cooldown another call set on its key.
+func canceledResult[T any](lease *Lease[T], err error) CallResult {
+	lease.drop()
 	return CallResult{Err: backoff.Permanent(fmt.Errorf("waiting for guard: %w", err)), Outcome: OutcomeTerminal}
 }
 
@@ -285,7 +289,8 @@ func (g *Guard[T]) release(probe bool, res *CallResult, latency time.Duration) {
 
 func (g *Guard[T]) onSuccess(probe bool, latency time.Duration) {
 	g.failures = 0
-	if probe {
+	// A late Retry-After may have reopened the breaker during the probe.
+	if probe && g.state == BreakerHalfOpen {
 		g.state = BreakerClosed
 	}
 	if g.cfg.latencyTarget > 0 && latency > g.cfg.latencyTarget {
@@ -310,7 +315,9 @@ func (g *Guard[T]) onTransient(res *CallResult, probe bool) {
 		g.state = BreakerOpen
 		g.openUntil = now.Add(max(g.cfg.breakerOpenFor, res.RetryAfter))
 		g.add(MetricGuardBreakerOpens)
-	case g.state == BreakerOpen && now.Add(res.RetryAfter).After(g.openUntil):
+	case g.state != BreakerClosed && res.RetryAfter > 0 && now.Add(res.RetryAfter).After(g.openUntil):
+		// A late Retry-After extends the open window, or reopens a half-open breaker.
+		g.state = BreakerOpen
 		g.openUntil = now.Add(res.RetryAfter)
 	}
 }

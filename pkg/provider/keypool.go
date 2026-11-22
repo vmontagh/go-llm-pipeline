@@ -193,6 +193,14 @@ func (l *Lease[T]) ensureReady() (time.Duration, bool) {
 	return 0, true
 }
 
+// drop gives up an unused lease without touching its key's cooldown;
+// later Release and MarkCooldown calls are no-ops.
+func (l *Lease[T]) drop() {
+	if l != nil {
+		l.released = true
+	}
+}
+
 // Release marks the lease's slot as successfully used (no cooldown)
 // and frees it for future Acquire calls. Safe to call more than once;
 // subsequent calls are no-ops.

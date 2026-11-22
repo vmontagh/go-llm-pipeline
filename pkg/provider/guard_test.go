@@ -353,6 +353,26 @@ func TestGuardAdapts(t *testing.T) {
 			want:         outcome{Limit: 2, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
 		},
 		{
+			name: "lateRetryAfterReopensHalfOpen",
+			opts: []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
+			steps: []step{
+				{gate: make(chan struct{}), res: retryAfterResult},
+				{res: transientResult},
+				{before: openFor, gate: make(chan struct{}), res: okResult}, // the probe
+			},
+			want: outcome{Limit: 2, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
+		},
+		{
+			name: "lateTransientKeepsProbe",
+			opts: []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
+			steps: []step{
+				{gate: make(chan struct{}), res: transientResult},
+				{res: transientResult},
+				{before: openFor + time.Second, gate: make(chan struct{}), res: okResult}, // the probe
+			},
+			want: outcome{Limit: 2, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
+		},
+		{
 			name:  "probeSuccessCloses",
 			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
 			steps: []step{{res: transientResult}, {before: openFor, res: okResult}},
@@ -385,6 +405,7 @@ func TestGuardCallCanceledWhileWaiting(t *testing.T) {
 		Outcome provider.CallOutcome
 		Err     error
 		Calls   int
+		Cooling bool // the key cooled by another call is still cooling after Release
 	}
 	tests := []struct {
 		name  string
@@ -409,7 +430,9 @@ func TestGuardCallCanceledWhileWaiting(t *testing.T) {
 			gate := make(chan struct{})
 			f := newGuardFixture(t, append(tt.prior, step{gate: gate, res: okResult}), tt.opts...)
 			f.runSteps(t, len(tt.prior))
-			want := outcome{Outcome: provider.OutcomeTerminal, Err: context.Canceled, Calls: len(tt.prior)}
+			want := outcome{Outcome: provider.OutcomeTerminal, Err: context.Canceled, Calls: len(tt.prior), Cooling: tt.waits}
+			pool := provider.NewKeyPoolWithClock([]string{"a"}, f.clock)
+			lease := acquireLease(t, pool)
 			if tt.block {
 				f.clock.advance(openFor)
 				done := f.goCall(t.Context())
@@ -423,14 +446,17 @@ func TestGuardCallCanceledWhileWaiting(t *testing.T) {
 				cancel()
 			}
 
-			out := f.goCall(ctx)
+			out := make(chan provider.CallResult, 1)
+			go func() { out <- f.guard.Call(ctx, lease, "", nil) }()
 			if tt.waits {
 				<-f.metrics.waited
+				coolKey(t, pool, lease.Index, time.Hour) // another call is throttled meanwhile
 				cancel()
 			}
 			res := <-out
+			lease.Release() // as Template.callOnce does after a terminal outcome
 
-			got := outcome{Outcome: res.Outcome, Err: res.Err, Calls: f.fake.callCount()}
+			got := outcome{Outcome: res.Outcome, Err: res.Err, Calls: f.fake.callCount(), Cooling: pool.MinCooldown() > 0}
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Call(canceled) mismatch (-want +got):\n%s", diff)
 			}
@@ -485,19 +511,25 @@ func TestGuardWaitersResume(t *testing.T) {
 func TestGuardUsesReadyKey(t *testing.T) {
 	const cooldown = 10 * time.Second
 	type outcome struct {
-		Result provider.CallResult
-		Keys   []string
+		Result  provider.CallResult
+		Keys    []string
+		Cooling bool // the key is still cooling after Release
 	}
 	tests := []struct {
 		name     string
 		keys     []string
 		cool     bool // the leased key enters cooldown before the call
 		wantWait bool // the call waits for the cooldown to end
+		cancel   bool // the call is canceled while waiting instead
 		want     outcome
 	}{
 		{name: "keyReady", keys: []string{"a", "b"}, want: outcome{Result: okResult, Keys: []string{"a"}}},
 		{name: "keyCooledSwapped", keys: []string{"a", "b"}, cool: true, want: outcome{Result: okResult, Keys: []string{"b"}}},
 		{name: "allKeysCooledWaits", keys: []string{"a"}, cool: true, wantWait: true, want: outcome{Result: okResult, Keys: []string{"a"}}},
+		{
+			name: "canceledWhileKeyCooling", keys: []string{"a"}, cool: true, wantWait: true, cancel: true,
+			want: outcome{Result: provider.CallResult{Outcome: provider.OutcomeTerminal, Err: context.Canceled}, Cooling: true},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -508,14 +540,22 @@ func TestGuardUsesReadyKey(t *testing.T) {
 				coolKey(t, pool, lease.Index, cooldown)
 			}
 
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
 			done := make(chan provider.CallResult, 1)
-			go func() { done <- f.guard.Call(t.Context(), lease, "", nil) }()
+			go func() { done <- f.guard.Call(ctx, lease, "", nil) }()
 			if tt.wantWait {
 				<-f.metrics.waited
-				f.clock.advance(cooldown)
+				if tt.cancel {
+					cancel()
+				} else {
+					f.clock.advance(cooldown)
+				}
 			}
+			res := <-done
+			lease.Release()
 
-			got := outcome{Result: <-done, Keys: f.fake.keys}
+			got := outcome{Result: res, Keys: f.fake.keys, Cooling: pool.MinCooldown() > 0}
 			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
 			}
