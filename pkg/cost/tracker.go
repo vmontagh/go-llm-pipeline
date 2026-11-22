@@ -28,11 +28,17 @@ func (t Totals) add(u Usage, c Amount, priced bool) (Totals, error) {
 	if !ok {
 		return Totals{}, fmt.Errorf("%w: cost", ErrOverflow)
 	}
-	t.Calls++
-	t.Usage, t.Cost = usage, cost
-	if !priced {
-		t.Unpriced++
+	calls, ok := checkedAdd(t.Calls, 1)
+	if !ok {
+		return Totals{}, fmt.Errorf("%w: calls", ErrOverflow)
 	}
+	unpriced := t.Unpriced
+	if !priced {
+		if unpriced, ok = checkedAdd(unpriced, 1); !ok {
+			return Totals{}, fmt.Errorf("%w: unpriced calls", ErrOverflow)
+		}
+	}
+	t.Calls, t.Usage, t.Cost, t.Unpriced = calls, usage, cost, unpriced
 	return t, nil
 }
 
