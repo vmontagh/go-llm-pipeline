@@ -9,6 +9,7 @@ require (
 	github.com/cucumber/messages/go/v34 v34.2.1
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
+	github.com/yuin/goldmark v1.8.7
 	golang.org/x/sys v0.50.0
 	google.golang.org/grpc v1.85.0
 	gopkg.in/dnaeon/go-vcr.v3 v3.2.0

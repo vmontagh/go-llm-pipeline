@@ -1,17 +1,25 @@
 package doclinks_test
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"testing"
 	"testing/fstest"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/vmontagh/go-llm-pipeline/internal/doclinks"
 )
 
 // repoRoot is the module root relative to this package directory.
 const repoRoot = "../.."
+
+var (
+	errInjectedRead = errors.New("injected read failure")
+	errInjectedList = errors.New("injected list failure")
+)
 
 func TestTargets(t *testing.T) {
 	t.Parallel()
@@ -22,13 +30,23 @@ func TestTargets(t *testing.T) {
 	}{
 		{name: "inline link", markdown: "See [the guide](docs/guide.md).", want: []string{"docs/guide.md"}},
 		{name: "image and title", markdown: `![logo](img/logo.png "Logo")`, want: []string{"img/logo.png"}},
+		{name: "single-quoted title", markdown: "[g](missing.md 'Guide')", want: []string{"missing.md"}},
+		{name: "parenthesized title", markdown: "[g](missing.md (Guide))", want: []string{"missing.md"}},
+		{name: "balanced parentheses", markdown: "[g](docs/guide(v2).md)", want: []string{"docs/guide(v2).md"}},
+		{name: "escaped parenthesis", markdown: `[g](docs/guide\(.md)`, want: []string{"docs/guide(.md"}},
 		{name: "angle brackets", markdown: "[x](<a b.md>)", want: []string{"a b.md"}},
 		{name: "several per line", markdown: "[a](a.md) and [b](b.md#top)", want: []string{"a.md", "b.md#top"}},
+		{name: "duplicates reported once", markdown: "[a](a.md) [again](a.md)", want: []string{"a.md"}},
 		{name: "reference definition", markdown: "[guide]: ./docs/guide.md\n", want: []string{"./docs/guide.md"}},
 		{name: "angle reference definition", markdown: "[g]: <my guide.md> \"Title\"", want: []string{"my guide.md"}},
+		{name: "used reference reported once", markdown: "[x][g]\n\n[g]: g.md\n", want: []string{"g.md"}},
+		{name: "unused definitions sorted", markdown: "[z]: z.md\n[a]: a.md\n", want: []string{"a.md", "z.md"}},
 		{name: "fenced block ignored", markdown: "```\n[a](gone.md)\n```\n[b](kept.md)", want: []string{"kept.md"}},
 		{name: "tilde fence ignored", markdown: "~~~go\n[a](gone.md)\n~~~\n", want: nil},
+		{name: "shorter fence inside longer", markdown: "````\n```\n[a](gone.md)\n```\n````\n[b](kept.md)", want: []string{"kept.md"}},
+		{name: "other fence char inside", markdown: "```\n~~~\n[a](gone.md)\n```\n[b](kept.md)", want: []string{"kept.md"}},
 		{name: "inline code ignored", markdown: "use `[a](gone.md)` here", want: nil},
+		{name: "double backtick code ignored", markdown: "use ``[a](gone.md) ` x`` here", want: nil},
 		{name: "no links", markdown: "plain text", want: nil},
 	}
 	for _, tt := range tests {
@@ -69,6 +87,30 @@ func TestCheck(t *testing.T) {
 	}
 }
 
+func TestCheckFilesystemErrors(t *testing.T) {
+	t.Parallel()
+	docs := fstest.MapFS{"docs/a.md": {Data: []byte("[x](x.md)")}}
+	tests := []struct {
+		name string
+		fsys fs.FS
+		want error
+	}{
+		{name: "walk failure", fsys: failingFS{MapFS: docs, failList: "docs", err: errInjectedList}, want: errInjectedList},
+		{name: "read failure", fsys: failingFS{MapFS: docs, failRead: "docs/a.md", err: errInjectedRead}, want: errInjectedRead},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := doclinks.Check(tt.fsys)
+
+			if diff := cmp.Diff(tt.want, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Check() error mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestRepositoryDocsHaveNoDeadLinks(t *testing.T) {
 	t.Parallel()
 
@@ -80,4 +122,27 @@ func TestRepositoryDocsHaveNoDeadLinks(t *testing.T) {
 	for _, b := range got {
 		t.Errorf("%s links to missing %q", b.File, b.Target)
 	}
+}
+
+// failingFS is a MapFS that returns err when reading the file failRead or
+// listing the directory failList.
+type failingFS struct {
+	fstest.MapFS
+	failRead string
+	failList string
+	err      error
+}
+
+func (f failingFS) ReadFile(name string) ([]byte, error) {
+	if name == f.failRead {
+		return nil, f.err
+	}
+	return f.MapFS.ReadFile(name)
+}
+
+func (f failingFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if name == f.failList {
+		return nil, f.err
+	}
+	return f.MapFS.ReadDir(name)
 }

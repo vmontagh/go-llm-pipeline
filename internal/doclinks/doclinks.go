@@ -7,19 +7,17 @@ import (
 	"io/fs"
 	"net/url"
 	"path"
-	"regexp"
+	"slices"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
+	"github.com/yuin/goldmark/util"
 )
 
 const markdownExt = ".md"
-
-var (
-	fencePattern      = regexp.MustCompile("^\\s{0,3}(```|~~~)")
-	inlineCodePattern = regexp.MustCompile("`[^`]*`")
-	// Targets are either <angle-bracketed>, which may contain spaces, or bare.
-	inlineLinkPattern = regexp.MustCompile(`\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+"[^"]*")?\s*\)`)
-	refLinkPattern    = regexp.MustCompile(`^\s{0,3}\[[^\]]+\]:\s*(?:<([^>]+)>|(\S+))`)
-)
 
 // skippedDirs are never walked: VCS metadata and fixtures whose Markdown is
 // test input rather than documentation.
@@ -28,31 +26,51 @@ var skippedDirs = map[string]bool{".git": true, "testdata": true, "node_modules"
 // Broken is a relative link whose target does not exist.
 type Broken struct {
 	File   string // Markdown file containing the link, slash-separated.
-	Target string // Link target as written.
+	Target string // Link target, with backslash escapes removed.
 }
 
-// Targets returns the link targets in a Markdown document, in order of
-// appearance. Links inside fenced code blocks and inline code spans are ignored.
+// Targets returns the distinct link and image targets in a Markdown document in
+// order of appearance, followed in sorted order by targets that only appear in
+// reference definitions. Parsing follows CommonMark, so code spans and code
+// blocks never yield links.
 func Targets(markdown string) []string {
+	src := []byte(markdown)
+	pc := parser.NewContext()
+	doc := goldmark.DefaultParser().Parse(text.NewReader(src), parser.WithContext(pc))
+
 	var targets []string
-	inFence := false
-	for line := range strings.Lines(markdown) {
-		if fencePattern.MatchString(line) {
-			inFence = !inFence
-			continue
-		}
-		if inFence {
-			continue
-		}
-		line = inlineCodePattern.ReplaceAllString(line, "")
-		if m := refLinkPattern.FindStringSubmatch(line); m != nil {
-			targets = append(targets, m[1]+m[2])
-		}
-		for _, m := range inlineLinkPattern.FindAllStringSubmatch(line, -1) {
-			targets = append(targets, m[1]+m[2])
+	seen := make(map[string]bool)
+	add := func(dest []byte) {
+		if t := string(util.UnescapePunctuations(dest)); !seen[t] {
+			seen[t] = true
+			targets = append(targets, t)
 		}
 	}
+	addLinks(doc, add)
+	// Definitions no link uses still have to point somewhere real.
+	refs := pc.References()
+	defs := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		defs = append(defs, string(ref.Destination()))
+	}
+	slices.Sort(defs)
+	for _, d := range defs {
+		add([]byte(d))
+	}
 	return targets
+}
+
+// addLinks calls add with the destination of every link and image under n.
+func addLinks(n ast.Node, add func(dest []byte)) {
+	switch n := n.(type) {
+	case *ast.Link:
+		add(n.Destination)
+	case *ast.Image:
+		add(n.Destination)
+	}
+	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
+		addLinks(c, add)
+	}
 }
 
 // Check walks fsys and returns every relative link in a Markdown file whose
