@@ -119,7 +119,8 @@ func WithGuardMetrics(a Adder) GuardOption {
 // The limit grows by one slot per limit successes and halves on rate limits
 // (HTTP 429, Retry-After, or TierShortRateLimit). Calls over the limit wait.
 // Consecutive transient errors open the breaker; calls then wait until it
-// half-opens and one probe call succeeds.
+// half-opens and one probe call succeeds. Calls canceled by their context
+// do not count.
 type Guard[T any] struct {
 	Provider[T]
 
@@ -186,17 +187,39 @@ func (g *Guard[T]) State() BreakerState {
 	return g.state
 }
 
-// Call waits for a slot and an allowing breaker, then calls the wrapped provider.
+// Call waits for a slot, an allowing breaker and a key out of cooldown, then
+// calls the wrapped provider. A cooling lease moves to a ready key in place.
 // If ctx ends while waiting, it returns an OutcomeTerminal result.
 func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, imageData []byte) CallResult {
-	probe, err := g.acquire(ctx)
-	if err != nil {
-		return CallResult{Err: backoff.Permanent(fmt.Errorf("waiting for guard: %w", err)), Outcome: OutcomeTerminal}
+	for {
+		probe, err := g.acquire(ctx)
+		if err != nil {
+			return canceledResult(err)
+		}
+		keyWait, ready := lease.ensureReady()
+		if ready {
+			start := g.cfg.clock.Now()
+			res := g.Provider.Call(ctx, lease, prompt, imageData)
+			if ctx.Err() != nil {
+				// A canceled call says nothing about the provider's health.
+				g.release(probe, nil, 0)
+				return res
+			}
+			g.release(probe, &res, g.cfg.clock.Now().Sub(start))
+			return res
+		}
+		g.release(probe, nil, 0)
+		g.add(MetricGuardWaits)
+		select {
+		case <-ctx.Done():
+			return canceledResult(ctx.Err())
+		case <-g.cfg.clock.After(keyWait):
+		}
 	}
-	start := g.cfg.clock.Now()
-	res := g.Provider.Call(ctx, lease, prompt, imageData)
-	g.release(&res, probe, g.cfg.clock.Now().Sub(start))
-	return res
+}
+
+func canceledResult(err error) CallResult {
+	return CallResult{Err: backoff.Permanent(fmt.Errorf("waiting for guard: %w", err)), Outcome: OutcomeTerminal}
 }
 
 // acquire blocks until the call may run and reports whether it is the half-open probe.
@@ -204,6 +227,10 @@ func (g *Guard[T]) acquire(ctx context.Context) (bool, error) {
 	waited := false
 	for {
 		g.mu.Lock()
+		if err := ctx.Err(); err != nil {
+			g.mu.Unlock()
+			return false, err
+		}
 		now := g.cfg.clock.Now()
 		if g.state == BreakerOpen && !now.Before(g.openUntil) {
 			g.state = BreakerHalfOpen
@@ -236,18 +263,20 @@ func (g *Guard[T]) acquire(ctx context.Context) (bool, error) {
 	}
 }
 
-// release frees the slot and feeds the result to the limit and the breaker.
-func (g *Guard[T]) release(res *CallResult, probe bool, latency time.Duration) {
+// release frees the slot and feeds a non-nil res to the limit and the breaker.
+func (g *Guard[T]) release(probe bool, res *CallResult, latency time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.inFlight--
 	if probe {
 		g.probing = false
 	}
-	switch res.Outcome {
-	case OutcomeSuccess:
+	switch {
+	case res == nil:
+		// No feedback.
+	case res.Outcome == OutcomeSuccess:
 		g.onSuccess(probe, latency)
-	case OutcomeProviderError:
+	case res.Outcome == OutcomeProviderError:
 		g.onTransient(res, probe)
 	}
 	close(g.changed)
@@ -275,10 +304,14 @@ func (g *Guard[T]) onTransient(res *CallResult, probe bool) {
 		g.decrease(rateLimitDecreaseFactor)
 	}
 	g.failures++
-	if probe || (g.state == BreakerClosed && g.failures >= g.cfg.breakerFailures) {
+	now := g.cfg.clock.Now()
+	switch {
+	case probe || (g.state == BreakerClosed && g.failures >= g.cfg.breakerFailures):
 		g.state = BreakerOpen
-		g.openUntil = g.cfg.clock.Now().Add(max(g.cfg.breakerOpenFor, res.RetryAfter))
+		g.openUntil = now.Add(max(g.cfg.breakerOpenFor, res.RetryAfter))
 		g.add(MetricGuardBreakerOpens)
+	case g.state == BreakerOpen && now.Add(res.RetryAfter).After(g.openUntil):
+		g.openUntil = now.Add(res.RetryAfter)
 	}
 }
 

@@ -79,6 +79,7 @@ type step struct {
 	before  time.Duration // clock advance before the call
 	latency time.Duration // clock advance inside the call
 	gate    chan struct{} // if set, the call signals entered and blocks until closed
+	cancel  bool          // the caller's context is canceled during the call
 	res     provider.CallResult
 }
 
@@ -88,9 +89,11 @@ type fakeGuarded struct {
 	clock   *fakeGuardClock
 	entered chan struct{}
 
-	mu    sync.Mutex
-	steps []step
-	calls int
+	mu     sync.Mutex
+	steps  []step
+	calls  int
+	keys   []string // lease values seen by Call
+	cancel context.CancelFunc
 }
 
 func (f *fakeGuarded) ClassifyError(in provider.ClassifyInput, _ provider.RetryContext) provider.ErrorTier {
@@ -104,10 +107,16 @@ func (f *fakeGuarded) ClassifyError(in provider.ClassifyInput, _ provider.RetryC
 	}
 }
 
-func (f *fakeGuarded) Call(context.Context, *provider.Lease[string], string, []byte) provider.CallResult {
+func (f *fakeGuarded) Call(_ context.Context, lease *provider.Lease[string], _ string, _ []byte) provider.CallResult {
 	f.mu.Lock()
 	s := f.steps[f.calls]
 	f.calls++
+	if lease != nil {
+		f.keys = append(f.keys, lease.Value)
+	}
+	if s.cancel {
+		f.cancel()
+	}
 	f.mu.Unlock()
 	if s.gate != nil {
 		f.entered <- struct{}{}
@@ -167,11 +176,29 @@ func newGuardFixture(t *testing.T, steps []step, opts ...provider.GuardOption) *
 }
 
 // runSteps makes one call per step, advancing the clock by step.before first.
+// Gated steps stay in flight until all n calls have been made.
 func (f *guardFixture) runSteps(t *testing.T, n int) {
 	t.Helper()
-	for i := range n {
-		f.clock.advance(f.fake.steps[i].before)
-		f.guard.Call(t.Context(), nil, "", nil)
+	var gated []step
+	var done []<-chan provider.CallResult
+	for _, s := range f.fake.steps[:n] {
+		f.clock.advance(s.before)
+		if s.gate != nil {
+			gated = append(gated, s)
+			done = append(done, f.goCall(t.Context()))
+			<-f.fake.entered
+			continue
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		f.fake.mu.Lock()
+		f.fake.cancel = cancel
+		f.fake.mu.Unlock()
+		f.guard.Call(ctx, nil, "", nil)
+		cancel()
+	}
+	for i, s := range gated {
+		close(s.gate)
+		<-done[i]
 	}
 }
 
@@ -281,6 +308,12 @@ func TestGuardAdapts(t *testing.T) {
 			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
 		},
 		{
+			name:  "canceledFailureIgnored",
+			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
+			steps: append(toFour, step{res: tooManyResult, cancel: true}),
+			want:  outcome{Limit: 4, State: provider.BreakerClosed},
+		},
+		{
 			name:  "terminalOutcomesIgnored",
 			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
 			steps: []step{{res: terminalResult}, {res: badRequestResult}},
@@ -311,6 +344,13 @@ func TestGuardAdapts(t *testing.T) {
 			steps:        []step{{res: retryAfterResult}},
 			advanceAfter: openFor,
 			want:         outcome{Limit: 1, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
+		},
+		{
+			name:         "retryAfterExtendsOpenBreaker",
+			opts:         []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
+			steps:        []step{{gate: make(chan struct{}), res: retryAfterResult}, {res: transientResult}},
+			advanceAfter: openFor,
+			want:         outcome{Limit: 2, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
 		},
 		{
 			name:  "probeSuccessCloses",
@@ -351,14 +391,17 @@ func TestGuardCallCanceledWhileWaiting(t *testing.T) {
 		opts  []provider.GuardOption
 		prior []step // run to completion first
 		block bool   // the call after prior blocks in the provider
+		waits bool   // the call waits before it is canceled; otherwise it is canceled first
 	}{
-		{name: "slotBusy", block: true},
-		{name: "breakerOpen", opts: []provider.GuardOption{provider.WithBreaker(1, openFor)}, prior: []step{{res: transientResult}}},
+		{name: "canceledBeforeCall"},
+		{name: "slotBusy", block: true, waits: true},
+		{name: "breakerOpen", opts: []provider.GuardOption{provider.WithBreaker(1, openFor)}, prior: []step{{res: transientResult}}, waits: true},
 		{
 			name:  "probeInFlight",
 			opts:  []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
 			prior: []step{{res: transientResult}},
 			block: true,
+			waits: true,
 		},
 	}
 	for _, tt := range tests {
@@ -375,9 +418,17 @@ func TestGuardCallCanceledWhileWaiting(t *testing.T) {
 				want.Calls++
 			}
 			ctx, cancel := context.WithCancel(t.Context())
-			cancel()
+			defer cancel()
+			if !tt.waits {
+				cancel()
+			}
 
-			res := f.guard.Call(ctx, nil, "", nil)
+			out := f.goCall(ctx)
+			if tt.waits {
+				<-f.metrics.waited
+				cancel()
+			}
+			res := <-out
 
 			got := outcome{Outcome: res.Outcome, Err: res.Err, Calls: f.fake.callCount()}
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
@@ -429,4 +480,66 @@ func TestGuardWaitersResume(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGuardUsesReadyKey(t *testing.T) {
+	const cooldown = 10 * time.Second
+	type outcome struct {
+		Result provider.CallResult
+		Keys   []string
+	}
+	tests := []struct {
+		name     string
+		keys     []string
+		cool     bool // the leased key enters cooldown before the call
+		wantWait bool // the call waits for the cooldown to end
+		want     outcome
+	}{
+		{name: "keyReady", keys: []string{"a", "b"}, want: outcome{Result: okResult, Keys: []string{"a"}}},
+		{name: "keyCooledSwapped", keys: []string{"a", "b"}, cool: true, want: outcome{Result: okResult, Keys: []string{"b"}}},
+		{name: "allKeysCooledWaits", keys: []string{"a"}, cool: true, wantWait: true, want: outcome{Result: okResult, Keys: []string{"a"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newGuardFixture(t, []step{{res: okResult}})
+			pool := provider.NewKeyPoolWithClock(tt.keys, f.clock)
+			lease := acquireLease(t, pool)
+			if tt.cool {
+				coolKey(t, pool, lease.Index, cooldown)
+			}
+
+			done := make(chan provider.CallResult, 1)
+			go func() { done <- f.guard.Call(t.Context(), lease, "", nil) }()
+			if tt.wantWait {
+				<-f.metrics.waited
+				f.clock.advance(cooldown)
+			}
+
+			got := outcome{Result: <-done, Keys: f.fake.keys}
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func acquireLease(t *testing.T, pool *provider.KeyPool[string]) *provider.Lease[string] {
+	t.Helper()
+	l, err := pool.Acquire(t.Context())
+	if err != nil {
+		t.Fatalf("Acquire() error = %v", err)
+	}
+	return l
+}
+
+// coolKey puts the key at index in cooldown through a second lease on it.
+func coolKey(t *testing.T, pool *provider.KeyPool[string], index int, d time.Duration) {
+	t.Helper()
+	for range pool.Len() + 1 {
+		if l := acquireLease(t, pool); l.Index == index {
+			l.MarkCooldown(provider.TierPolicy{Cooldown: d}, 0)
+			return
+		}
+	}
+	t.Fatalf("no lease on key %d", index)
 }

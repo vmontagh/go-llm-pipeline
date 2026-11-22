@@ -142,12 +142,15 @@ func (p *KeyPool[T]) pickAvailableLocked(now time.Time) *keySlot[T] {
 func (p *KeyPool[T]) MinCooldown() time.Duration {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	return p.minCooldownLocked(p.clock.Now())
+}
 
+// minCooldownLocked implements MinCooldown. The caller must hold p.mu.
+func (p *KeyPool[T]) minCooldownLocked(now time.Time) time.Duration {
 	if len(p.slots) == 0 {
 		return 0
 	}
 
-	now := p.clock.Now()
 	var minWait time.Duration = -1
 
 	for _, s := range p.slots {
@@ -166,6 +169,28 @@ func (p *KeyPool[T]) MinCooldown() time.Duration {
 		return 0
 	}
 	return minWait
+}
+
+// ensureReady moves l to a ready key if its key is cooling. When every key
+// is cooling it returns false and the wait until one is ready.
+func (l *Lease[T]) ensureReady() (time.Duration, bool) {
+	if l == nil || l.pool == nil || l.slot == nil || l.released {
+		return 0, true
+	}
+	p := l.pool
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.clock.Now()
+	if !l.slot.cooldownTo.After(now) {
+		return 0, true
+	}
+	best := p.pickAvailableLocked(now)
+	if best == nil {
+		return p.minCooldownLocked(now), false
+	}
+	best.lastUsed = now
+	l.Value, l.Index, l.slot = best.value, best.idx, best
+	return 0, true
 }
 
 // Release marks the lease's slot as successfully used (no cooldown)

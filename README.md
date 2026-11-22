@@ -96,8 +96,9 @@ The in-flight limit starts at the minimum and grows by one slot after about `lim
 halves on a rate limit (HTTP 429, a `Retry-After`, or a `TierShortRateLimit` error) and shrinks a
 little when a call is slower than an optional latency target. Calls over the limit wait. After
 several transient errors in a row, the circuit breaker opens for a while (or for the `Retry-After`,
-if longer); calls then wait until one probe call succeeds. A call whose context ends while waiting
-returns a terminal error.
+if longer); calls then wait until one probe call succeeds. A call whose key went into cooldown
+while it waited switches to a ready key, or waits for one. A call whose context ends while waiting
+returns a terminal error, and a canceled call does not count as a provider failure.
 
 ```go
 a, err := analyzer.NewBuilder(p, parse).
