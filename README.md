@@ -116,6 +116,7 @@ borderline conditions surface without blocking automation.
 | `pkg/httputil` | Small protocol-level HTTP helpers, independent of business logic. |
 | `pkg/logger` | Helpers for creating `*slog.Logger` instances. |
 | `pkg/vectorstore` | Optional, dependency-free local vector store: in-memory nearest-neighbor search, deduplication, and threshold clustering over caller-supplied embeddings. |
+| `pkg/promptregistry` | Versioned, offline-rendered prompt templates loaded from an `fs.FS`, with versioned rule overlays (`WithOverlay`, `VersionID`) and golden-file tests. |
 | `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 
 ### Determinism and testing

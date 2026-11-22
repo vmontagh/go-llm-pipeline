@@ -759,6 +759,7 @@ func TestFixturesRegistered(t *testing.T) {
 	want := []promptregistry.Ref{
 		{Name: "classify_asset", Version: "v1"},
 		{Name: "classify_asset", Version: "v2"},
+		{Name: "judge", Version: "v1"},
 		{Name: "summarize", Version: "v1"},
 	}
 	if diff := cmp.Diff(want, reg.List()); diff != "" {

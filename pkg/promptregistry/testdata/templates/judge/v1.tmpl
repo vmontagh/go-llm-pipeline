@@ -1,0 +1,17 @@
+Decide whether to keep the photo "{{.Data.Title}}".
+{{- with .Rules.guidelines}}
+
+Follow these guidelines:
+{{- range .}}
+- {{.}}
+{{- end}}
+{{- end}}
+{{- with .Rules.rejection}}
+
+Reject the photo if:
+{{- range .}}
+- {{.}}
+{{- end}}
+{{- end}}
+
+Answer "keep" or "reject".

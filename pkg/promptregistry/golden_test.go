@@ -12,8 +12,14 @@ import (
 // goldenCases pairs every fixture template with deterministic render input. The
 // golden helper fails if a registered template is missing from this set, so a
 // new .tmpl file must be accompanied by a case and a golden file.
-func goldenCases() []promptregistry.GoldenCase {
+func goldenCases(t *testing.T) []promptregistry.GoldenCase {
+	t.Helper()
 	return []promptregistry.GoldenCase{
+		{
+			Ref:     promptregistry.Ref{Name: "judge", Version: "v1"},
+			Data:    map[string]any{"Title": "Sunset over the bay"},
+			Overlay: loadPhotoRules(t),
+		},
 		{
 			Ref:  promptregistry.Ref{Name: "classify_asset", Version: "v1"},
 			Data: map[string]any{"Name": "invoices-2024", "Kind": "dataset"},
@@ -35,7 +41,7 @@ func TestGolden(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() unexpected error: %v", err)
 	}
-	promptregistry.AssertGolden(t, reg, "testdata/golden", goldenCases())
+	promptregistry.AssertGolden(t, reg, "testdata/golden", goldenCases(t))
 }
 
 // TestGoldenUpdate exercises the mutating update branch: with WithUpdate(true)
@@ -48,7 +54,7 @@ func TestGoldenUpdate(t *testing.T) {
 		t.Fatalf("New() unexpected error: %v", err)
 	}
 	dir := t.TempDir()
-	promptregistry.AssertGolden(t, reg, dir, goldenCases(), promptregistry.WithUpdate(true))
+	promptregistry.AssertGolden(t, reg, dir, goldenCases(t), promptregistry.WithUpdate(true))
 
 	got, err := os.ReadFile(filepath.Join(dir, "summarize", "v1.golden"))
 	if err != nil {
@@ -70,7 +76,7 @@ func TestWithUpdateFalseDoesNotOverrideEnv(t *testing.T) {
 		t.Fatalf("New() unexpected error: %v", err)
 	}
 	dir := t.TempDir()
-	promptregistry.AssertGolden(t, reg, dir, goldenCases(), promptregistry.WithUpdate(false))
+	promptregistry.AssertGolden(t, reg, dir, goldenCases(t), promptregistry.WithUpdate(false))
 
 	got, err := os.ReadFile(filepath.Join(dir, "summarize", "v1.golden"))
 	if err != nil {

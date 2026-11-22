@@ -1,0 +1,8 @@
+name: photo-rules
+version: 7
+sections:
+  guidelines:
+    - Prefer the sharpest frame of a burst.
+    - Keep photos with people looking at the camera.
+  rejection:
+    - The main subject is out of focus.

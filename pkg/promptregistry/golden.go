@@ -23,6 +23,8 @@ type GoldenCase struct {
 	Ref Ref
 	// Data is the input passed to Render for this case.
 	Data any
+	// Overlay, when non-nil, is passed to Render with WithOverlay.
+	Overlay *Overlay
 }
 
 // goldenConfig holds the settings applied by AssertGolden.
@@ -64,7 +66,7 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 		}
 	}
 
-	byRef := make(map[Ref]any, len(cases))
+	byRef := make(map[Ref]GoldenCase, len(cases))
 	for _, c := range cases {
 		if _, ok := r.templates[c.Ref]; !ok {
 			t.Errorf("AssertGolden: case %s/%s is not registered", c.Ref.Name, c.Ref.Version)
@@ -74,16 +76,16 @@ func AssertGolden(t testing.TB, r *Registry, dir string, cases []GoldenCase, opt
 			t.Errorf("AssertGolden: duplicate case for %s/%s", c.Ref.Name, c.Ref.Version)
 			continue
 		}
-		byRef[c.Ref] = c.Data
+		byRef[c.Ref] = c
 	}
 
 	for _, ref := range r.List() {
-		data, ok := byRef[ref]
+		c, ok := byRef[ref]
 		if !ok {
 			t.Errorf("AssertGolden: no case for registered template %s/%s", ref.Name, ref.Version)
 			continue
 		}
-		got, err := r.Render(t.Context(), ref.Name, ref.Version, data)
+		got, err := r.Render(t.Context(), ref.Name, ref.Version, c.Data, WithOverlay(c.Overlay))
 		if err != nil {
 			t.Errorf("Render(%s/%s) error: %v", ref.Name, ref.Version, err)
 			continue
