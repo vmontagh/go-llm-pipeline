@@ -47,24 +47,28 @@ func (w *failWriter) Write([]byte) (int, error) {
 func TestReportWriteTextError(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name  string
-		model string
+		name   string
+		models []string
 	}{
 		// A form feed makes tabwriter flush during Write, not only in Flush.
-		{name: "early flush", model: "a\fb"},
-		{name: "final flush", model: "a"},
+		{name: "first row flush", models: []string{"a\fb", "c"}},
+		{name: "later row flush", models: []string{"a", "c\fd"}},
+		{name: "final flush", models: []string{"a", "c"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			r := cost.Report{Models: []cost.ModelTotals{{Model: tt.model}, {Model: "c\fd"}}}
+			var r cost.Report
+			for _, m := range tt.models {
+				r.Models = append(r.Models, cost.ModelTotals{Model: m})
+			}
 			w := &failWriter{}
 			err := r.WriteText(w)
 			if diff := cmp.Diff(errWrite, err, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("WriteText(%q) error (-want +got):\n%s", tt.model, diff)
+				t.Errorf("WriteText(%q) error (-want +got):\n%s", tt.models, diff)
 			}
 			if w.writes != 1 {
-				t.Errorf("WriteText(%q) wrote %d times, want 1 (stop at first failure)", tt.model, w.writes)
+				t.Errorf("WriteText(%q) wrote %d times, want 1 (stop at first failure)", tt.models, w.writes)
 			}
 		})
 	}

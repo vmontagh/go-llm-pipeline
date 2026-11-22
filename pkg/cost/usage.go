@@ -89,7 +89,8 @@ type usageBody struct {
 
 // ParseUsage extracts the model and provider-reported usage from an OpenAI,
 // Gemini, or Ollama response body. Newline-delimited JSON, as Ollama streams,
-// is summed line by line. It returns ErrNoUsage when the body reports no
+// is summed line by line; a stream with usage and a malformed line is
+// ErrInvalidUsage. It returns ErrNoUsage when the body reports no
 // usage, for example a non-LLM response or an unsupported server-sent-event
 // stream, ErrInvalidUsage for negative counts, and ErrOverflow when a sum
 // does not fit in an int.
@@ -99,8 +100,15 @@ func ParseUsage(body []byte) (string, Usage, error) {
 	}
 	var model string
 	var total Usage
-	found := false
+	found, malformed := false, false
 	for line := range bytes.SplitSeq(body, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		if !json.Valid(line) {
+			malformed = true
+			continue
+		}
 		m, u, err := parseUsageJSON(line)
 		if errors.Is(err, ErrNoUsage) {
 			continue
@@ -116,6 +124,11 @@ func ParseUsage(body []byte) (string, Usage, error) {
 	}
 	if !found {
 		return "", Usage{}, ErrNoUsage
+	}
+	// A truncated line in a stream that reports usage may have carried
+	// counts, so the sum could be too low.
+	if malformed {
+		return "", Usage{}, fmt.Errorf("%w: malformed stream line", ErrInvalidUsage)
 	}
 	return model, total, nil
 }
