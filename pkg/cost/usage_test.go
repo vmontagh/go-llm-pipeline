@@ -3,6 +3,7 @@ package cost_test
 import (
 	"errors"
 	"math"
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -10,6 +11,9 @@ import (
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/cost"
 )
+
+// maxInt is the largest token count, which depends on the int size.
+var maxInt = strconv.Itoa(math.MaxInt)
 
 func TestParseUsage(t *testing.T) {
 	t.Parallel()
@@ -63,8 +67,8 @@ func TestParseUsage(t *testing.T) {
 		{name: "negative", body: `{"model":"m","usage":{"prompt_tokens":-1}}`, wantErr: cost.ErrInvalidUsage},
 		{name: "negative output", body: `{"model":"m","eval_count":-1}`, wantErr: cost.ErrInvalidUsage},
 		{name: "negative in stream", body: "{\"prompt_eval_count\":1}\n{\"prompt_eval_count\":-1}", wantErr: cost.ErrInvalidUsage},
-		{name: "fields overflow", body: `{"usage":{"prompt_tokens":9223372036854775807,"input_tokens":1}}`, wantErr: cost.ErrOverflow},
-		{name: "output fields overflow", body: `{"usageMetadata":{"candidatesTokenCount":9223372036854775807,"thoughtsTokenCount":1}}`, wantErr: cost.ErrOverflow},
+		{name: "fields overflow", body: `{"usage":{"prompt_tokens":` + maxInt + `,"input_tokens":1}}`, wantErr: cost.ErrOverflow},
+		{name: "output fields overflow", body: `{"usageMetadata":{"candidatesTokenCount":` + maxInt + `,"thoughtsTokenCount":1}}`, wantErr: cost.ErrOverflow},
 		{name: "oversized count", body: `{"model":"m","usage":{"prompt_tokens":9223372036854775808}}`, wantErr: cost.ErrInvalidUsage},
 		{name: "fractional count", body: `{"model":"m","eval_count":1.5}`, wantErr: cost.ErrInvalidUsage},
 		{name: "string count", body: `{"usageMetadata":{"promptTokenCount":"7"}}`, wantErr: cost.ErrInvalidUsage},
@@ -77,7 +81,7 @@ func TestParseUsage(t *testing.T) {
 		{name: "top-level array", body: `[1,2]`, wantErr: cost.ErrNoUsage},
 		{name: "null usage object", body: `{"model":"m","usage":null}`, wantErr: cost.ErrNoUsage},
 		{name: "non-usage type mismatch", body: `{"model":5}`, wantErr: cost.ErrNoUsage},
-		{name: "stream overflow", body: "{\"prompt_eval_count\":9223372036854775807}\n{\"prompt_eval_count\":1}", wantErr: cost.ErrOverflow},
+		{name: "stream overflow", body: `{"prompt_eval_count":` + maxInt + "}\n" + `{"prompt_eval_count":1}`, wantErr: cost.ErrOverflow},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

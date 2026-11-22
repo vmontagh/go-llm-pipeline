@@ -198,7 +198,7 @@ func TestCompare(t *testing.T) {
 		{name: "huge limit", base: cost.Amount(1 << 62), cur: cost.Amount(1 << 62), maxIncrease: 10},
 		{name: "large baseline regressed", base: 100_000_000_000_000_000, cur: 101_000_000_000_000_000, wantErr: cost.ErrCostRegression},
 		{name: "large baseline within", base: 100_000_000_000_000_000, cur: 101_000_000_000_000_000, maxIncrease: 1},
-		{name: "max percent", base: 100, cur: math.MaxInt64, maxIncrease: math.MaxInt},
+		{name: "max percent", base: 100, cur: cost.Amount(math.MaxInt), maxIncrease: math.MaxInt},
 		{name: "max costs", base: math.MaxInt64, cur: math.MaxInt64},
 	}
 	for _, tt := range tests {
