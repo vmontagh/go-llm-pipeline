@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/big"
 	"path"
+	"text/tabwriter"
 
 	"gopkg.in/yaml.v3"
 )
@@ -85,4 +87,55 @@ func Compare(baseline, current Report, maxIncreasePercent int) error {
 		return fmt.Errorf("%w: %s to %s, over %d%%", ErrCostRegression, baseline.Total.Cost, current.Total.Cost, maxIncreasePercent)
 	}
 	return nil
+}
+
+// CheckOptions configures CheckCassettes.
+type CheckOptions struct {
+	// Baseline, if set, is an earlier report, for example one saved as JSON,
+	// that the cost must not exceed by more than MaxIncreasePercent.
+	Baseline *Report
+	// MaxIncreasePercent is the allowed total cost increase over Baseline.
+	MaxIncreasePercent int
+	// AllowUnpriced accepts calls on models missing from the price table.
+	AllowUnpriced bool
+}
+
+// CheckCassettes prices the cassettes under fsys and checks the result, so a
+// test can gate CI on cost without contacting a provider. It returns the
+// report together with ErrUnpriced, ErrCostRegression, or both joined.
+func CheckCassettes(fsys fs.FS, prices *PriceTable, opts CheckOptions) (Report, error) {
+	r, err := ReportFromCassettes(fsys, prices)
+	if err != nil {
+		return Report{}, err
+	}
+	var errs []error
+	if !opts.AllowUnpriced {
+		errs = append(errs, r.CheckPriced())
+	}
+	if opts.Baseline != nil {
+		errs = append(errs, Compare(*opts.Baseline, r, opts.MaxIncreasePercent))
+	}
+	return r, errors.Join(errs...)
+}
+
+// tabPadding is the space between WriteText columns.
+const tabPadding = 2
+
+// WriteText writes r as an aligned table with one row per model and a total.
+// Use encoding/json for a machine-readable form.
+func (r Report) WriteText(w io.Writer) error {
+	tw := tabwriter.NewWriter(w, 0, 0, tabPadding, ' ', 0)
+	fmt.Fprintln(tw, "MODEL\tCALLS\tINPUT\tOUTPUT\tCOST\tUNPRICED")
+	for _, m := range r.Models {
+		writeRow(tw, m.Model, m.Totals)
+	}
+	writeRow(tw, "TOTAL", r.Total)
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("writing report: %w", err)
+	}
+	return nil
+}
+
+func writeRow(w io.Writer, name string, t Totals) {
+	fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\n", name, t.Calls, t.Usage.Input, t.Usage.Output, t.Cost, t.Unpriced)
 }

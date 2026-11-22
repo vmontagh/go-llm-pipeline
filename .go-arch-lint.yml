@@ -51,8 +51,6 @@ components:
     in: pkg/promptregistry/**
   cost:
     in: pkg/cost/**
-  costreport:
-    in: cmd/costreport/**
   tiktoken:
     in: contrib/tiktoken/**
   examples:
@@ -234,12 +232,6 @@ deps:
     mayDependOn:
       - cost
       - observ # example only: *observ.Metrics is a cost.Adder
-
-  costreport:
-    anyProjectDeps: false
-    anyVendorDeps: true
-    mayDependOn:
-      - cost
 
   # tiktoken is a separate module and must not import the core module.
   tiktoken:
