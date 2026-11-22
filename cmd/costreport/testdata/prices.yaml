@@ -1,0 +1,3 @@
+models:
+  gpt-4o-mini: {input: 0.15, output: 0.60}
+  "llama*": {input: 0, output: 0}

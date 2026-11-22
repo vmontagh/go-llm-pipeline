@@ -49,6 +49,12 @@ components:
     in: pkg/semcache/**
   promptregistry:
     in: pkg/promptregistry/**
+  cost:
+    in: pkg/cost/**
+  costreport:
+    in: cmd/costreport/**
+  tiktoken:
+    in: contrib/tiktoken/**
   examples:
     in: examples/**
   integtest:
@@ -221,6 +227,26 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - promptregistry
+
+  cost:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - cost
+      - observ # example only: *observ.Metrics is a cost.Adder
+
+  costreport:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - cost
+
+  # tiktoken is a separate module and must not import the core module.
+  tiktoken:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - tiktoken
 
   examples:
     anyProjectDeps: false
