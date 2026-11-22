@@ -75,13 +75,25 @@ defer cp.Close()
 
 process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analyze,
 	func(a Asset, err error) {
-		_ = dlq.Add(&pipeline.DLQEntry{ItemID: a.ID, Stage: "analyze", Error: err.Error()})
+		entry := pipeline.DLQEntry{ItemID: a.ID, Stage: "analyze", Error: err.Error()}
+		if err := dlq.Add(&entry); err != nil {
+			logger.Error("recording failed asset", "asset", a.ID, "err", err)
+		}
 	})
+
+input := make(chan Asset)
+var wg sync.WaitGroup
 pipeline.Consume(ctx, input, 8, &wg, process)
+for _, a := range assets {
+	input <- a
+}
+close(input)
+wg.Wait() // before the deferred cp.Close, so every completion is recorded
 ```
 
 Records reach the operating system as soon as an item completes, so a process crash loses nothing;
 `WithSyncEvery(n)` trades how often the journal is flushed to disk against machine-crash safety.
+If a write or flush fails, the item stays unmarked and is retried by the next run.
 Use `ReadDLQ` to list failed items for inspection or a replay run. Implement the two-method
 `Checkpoint` interface to keep progress somewhere else, such as a database.
 

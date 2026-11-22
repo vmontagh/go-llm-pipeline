@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,11 @@ import (
 // ErrCorruptCheckpoint is returned when a checkpoint journal has an
 // unreadable record before its last line.
 var ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
+
+// ErrCheckpointUnusable is returned by MarkDone after the journal could not be
+// synced or a failed write could not be rolled back. The journal on disk can
+// no longer be trusted to match Done, so the checkpoint must be reopened.
+var ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
 
 // ErrEmptyCheckpointID is returned when MarkDone is given an empty ID.
 var ErrEmptyCheckpointID = errors.New("checkpoint ID is empty")
@@ -47,9 +53,19 @@ type FileCheckpoint struct {
 	syncEvery int
 
 	mu       sync.Mutex
-	file     *os.File
+	file     journal
+	size     int64 // journal length, so a failed append can be rolled back
 	done     map[string]struct{}
 	unsynced int
+	broken   error // set once the journal may not match done
+}
+
+// journal is the file a FileCheckpoint appends to.
+type journal interface {
+	io.Writer
+	Sync() error
+	Truncate(size int64) error
+	Close() error
 }
 
 // CheckpointOption configures a FileCheckpoint.
@@ -78,7 +94,7 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	for _, opt := range opts {
 		opt(c)
 	}
-	if c.done, err = load(file); err != nil {
+	if c.done, c.size, err = load(file); err != nil {
 		return nil, errors.Join(fmt.Errorf("loading checkpoint %q: %w", path, err), file.Close())
 	}
 	return c, nil
@@ -86,29 +102,29 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 
 // load reads every complete record and truncates a partial final line, so
 // the next record starts on a line of its own.
-func load(file *os.File) (map[string]struct{}, error) {
+func load(file *os.File) (done map[string]struct{}, size int64, err error) {
 	data, err := io.ReadAll(file)
 	if err != nil {
-		return nil, fmt.Errorf("reading: %w", err)
+		return nil, 0, fmt.Errorf("reading: %w", err)
 	}
 	complete := bytes.LastIndexByte(data, '\n') + 1
 	if complete < len(data) {
 		if err := file.Truncate(int64(complete)); err != nil {
-			return nil, fmt.Errorf("dropping partial record: %w", err)
+			return nil, 0, fmt.Errorf("dropping partial record: %w", err)
 		}
 	}
-	done := make(map[string]struct{})
+	done = make(map[string]struct{})
 	for n, line := range bytes.Split(data[:complete], []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
 		var rec checkpointRecord
 		if err := json.Unmarshal(line, &rec); err != nil || rec.ID == "" {
-			return nil, fmt.Errorf("%w: line %d", ErrCorruptCheckpoint, n+1)
+			return nil, 0, fmt.Errorf("%w: line %d", ErrCorruptCheckpoint, n+1)
 		}
 		done[rec.ID] = struct{}{}
 	}
-	return done, nil
+	return done, int64(complete), nil
 }
 
 // Done reports whether id was marked done.
@@ -129,7 +145,9 @@ func (c *FileCheckpoint) Len() int {
 
 // MarkDone appends id to the journal. Marking an ID that is already done is a
 // no-op. An empty id is rejected because it could not be told apart on
-// reload.
+// reload. On error id is not marked done. A failed write is rolled back so
+// MarkDone can be retried; a failed sync, or a rollback that fails, makes
+// every later MarkDone return ErrCheckpointUnusable.
 func (c *FileCheckpoint) MarkDone(id string) error {
 	if id == "" {
 		return ErrEmptyCheckpointID
@@ -141,21 +159,42 @@ func (c *FileCheckpoint) MarkDone(id string) error {
 	line = append(line, '\n')
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.broken != nil {
+		return fmt.Errorf("%w: %w", ErrCheckpointUnusable, c.broken)
+	}
 	if _, ok := c.done[id]; ok {
 		return nil
 	}
 	if _, err := c.file.Write(line); err != nil {
-		return fmt.Errorf("writing checkpoint record: %w", err)
+		return c.rollback(fmt.Errorf("writing checkpoint record: %w", err))
 	}
-	c.done[id] = struct{}{}
-	c.unsynced++
-	if c.syncEvery > 0 && c.unsynced >= c.syncEvery {
+	if c.syncEvery > 0 && c.unsynced+1 >= c.syncEvery {
 		if err := c.file.Sync(); err != nil {
-			return fmt.Errorf("syncing checkpoint: %w", err)
+			// After a failed fsync the kernel may have dropped earlier
+			// unsynced records too, so no later write can be trusted.
+			err = fmt.Errorf("syncing checkpoint: %w", err)
+			c.broken = err
+			return errors.Join(err, c.rollback(nil))
 		}
 		c.unsynced = 0
+	} else {
+		c.unsynced++
 	}
+	c.size += int64(len(line))
+	c.done[id] = struct{}{}
 	return nil
+}
+
+// rollback truncates the journal to its last good length after a failed
+// append and returns cause. If the truncation fails, the checkpoint becomes
+// unusable. c.mu must be held.
+func (c *FileCheckpoint) rollback(cause error) error {
+	if err := c.file.Truncate(c.size); err != nil {
+		err = fmt.Errorf("rolling back checkpoint record: %w", err)
+		c.broken = cmp.Or(c.broken, err)
+		return errors.Join(cause, err)
+	}
+	return cause
 }
 
 // Close syncs and closes the journal.

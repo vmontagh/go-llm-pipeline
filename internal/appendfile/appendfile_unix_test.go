@@ -75,20 +75,31 @@ func TestOpen_InvalidPath_Rejected(t *testing.T) {
 		{name: "symlinkToRegularFile", setup: makeSymlink, wantErr: appendfile.ErrSymlink},
 		{name: "missingParentDir", setup: missingParent, wantErr: fs.ErrNotExist},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			path := tt.setup(t, t.TempDir())
+	// OpenReadWrite gets the same rows: with O_RDWR a FIFO opens without a
+	// reader on Linux, so only the fstat check rejects it.
+	opens := []struct {
+		name string
+		open func(string, os.FileMode) (*os.File, error)
+	}{
+		{name: "Open", open: appendfile.Open},
+		{name: "OpenReadWrite", open: appendfile.OpenReadWrite},
+	}
+	for _, o := range opens {
+		for _, tt := range tests {
+			t.Run(o.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				path := tt.setup(t, t.TempDir())
 
-			f, err := appendfile.Open(path, permOwnerOnly)
-			if err == nil {
-				closeFile(t, f)
-			}
+				f, err := o.open(path, permOwnerOnly)
+				if err == nil {
+					closeFile(t, f)
+				}
 
-			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("Open(%q) error mismatch (-want +got):\n%s", path, diff)
-			}
-		})
+				if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("%s(%q) error mismatch (-want +got):\n%s", o.name, path, diff)
+				}
+			})
+		}
 	}
 }
 
