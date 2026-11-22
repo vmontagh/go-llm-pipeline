@@ -40,9 +40,13 @@ vuln:
 
 # secrets scans the working tree and every commit after SECRETS_BASE for
 # credentials. Deliberate fake keys in tests carry a `gitleaks:allow` comment.
+# gitleaks treats an unknown base as zero commits and passes, so verify it
+# first. -m includes changes made in merge commits, such as conflict fixes.
 secrets:
 	$(GITLEAKS) dir . --no-banner --redact
-	$(GITLEAKS) git . --no-banner --redact --log-opts="$(SECRETS_BASE)..HEAD"
+	@git rev-parse --verify --quiet "$(SECRETS_BASE)^{commit}" >/dev/null || \
+		{ echo "secrets: SECRETS_BASE $(SECRETS_BASE) is not a commit in this clone" >&2; exit 1; }
+	$(GITLEAKS) git . --no-banner --redact --log-opts="-m $(SECRETS_BASE)..HEAD"
 
 fmt:
 	gofmt -w .

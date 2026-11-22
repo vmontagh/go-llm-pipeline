@@ -13,8 +13,11 @@ on:
 permissions:
   contents: read
 
+# A newer PR run rescans all of the PR's commits, so it may cancel an older one.
+# Every other run scans only the commits its push added, so each gets its own
+# group; canceling one could skip the only scan of a leaked commit.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:

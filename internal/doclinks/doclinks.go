@@ -75,6 +75,9 @@ func addLinks(n ast.Node, add func(dest []byte)) {
 		add(n.Destination)
 	case *ast.Image:
 		add(n.Destination)
+		// An image's children are its alt text, which renders as plain text,
+		// so links nested there are not links.
+		return
 	}
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		addLinks(c, add)

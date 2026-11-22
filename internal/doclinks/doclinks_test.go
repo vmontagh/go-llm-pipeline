@@ -29,6 +29,8 @@ func TestTargets(t *testing.T) {
 		want     []string
 	}{
 		{name: "inline link", markdown: "See [the guide](docs/guide.md).", want: []string{"docs/guide.md"}},
+		{name: "link in image alt text ignored", markdown: "![foo [bar](missing.md)](logo.png)", want: []string{"logo.png"}},
+		{name: "image inside link", markdown: "[![badge](img.svg)](docs/a.md)", want: []string{"docs/a.md", "img.svg"}},
 		{name: "image and title", markdown: `![logo](img/logo.png "Logo")`, want: []string{"img/logo.png"}},
 		{name: "single-quoted title", markdown: "[g](missing.md 'Guide')", want: []string{"missing.md"}},
 		{name: "parenthesized title", markdown: "[g](missing.md (Guide))", want: []string{"missing.md"}},
