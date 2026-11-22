@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestConsume(t *testing.T) {
@@ -384,6 +385,51 @@ func TestConsume(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			tc.run(t)
+		})
+	}
+}
+
+func TestConsumeAll(t *testing.T) {
+	t.Parallel()
+	type outcome struct {
+		Sum int64
+		Err error
+	}
+	tests := []struct {
+		name       string
+		cancelled  bool
+		nilProcess bool
+		want       outcome
+	}{
+		{name: "processesAll", want: outcome{Sum: 6}},
+		{name: "cancelled", cancelled: true, want: outcome{Err: context.Canceled}},
+		{name: "nilProcessReturns", nilProcess: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithCancel(t.Context())
+			if tt.cancelled {
+				cancel()
+			}
+			defer cancel()
+			var sum atomic.Int64
+			// Count only items processed on a live ctx.
+			process := func(ctx context.Context, n int64) {
+				if ctx.Err() == nil {
+					sum.Add(n)
+				}
+			}
+			if tt.nilProcess {
+				process = nil
+			}
+
+			err := ConsumeAll(ctx, []int64{1, 2, 3}, 2, process)
+
+			got := outcome{Sum: sum.Load(), Err: err}
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("ConsumeAll() (-want +got):\n%s", diff)
+			}
 		})
 	}
 }

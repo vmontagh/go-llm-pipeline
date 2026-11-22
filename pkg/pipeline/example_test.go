@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"sync"
@@ -106,4 +108,64 @@ func ExamplePauseGate_drain() {
 	// Output:
 	// worker parked: 1
 	// released with ErrDraining: true
+}
+
+var errRateLimited = errors.New("rate limited")
+
+// runBatch analyzes assets one at a time, skipping those already recorded in
+// the checkpoint at path, and prints what happens.
+func runBatch(path string, assets []string, analyze func(string) error) error {
+	cp, err := pipeline.OpenFileCheckpoint(path)
+	if err != nil {
+		return err
+	}
+	process := pipeline.Checkpointed(cp, func(id string) string { return id },
+		func(_ context.Context, id string) error {
+			fmt.Println("analyzing", id)
+			return analyze(id)
+		},
+		func(id string, err error) { fmt.Println("failed", id+":", err) })
+	err = pipeline.ConsumeAll(context.Background(), assets, 1, process)
+	return errors.Join(err, cp.Close())
+}
+
+// ExampleCheckpointed resumes a batch: the second run analyzes only the asset
+// that failed in the first.
+func ExampleCheckpointed() {
+	dir, err := os.MkdirTemp("", "checkpoint")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Println(err)
+		}
+	}()
+	path := filepath.Join(dir, "done.jsonl")
+	assets := []string{"a", "b", "c"}
+
+	fmt.Println("first run:")
+	if err := runBatch(path, assets, func(id string) error {
+		if id == "b" {
+			return errRateLimited
+		}
+		return nil
+	}); err != nil {
+		fmt.Println(err)
+		return
+	}
+	fmt.Println("second run:")
+	if err := runBatch(path, assets, func(string) error { return nil }); err != nil {
+		fmt.Println(err)
+	}
+
+	// Output:
+	// first run:
+	// analyzing a
+	// analyzing b
+	// failed b: rate limited
+	// analyzing c
+	// second run:
+	// analyzing b
 }

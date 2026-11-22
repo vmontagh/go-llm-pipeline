@@ -17,6 +17,8 @@ var (
 	// ErrSymlink is returned when the final path component is a symlink, which
 	// is rejected so a swapped link cannot redirect writes.
 	ErrSymlink = errors.New("path is a symlink")
+	// ErrLocked is returned by [Lock] when another handle holds the lock.
+	ErrLocked = errors.New("file is locked")
 )
 
 // Open opens path for appending, creating it with perm if missing, and checks
@@ -25,7 +27,18 @@ var (
 // final-component symlink with [ErrSymlink], so a FIFO fails fast instead of
 // hanging an uncancelable open. Other platforms get only the fstat check.
 func Open(path string, perm os.FileMode) (*os.File, error) {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND|extraOpenFlags, perm)
+	return open(path, os.O_WRONLY|os.O_APPEND, perm)
+}
+
+// OpenReadWrite is [Open] for read and write without O_APPEND, for journals
+// that are replayed and truncated (Windows refuses truncation in append
+// mode). Callers write at explicit offsets.
+func OpenReadWrite(path string, perm os.FileMode) (*os.File, error) {
+	return open(path, os.O_RDWR, perm)
+}
+
+func open(path string, flags int, perm os.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(path, flags|os.O_CREATE|extraOpenFlags, perm)
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}

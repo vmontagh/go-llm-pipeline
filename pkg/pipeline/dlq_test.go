@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/pipeline"
 )
@@ -229,5 +231,90 @@ func decodeLines[T any](t *testing.T, data []byte) []T {
 			t.Fatalf("decoding JSON value %d: %v", len(out)+1, err)
 		}
 		out = append(out, v)
+	}
+}
+
+// readDLQFile decodes the dead letter queue at path.
+func readDLQFile(t *testing.T, path string) []pipeline.DLQEntry {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("Close() = %v", err)
+		}
+	})
+	entries, err := pipeline.ReadDLQ(file)
+	if err != nil {
+		t.Fatalf("ReadDLQ() = %v", err)
+	}
+	return entries
+}
+
+func TestDeadLetterQueueAdd(t *testing.T) {
+	t.Parallel()
+	entries := []pipeline.DLQEntry{
+		{Timestamp: recordedAt, ItemID: itemFirst, Stage: stageFetch, Error: errFetch.Error(), Attempts: 3},
+		{Timestamp: recordedAt, ItemID: itemSecond, Stage: stageParse, Error: "bad json"},
+	}
+	tests := []struct {
+		name    string
+		closed  bool
+		want    []pipeline.DLQEntry
+		wantErr error
+	}{
+		{name: "entriesRoundTrip", want: entries},
+		{name: "afterClose", closed: true, wantErr: os.ErrClosed},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), dlqFileName)
+			dlq := openDLQ(t, path, nil, tt.closed)
+
+			for _, e := range entries {
+				if diff := cmp.Diff(tt.wantErr, dlq.Add(&e), cmpopts.EquateErrors()); diff != "" {
+					t.Errorf("Add(%q) error (-want +got):\n%s", e.ItemID, diff)
+				}
+			}
+
+			if diff := cmp.Diff(tt.want, readDLQFile(t, path)); diff != "" {
+				t.Errorf("ReadDLQ() (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestReadDLQ(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		input         string
+		want          []pipeline.DLQEntry
+		wantSyntaxErr bool
+	}{
+		{name: "empty"},
+		{name: "entries", input: "{\"item_id\":\"a\"}\n{\"item_id\":\"b\"}\n", want: []pipeline.DLQEntry{{ItemID: "a"}, {ItemID: "b"}}},
+		{name: "malformedLine", input: "{\"item_id\":\"a\"}\nnot json\n", wantSyntaxErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := pipeline.ReadDLQ(strings.NewReader(tt.input))
+
+			var syntaxErr *json.SyntaxError
+			switch {
+			case tt.wantSyntaxErr && !errors.As(err, &syntaxErr):
+				t.Errorf("ReadDLQ(%q) error = %v, want *json.SyntaxError", tt.input, err)
+			case !tt.wantSyntaxErr && err != nil:
+				t.Errorf("ReadDLQ(%q) error = %v, want nil", tt.input, err)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("ReadDLQ(%q) (-want +got):\n%s", tt.input, diff)
+			}
+		})
 	}
 }
