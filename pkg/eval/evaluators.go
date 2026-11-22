@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 var (
@@ -36,7 +38,7 @@ func (FieldMatch[Out]) Evaluate(_ context.Context, want, got Out) (Score, error)
 	s := Score{Value: 1, Pass: true, Fields: make(map[string]bool, len(w))}
 	for k, v := range w {
 		gv, ok := g[k]
-		s.Fields[k] = ok && jsonEqual(v, gv)
+		s.Fields[k] = ok && cmp.Equal(v, gv, numberEqual)
 	}
 	for k := range g {
 		if _, ok := w[k]; !ok {
@@ -72,46 +74,13 @@ func fields(v any) (map[string]any, error) {
 	return m, nil
 }
 
-// jsonEqual compares decoded JSON values, treating numbers as exact values so
-// 1, 1.0, and 1e0 match while large integers stay distinct.
-func jsonEqual(a, b any) bool {
-	switch av := a.(type) {
-	case json.Number:
-		bv, ok := b.(json.Number)
-		if !ok {
-			return false
-		}
-		ar, aok := new(big.Rat).SetString(av.String())
-		br, bok := new(big.Rat).SetString(bv.String())
-		return aok && bok && ar.Cmp(br) == 0
-	case map[string]any:
-		bv, ok := b.(map[string]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for k, v := range av {
-			w, ok := bv[k]
-			if !ok || !jsonEqual(v, w) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		bv, ok := b.([]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := range av {
-			if !jsonEqual(av[i], bv[i]) {
-				return false
-			}
-		}
-		return true
-	default:
-		// Strings, bools, and nil are comparable.
-		return a == b
-	}
-}
+// numberEqual compares JSON numbers as exact values, so 1, 1.0, and 1e0
+// match while large integers stay distinct.
+var numberEqual = cmp.Comparer(func(a, b json.Number) bool {
+	ar, aok := new(big.Rat).SetString(a.String())
+	br, bok := new(big.Rat).SetString(b.String())
+	return aok && bok && ar.Cmp(br) == 0
+})
 
 // JudgeScore is the structured verdict a judge model returns.
 type JudgeScore struct {
