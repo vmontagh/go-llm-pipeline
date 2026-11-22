@@ -111,6 +111,7 @@ func TestOpenFileCheckpointJournal(t *testing.T) {
 		{name: "only a partial record", content: "{\"id\":\"a\""},
 		{name: "corrupt middle record", content: "oops\n{\"id\":\"a\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
 		{name: "record without id", content: "{}\n", wantErr: pipeline.ErrCorruptCheckpoint},
+		{name: "invalid UTF-8 id", content: "{\"id\":\"asset-\xff\"}\n", wantErr: pipeline.ErrCorruptCheckpoint},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -163,6 +164,21 @@ func TestFileCheckpointErrors(t *testing.T) {
 			}
 		})
 	}
+	t.Run("in use", func(t *testing.T) {
+		t.Parallel()
+		path := filepath.Join(t.TempDir(), journalName)
+		first := openCheckpoint(t, path)
+
+		_, err := pipeline.OpenFileCheckpoint(path)
+
+		if diff := cmp.Diff(pipeline.ErrCheckpointInUse, err, cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("second OpenFileCheckpoint() error (-want +got):\n%s", diff)
+		}
+		if err := first.Close(); err != nil {
+			t.Fatalf("Close() = %v", err)
+		}
+		openCheckpoint(t, path) // Close released the lock
+	})
 	t.Run("closed", func(t *testing.T) {
 		t.Parallel()
 		cp := openCheckpoint(t, filepath.Join(t.TempDir(), journalName))

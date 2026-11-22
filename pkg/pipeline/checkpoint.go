@@ -26,6 +26,10 @@ var ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
 // no longer be trusted to match Done, so the checkpoint must be reopened.
 var ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
 
+// ErrCheckpointInUse is returned when another FileCheckpoint, in this process
+// or another, already has the journal open.
+var ErrCheckpointInUse = errors.New("checkpoint journal in use")
+
 // ErrInvalidCheckpointID is returned when MarkDone is given an empty ID or
 // one that is not valid UTF-8, which the JSON journal could not store
 // losslessly.
@@ -85,8 +89,9 @@ func WithSyncEvery(n int) CheckpointOption {
 
 // OpenFileCheckpoint opens or creates the journal at path and loads the IDs
 // it already holds. The path rules match [NewDeadLetterQueue]. It returns
-// ErrCorruptCheckpoint if a record before the last line is unreadable.
-// Directories and the journal it creates are synced before it returns, so
+// ErrCorruptCheckpoint if a record before the last line is unreadable, and
+// ErrCheckpointInUse if another FileCheckpoint holds the journal; the journal
+// stays locked until Close. Directories and the journal it creates are synced before it returns, so
 // they survive a machine crash.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
 	created, err := missingPaths(path)
@@ -99,6 +104,14 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	file, err := appendfile.OpenReadWrite(path, filePermissions)
 	if err != nil {
 		return nil, fmt.Errorf("opening checkpoint: %w", err)
+	}
+	// Two writers would each roll back to their own cached size and could
+	// truncate the other's synced records.
+	if err := appendfile.Lock(file); err != nil {
+		if errors.Is(err, appendfile.ErrLocked) {
+			err = ErrCheckpointInUse
+		}
+		return nil, errors.Join(fmt.Errorf("locking checkpoint %q: %w", path, err), file.Close())
 	}
 	for _, p := range created {
 		if err := appendfile.SyncDir(filepath.Dir(p)); err != nil {
@@ -153,7 +166,8 @@ func load(file *os.File) (done map[string]struct{}, size int64, err error) {
 			continue
 		}
 		var rec checkpointRecord
-		if err := json.Unmarshal(line, &rec); err != nil || rec.ID == "" {
+		// json.Unmarshal would silently replace invalid UTF-8 with U+FFFD.
+		if !utf8.Valid(line) || json.Unmarshal(line, &rec) != nil || rec.ID == "" {
 			return nil, 0, fmt.Errorf("%w: line %d", ErrCorruptCheckpoint, n+1)
 		}
 		done[rec.ID] = struct{}{}

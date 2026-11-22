@@ -17,6 +17,8 @@ var (
 	// ErrSymlink is returned when the final path component is a symlink, which
 	// is rejected so a swapped link cannot redirect writes.
 	ErrSymlink = errors.New("path is a symlink")
+	// ErrLocked is returned by [Lock] when another handle holds the lock.
+	ErrLocked = errors.New("file is locked")
 )
 
 // Open opens path for appending, creating it with perm if missing, and checks
