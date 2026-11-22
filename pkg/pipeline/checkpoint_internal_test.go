@@ -22,7 +22,8 @@ type fakeJournal struct {
 	syncs                       int
 }
 
-func (f *fakeJournal) Write(p []byte) (int, error) {
+func (f *fakeJournal) WriteAt(p []byte, off int64) (int, error) {
+	f.data = f.data[:off]
 	if err := f.writeErr; err != nil {
 		f.writeErr = nil
 		f.data = append(f.data, p[:len(p)/2]...)

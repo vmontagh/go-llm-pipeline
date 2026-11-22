@@ -27,17 +27,18 @@ var (
 // final-component symlink with [ErrSymlink], so a FIFO fails fast instead of
 // hanging an uncancelable open. Other platforms get only the fstat check.
 func Open(path string, perm os.FileMode) (*os.File, error) {
-	return open(path, os.O_WRONLY, perm)
+	return open(path, os.O_WRONLY|os.O_APPEND, perm)
 }
 
-// OpenReadWrite is [Open] with read access too, for append-only journals that
-// are replayed from the start before new records are appended.
+// OpenReadWrite is [Open] for read and write without O_APPEND, for journals
+// that are replayed and truncated (Windows refuses truncation in append
+// mode). Callers write at explicit offsets.
 func OpenReadWrite(path string, perm os.FileMode) (*os.File, error) {
 	return open(path, os.O_RDWR, perm)
 }
 
-func open(path string, access int, perm os.FileMode) (*os.File, error) {
-	f, err := os.OpenFile(path, access|os.O_CREATE|os.O_APPEND|extraOpenFlags, perm)
+func open(path string, flags int, perm os.FileMode) (*os.File, error) {
+	f, err := os.OpenFile(path, flags|os.O_CREATE|extraOpenFlags, perm)
 	if err != nil {
 		return nil, classifyOpenError(err)
 	}

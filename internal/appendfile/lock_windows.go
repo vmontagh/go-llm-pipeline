@@ -9,8 +9,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// lockOffsetHigh places the locked byte far past any real data: Windows
-// locks are mandatory, so locking real bytes would block other readers.
+// lockOffsetHigh locks a byte past the data; Windows locks would block readers.
 const lockOffsetHigh = 0x7fff_ffff
 
 // Lock takes an exclusive lock on f without blocking. It returns

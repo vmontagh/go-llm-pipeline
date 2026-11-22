@@ -103,6 +103,7 @@ wg.Wait() // before the deferred cp.Close, so every completion is recorded
 Records reach the operating system as soon as an item completes, so a process crash loses nothing;
 `WithSyncEvery(n)` trades how often the journal is flushed to disk against machine-crash safety.
 If a write or flush fails, the item stays unmarked and is retried by the next run.
+Only one run can open a journal at a time; a second open returns `ErrCheckpointInUse`.
 Use `ReadDLQ` to list failed items for inspection or a replay run. Implement the two-method
 `Checkpoint` interface to keep progress somewhere else, such as a database.
 

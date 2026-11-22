@@ -21,18 +21,15 @@ import (
 // unreadable record before its last line.
 var ErrCorruptCheckpoint = errors.New("corrupt checkpoint journal")
 
-// ErrCheckpointUnusable is returned by MarkDone after the journal could not be
-// synced or a failed write could not be rolled back. The journal on disk can
-// no longer be trusted to match Done, so the checkpoint must be reopened.
+// ErrCheckpointUnusable is returned by MarkDone after a failed sync or
+// rollback; reopen the checkpoint to continue.
 var ErrCheckpointUnusable = errors.New("checkpoint unusable; reopen it")
 
-// ErrCheckpointInUse is returned when another FileCheckpoint, in this process
-// or another, already has the journal open.
+// ErrCheckpointInUse is returned when another FileCheckpoint has the journal
+// open.
 var ErrCheckpointInUse = errors.New("checkpoint journal in use")
 
-// ErrInvalidCheckpointID is returned when MarkDone is given an empty ID or
-// one that is not valid UTF-8, which the JSON journal could not store
-// losslessly.
+// ErrInvalidCheckpointID is returned for an empty or non-UTF-8 ID.
 var ErrInvalidCheckpointID = errors.New("invalid checkpoint ID")
 
 // Checkpoint records which items a run has completed, so a restarted run can
@@ -49,14 +46,12 @@ type checkpointRecord struct {
 	ID string `json:"id"`
 }
 
-// defaultSyncEvery syncs every record: an LLM call costs far more than an
-// fsync, and a lost record means paying for the call again.
+// defaultSyncEvery is 1 because an fsync is far cheaper than a repeated LLM call.
 const defaultSyncEvery = 1
 
 // FileCheckpoint is a [Checkpoint] backed by an append-only JSON-lines
-// journal with one {"id": ...} record per completed item. A crash can lose at
-// most the record being written; a truncated final line is dropped when the
-// journal is reopened. It is safe for concurrent use.
+// journal. A crash loses at most the record being written. It is safe for
+// concurrent use.
 type FileCheckpoint struct {
 	syncEvery int
 
@@ -70,7 +65,7 @@ type FileCheckpoint struct {
 
 // journal is the file a FileCheckpoint appends to.
 type journal interface {
-	io.Writer
+	io.WriterAt
 	Sync() error
 	Truncate(size int64) error
 	Close() error
@@ -79,21 +74,16 @@ type journal interface {
 // CheckpointOption configures a FileCheckpoint.
 type CheckpointOption func(*FileCheckpoint)
 
-// WithSyncEvery syncs the journal to stable storage after every n records
-// instead of after each one. Records are written to the operating system
-// immediately, so a process crash loses none; up to n-1 records can be lost
-// only if the machine itself crashes. n <= 0 syncs only on Close.
+// WithSyncEvery fsyncs every n records instead of every record; a machine
+// crash can then lose up to n-1. n <= 0 syncs only on Close.
 func WithSyncEvery(n int) CheckpointOption {
 	return func(c *FileCheckpoint) { c.syncEvery = n }
 }
 
-// OpenFileCheckpoint opens or creates the journal at path and loads the IDs
-// it already holds. The path rules match [NewDeadLetterQueue]. It returns
-// ErrCorruptCheckpoint if a record before the last line is unreadable, and
-// ErrCheckpointInUse if another FileCheckpoint holds the journal; the journal
-// stays locked until Close. On platforms without file locking it fails
-// with errors.ErrUnsupported. Directories and the journal it creates are synced before it returns, so
-// they survive a machine crash.
+// OpenFileCheckpoint opens or creates the journal at path, loads its IDs, and
+// locks it until Close. It returns ErrCorruptCheckpoint for an unreadable
+// record, ErrCheckpointInUse if the journal is locked, and
+// errors.ErrUnsupported where file locking is unavailable.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
 	created, err := missingPaths(path)
 	if err != nil {
@@ -106,8 +96,7 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	if err != nil {
 		return nil, fmt.Errorf("opening checkpoint: %w", err)
 	}
-	// Two writers would each roll back to their own cached size and could
-	// truncate the other's synced records.
+	// A second writer's rollback could truncate this one's records.
 	if err := appendfile.Lock(file); err != nil {
 		if errors.Is(err, appendfile.ErrLocked) {
 			err = ErrCheckpointInUse
@@ -184,19 +173,16 @@ func (c *FileCheckpoint) Done(id string) bool {
 	return ok
 }
 
-// Len returns the number of completed IDs, for example to report how much of
-// a resumed run is already done.
+// Len returns the number of completed IDs.
 func (c *FileCheckpoint) Len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return len(c.done)
 }
 
-// MarkDone appends id to the journal. Marking an ID that is already done is a
-// no-op. An empty or invalid UTF-8 id is rejected with
-// ErrInvalidCheckpointID because it could not be reloaded unchanged. On error id is not marked done. A failed write is rolled back so
-// MarkDone can be retried; a failed sync, or a rollback that fails, makes
-// every later MarkDone return ErrCheckpointUnusable.
+// MarkDone appends id to the journal; repeating an ID is a no-op. On error id
+// stays unmarked and MarkDone can be retried, unless it returns
+// ErrCheckpointUnusable.
 func (c *FileCheckpoint) MarkDone(id string) error {
 	if id == "" || !utf8.ValidString(id) {
 		return ErrInvalidCheckpointID
@@ -214,7 +200,7 @@ func (c *FileCheckpoint) MarkDone(id string) error {
 	if _, ok := c.done[id]; ok {
 		return nil
 	}
-	if _, err := c.file.Write(line); err != nil {
+	if _, err := c.file.WriteAt(line, c.size); err != nil {
 		return c.rollback(fmt.Errorf("writing checkpoint record: %w", err))
 	}
 	if c.syncEvery > 0 && c.unsynced+1 >= c.syncEvery {
@@ -234,9 +220,7 @@ func (c *FileCheckpoint) MarkDone(id string) error {
 	return nil
 }
 
-// rollback truncates the journal to its last good length after a failed
-// append and returns cause. If the truncation fails, the checkpoint becomes
-// unusable. c.mu must be held.
+// rollback truncates a failed append and returns cause. c.mu must be held.
 func (c *FileCheckpoint) rollback(cause error) error {
 	if err := c.file.Truncate(c.size); err != nil {
 		err = fmt.Errorf("rolling back checkpoint record: %w", err)
@@ -253,11 +237,9 @@ func (c *FileCheckpoint) Close() error {
 	return errors.Join(c.file.Sync(), c.file.Close())
 }
 
-// Checkpointed adapts process for [Consume] so a run can resume: items whose
-// ID cp already holds are skipped, and an item is marked done only after
-// process succeeds. A process or checkpoint error goes to onError, for
-// example to record the item in a [DeadLetterQueue]; the item stays
-// unmarked, so the next run retries it. onError may be nil to ignore errors.
+// Checkpointed adapts process for [Consume]: it skips items already done and
+// marks an item done only after process succeeds. Errors go to onError (which
+// may be nil), and the item is retried on the next run.
 func Checkpointed[T any](cp Checkpoint, id func(T) string, process func(context.Context, T) error, onError func(T, error)) func(context.Context, T) {
 	if onError == nil {
 		onError = func(T, error) {}

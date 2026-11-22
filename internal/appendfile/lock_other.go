@@ -1,4 +1,4 @@
-//go:build !unix && !windows
+//go:build (!unix && !windows) || aix
 
 package appendfile
 
@@ -7,6 +7,5 @@ import (
 	"os"
 )
 
-// Lock returns [errors.ErrUnsupported] on platforms without file locking, so
-// callers that need exclusive ownership refuse to proceed unprotected.
+// Lock returns [errors.ErrUnsupported]: this platform has no file locking.
 func Lock(*os.File) error { return errors.ErrUnsupported }
