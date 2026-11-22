@@ -89,6 +89,31 @@ Only one run can open a journal at a time; a second open returns `ErrCheckpointI
 Use `ReadDLQ` to list failed items for inspection or a replay run. Implement the two-method
 `Checkpoint` interface to keep progress somewhere else, such as a database.
 
+#### Adapting to rate limits
+
+Wrap a provider in a `provider.Guard` to adapt how many calls run at once and to stop retry storms.
+The in-flight limit starts at the minimum and grows by one slot after about `limit` successes. It
+halves on a rate limit (HTTP 429, a `Retry-After`, or a `TierShortRateLimit` error) and shrinks a
+little when a call is slower than an optional latency target. Calls over the limit wait. After
+several transient errors in a row, the circuit breaker opens for a while (or for the `Retry-After`,
+if longer); calls then wait until one probe call succeeds. A call whose key went into cooldown
+while it waited switches to a ready key, or waits for one. A call whose context ends while waiting
+returns a terminal error, and a canceled call does not count as a provider failure.
+
+```go
+a, err := analyzer.NewBuilder(p, parse).
+	WithGuard(
+		provider.WithConcurrencyLimits(1, 16),      // the defaults
+		provider.WithBreaker(5, 30*time.Second),    // the defaults
+		provider.WithLatencyTarget(20*time.Second), // off by default
+		provider.WithGuardMetrics(metrics),         // guard_waits, guard_limit_decreases, guard_breaker_opens
+	).
+	Build()
+```
+
+Share the built analyzer across workers so every call goes through the same guard. To read
+`Limit()` and `State()`, call `provider.NewGuard` yourself and pass the guard to `NewBuilder`.
+
 ### Doctor diagnostics
 
 `pkg/doctor` checks local environment readiness before batch jobs. It is exposed
@@ -132,7 +157,7 @@ borderline conditions surface without blocking automation.
 | --- | --- |
 | `pkg/analyzer` | Template Method and Builder contracts for LLM analysis (`Event`/`Analyzer`, domain-agnostic `Asset`, sentinel errors). |
 | `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, resumable runs (`Checkpoint`, `FileCheckpoint`, `Checkpointed`), and a dead-letter queue. |
-| `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation. |
+| `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation, and `Guard` for adaptive concurrency and a circuit breaker. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |
 | `pkg/provider/gemini` | Transport half of the analyzer Template Method for Gemini, calling the `generateContent` REST API over `net/http`. |
 | `pkg/provider/ollama` | Transport half of the analyzer Template Method for local Ollama, plus a local `Embedder` (`/api/embed`) that returns `[]float64` for `pkg/vectorstore`. |

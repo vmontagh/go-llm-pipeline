@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,9 +12,11 @@ import (
 
 // Builder is the single entry point that assembles an Analyzer around a Provider.
 type Builder[T any, R any] struct {
-	provider provider.Provider[T]
-	parser   func(string) (R, error)
-	opts     []TemplateConfigurator
+	provider  provider.Provider[T]
+	parser    func(string) (R, error)
+	opts      []TemplateConfigurator
+	guard     bool
+	guardOpts []provider.GuardOption
 }
 
 // NewBuilder returns a Builder that will assemble an Analyzer around p.
@@ -80,9 +83,25 @@ func (b *Builder[T, R]) WithMaxAssetBytes(n int64) *Builder[T, R] {
 	return b
 }
 
+// WithGuard wraps the Provider in a provider.Guard (adaptive concurrency and
+// circuit breaker) at Build.
+func (b *Builder[T, R]) WithGuard(opts ...provider.GuardOption) *Builder[T, R] {
+	b.guard = true
+	b.guardOpts = opts
+	return b
+}
+
 // Build assembles the Template around the configured Provider and returns the concrete *Template[T, R].
 func (b *Builder[T, R]) Build() (*Template[T, R], error) {
-	return NewTemplate[T, R](b.provider, b.parser, b.opts...)
+	p := b.provider
+	if b.guard && p != nil {
+		g, err := provider.NewGuard(p, b.guardOpts...)
+		if err != nil {
+			return nil, fmt.Errorf("building guard: %w", err)
+		}
+		p = g
+	}
+	return NewTemplate[T, R](p, b.parser, b.opts...)
 }
 
 // MustBuild assembles the Template around the configured Provider and panics if it fails.
