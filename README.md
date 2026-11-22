@@ -167,6 +167,7 @@ borderline conditions surface without blocking automation.
 | `pkg/vcrpatch` | Patch and rewrite VCR cassettes (match requests, apply actions). |
 | `pkg/llmvcr` | Standalone VCR record/replay for provider `http.Client`s; auto-redacts secrets (via `pkg/scrub`) before writing cassettes; fail-fast on miss. |
 | `pkg/llmtest` | Mock provider fixtures and golden-file snapshots for deterministic tests. |
+| `pkg/eval` | Offline evaluation: YAML datasets, field-match and LLM-judge scoring, CI pass-rate gates. |
 | `pkg/observ` | Observability HTTP server (pprof) bound to a loopback address. |
 | `pkg/trace` | `runtime/trace`-based `Tracer` plus a no-op implementation. |
 | `pkg/httputil` | Small protocol-level HTTP helpers, independent of business logic. |
@@ -226,6 +227,37 @@ func TestExtract(t *testing.T) {
 
 Run `LLMTEST_UPDATE=1 go test ./...` to create or refresh the golden files, then review and
 commit them.
+
+#### Evaluating quality in CI
+
+`pkg/eval` scores pipeline output against a labeled dataset, so a prompt or model change that makes
+results worse fails the build. With a cassette replay client the run is offline and free.
+
+1. Write `testdata/dataset.yaml` as a list of `name`, `input`, and `want` entries.
+2. Pick evaluators: `eval.FieldMatch` checks each top-level field, and `eval.NewJudge` asks a judge
+   model for a score from 0 to 1. Any analyzer whose result type is `*eval.JudgeScore` can be the
+   judge.
+3. Run them and fail the test below a pass rate:
+
+```go
+func TestQuality(t *testing.T) {
+    examples, err := eval.LoadDataset[string, Photo](os.DirFS("testdata"), "dataset.yaml")
+    if err != nil {
+        t.Fatal(err)
+    }
+    report, err := eval.Run(t.Context(), examples, describePhoto, eval.FieldMatch[Photo]{})
+    if err != nil {
+        t.Fatal(err)
+    }
+    if err := report.Check(0.9); err != nil {
+        t.Error(err)
+    }
+    llmtest.Golden(t, "quality_report", report) // optional: track per-example changes
+}
+```
+
+The report lists examples sorted by name, with the pass rate, each evaluator's mean score and pass
+rate, and per-field accuracy.
 
 #### Catching cost regressions in CI
 
