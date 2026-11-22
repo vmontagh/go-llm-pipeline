@@ -302,8 +302,11 @@ func TestReadDLQ(t *testing.T) {
 			got, err := pipeline.ReadDLQ(strings.NewReader(tt.input))
 
 			var syntaxErr *json.SyntaxError
-			if errors.As(err, &syntaxErr) != tt.wantSyntaxErr {
-				t.Errorf("ReadDLQ(%q) error = %v, want syntax error: %t", tt.input, err, tt.wantSyntaxErr)
+			switch {
+			case tt.wantSyntaxErr && !errors.As(err, &syntaxErr):
+				t.Errorf("ReadDLQ(%q) error = %v, want *json.SyntaxError", tt.input, err)
+			case !tt.wantSyntaxErr && err != nil:
+				t.Errorf("ReadDLQ(%q) error = %v, want nil", tt.input, err)
 			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
 				t.Errorf("ReadDLQ(%q) (-want +got):\n%s", tt.input, diff)

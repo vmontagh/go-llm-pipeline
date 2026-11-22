@@ -3,6 +3,7 @@ package pipeline_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -185,19 +186,48 @@ func TestFileCheckpointConcurrentWorkers(t *testing.T) {
 
 func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
 	const permTraverseOnly = 0o311
-	root := t.TempDir()
-	if err := os.Chmod(root, permTraverseOnly); err != nil {
-		t.Fatalf("Chmod() = %v", err)
+	tests := []struct {
+		name         string
+		journalExist bool
+		wantErr      error
+	}{
+		{name: "existingDirectory", journalExist: true},
+		{name: "createsDirectory", wantErr: fs.ErrPermission},
 	}
-	t.Cleanup(func() {
-		if err := os.Chmod(root, dirPerm); err != nil {
-			t.Errorf("restoring permissions: %v", err)
-		}
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, journalName)
+			if tt.journalExist {
+				writeJournal(t, path, "")
+			}
+			if err := os.Chmod(root, permTraverseOnly); err != nil {
+				t.Fatalf("Chmod() = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(root, dirPerm); err != nil {
+					t.Errorf("restoring permissions: %v", err)
+				}
+			})
 
-	cp, err := pipeline.OpenFileCheckpoint(filepath.Join(root, journalName))
+			cp, err := pipeline.OpenFileCheckpoint(path)
+
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("OpenFileCheckpoint() error (-want +got):\n%s", diff)
+			}
+			if err == nil {
+				if err := cp.Close(); err != nil {
+					t.Errorf("Close() = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestOpenFileCheckpointNilOption(t *testing.T) {
+	cp, err := pipeline.OpenFileCheckpoint(filepath.Join(t.TempDir(), journalName), nil)
 	if err != nil {
-		t.Fatalf("OpenFileCheckpoint() = %v", err)
+		t.Fatalf("OpenFileCheckpoint(nil option) = %v", err)
 	}
 	if err := cp.Close(); err != nil {
 		t.Errorf("Close() = %v", err)

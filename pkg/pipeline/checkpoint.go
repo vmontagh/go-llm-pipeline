@@ -82,8 +82,18 @@ func WithSyncEvery(n int) CheckpointOption {
 // OpenFileCheckpoint opens or creates the journal at path, loads its IDs, and
 // locks it until Close. It returns ErrCorruptCheckpoint for an unreadable
 // record, ErrCheckpointInUse if the journal is locked, and
-// errors.ErrUnsupported where file locking is unavailable.
+// errors.ErrUnsupported where file locking is unavailable. Directories above
+// the journal are fsynced; unreadable ones are skipped unless this call
+// created entries in them.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving checkpoint path: %w", err)
+	}
+	existing, err := existingAncestor(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("checking checkpoint directory: %w", err)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating checkpoint directory: %w", err)
 	}
@@ -98,12 +108,14 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 		}
 		return nil, errors.Join(fmt.Errorf("locking checkpoint %q: %w", path, err), file.Close())
 	}
-	if err := syncDirs(path); err != nil {
+	if err := syncDirs(path, existing); err != nil {
 		return nil, errors.Join(fmt.Errorf("syncing checkpoint directories: %w", err), file.Close())
 	}
 	c := &FileCheckpoint{syncEvery: defaultSyncEvery, file: file}
 	for _, opt := range opts {
-		opt(c)
+		if opt != nil {
+			opt(c)
+		}
 	}
 	if c.done, c.size, err = load(file); err != nil {
 		return nil, errors.Join(fmt.Errorf("loading checkpoint %q: %w", path, err), file.Close())
@@ -115,17 +127,33 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	return c, nil
 }
 
-// syncDirs fsyncs every directory above path, so entries an earlier run
-// created survive a machine crash even if that run crashed before syncing.
-// Ancestors we cannot read are skipped: we did not create them.
-func syncDirs(path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("resolving %q: %w", path, err)
+// existingAncestor returns dir or its nearest ancestor that exists.
+func existingAncestor(dir string) (string, error) {
+	for ; ; dir = filepath.Dir(dir) {
+		_, err := os.Lstat(dir)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		if err == nil || filepath.Dir(dir) == dir {
+			return dir, nil
+		}
 	}
-	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
-		if err := appendfile.SyncDir(dir); err != nil && !errors.Is(err, fs.ErrPermission) {
+}
+
+// syncDirs fsyncs every directory above path, so entries an earlier run
+// created survive a machine crash even if it crashed before syncing.
+// Directories up to existing hold entries this call created and must sync;
+// unreadable ones above it are skipped, so a crashed earlier run's
+// directory there is not guaranteed durable.
+func syncDirs(path, existing string) error {
+	required := true
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		err := appendfile.SyncDir(dir)
+		if err != nil && (required || !errors.Is(err, fs.ErrPermission)) {
 			return fmt.Errorf("syncing %q: %w", dir, err)
+		}
+		if dir == existing {
+			required = false
 		}
 		if filepath.Dir(dir) == dir {
 			return nil
