@@ -1,6 +1,15 @@
 // Package pipeline provides foundational concurrency utilities used by the
-// orchestrator: a generic worker-pool consumer and a dead-letter queue
-// for failed pipeline events.
+// orchestrator: a generic worker-pool consumer, checkpoints that let an
+// interrupted batch resume, and a dead-letter queue for failed pipeline
+// events.
+//
+// # Resuming a batch
+//
+// Wrap the process function with [Checkpointed] and a [Checkpoint] such as
+// [FileCheckpoint]. Completed items are recorded as they finish; a rerun with
+// the same checkpoint skips them and processes only unfinished or failed
+// items. Failures go to the caller's error handler, typically a
+// [DeadLetterQueue] entry, and stay unmarked so the next run retries them.
 //
 // # Pipeline lifecycle
 //

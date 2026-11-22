@@ -58,6 +58,33 @@ func main() {
 
 `Consume` also accepts options such as `WithPauseGate` to pause and resume processing at runtime.
 
+#### Resuming an interrupted batch
+
+A long batch that crashes, is stopped, or hits a rate limit does not have to start over. Open a
+`FileCheckpoint` and wrap your process function with `Checkpointed`. Each item that succeeds is
+recorded in an append-only journal file. When you run the batch again with the same journal, items
+already in it are skipped, so only unfinished or failed items are processed (and paid for) again.
+Failures go to your error handler, for example a `DeadLetterQueue` entry with the attempt count:
+
+```go
+cp, err := pipeline.OpenFileCheckpoint("state/done.jsonl")
+if err != nil {
+	return err
+}
+defer cp.Close()
+
+process := pipeline.Checkpointed(cp, func(a Asset) string { return a.ID }, analyze,
+	func(a Asset, err error) {
+		_ = dlq.Add(&pipeline.DLQEntry{ItemID: a.ID, Stage: "analyze", Error: err.Error()})
+	})
+pipeline.Consume(ctx, input, 8, &wg, process)
+```
+
+Records reach the operating system as soon as an item completes, so a process crash loses nothing;
+`WithSyncEvery(n)` trades how often the journal is flushed to disk against machine-crash safety.
+Use `ReadDLQ` to list failed items for inspection or a replay run. Implement the two-method
+`Checkpoint` interface to keep progress somewhere else, such as a database.
+
 ### Doctor diagnostics
 
 `pkg/doctor` checks local environment readiness before batch jobs. It is exposed
@@ -100,7 +127,7 @@ borderline conditions surface without blocking automation.
 | Package | Description |
 | --- | --- |
 | `pkg/analyzer` | Template Method and Builder contracts for LLM analysis (`Event`/`Analyzer`, domain-agnostic `Asset`, sentinel errors). |
-| `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, and a dead-letter queue. |
+| `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, resumable runs (`Checkpoint`, `FileCheckpoint`, `Checkpointed`), and a dead-letter queue. |
 | `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |
 | `pkg/provider/gemini` | Transport half of the analyzer Template Method for Gemini, calling the `generateContent` REST API over `net/http`. |

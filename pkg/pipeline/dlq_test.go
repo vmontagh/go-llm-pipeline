@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/pipeline"
 )
@@ -229,5 +231,62 @@ func decodeLines[T any](t *testing.T, data []byte) []T {
 			t.Fatalf("decoding JSON value %d: %v", len(out)+1, err)
 		}
 		out = append(out, v)
+	}
+}
+
+func TestDeadLetterQueueAddReadDLQ(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), dlqFileName)
+	dlq, err := pipeline.NewDeadLetterQueue(path, nil)
+	if err != nil {
+		t.Fatalf("NewDeadLetterQueue() = %v", err)
+	}
+	want := []pipeline.DLQEntry{
+		{Timestamp: recordedAt, ItemID: itemFirst, Stage: stageFetch, Error: errFetch.Error(), Attempts: 3},
+		{Timestamp: recordedAt, ItemID: itemSecond, Stage: stageParse, Error: "bad json"},
+	}
+	for _, e := range want {
+		if err := dlq.Add(&e); err != nil {
+			t.Fatalf("Add(%+v) = %v", e, err)
+		}
+	}
+	if err := dlq.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+
+	got, err := pipeline.ReadDLQ(file)
+	if err != nil {
+		t.Fatalf("ReadDLQ() = %v", err)
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("ReadDLQ() (-want +got):\n%s", diff)
+	}
+}
+
+func TestReadDLQMalformed(t *testing.T) {
+	t.Parallel()
+	_, err := pipeline.ReadDLQ(strings.NewReader("{\"item_id\":\"a\"}\nnot json\n"))
+	var syntaxErr *json.SyntaxError
+	if !errors.As(err, &syntaxErr) {
+		t.Errorf("ReadDLQ(malformed) = %v, want a *json.SyntaxError", err)
+	}
+}
+
+func TestDeadLetterQueueAddClosed(t *testing.T) {
+	t.Parallel()
+	dlq, err := pipeline.NewDeadLetterQueue(filepath.Join(t.TempDir(), dlqFileName), nil)
+	if err != nil {
+		t.Fatalf("NewDeadLetterQueue() = %v", err)
+	}
+	if err := dlq.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	if diff := cmp.Diff(os.ErrClosed, dlq.Add(&pipeline.DLQEntry{ItemID: itemFirst}), cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Add after Close error (-want +got):\n%s", diff)
 	}
 }
