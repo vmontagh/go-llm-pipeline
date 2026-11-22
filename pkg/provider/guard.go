@@ -196,7 +196,7 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 		if err != nil {
 			return canceledResult(lease, err)
 		}
-		keyWait, ready := lease.ensureReady()
+		keyWait, keyReleased, ready := lease.ensureReady()
 		if ready {
 			start := g.cfg.clock.Now()
 			res := g.Provider.Call(ctx, lease, prompt, imageData)
@@ -215,6 +215,7 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 		case <-ctx.Done():
 			return canceledResult(lease, ctx.Err())
 		case <-timer:
+		case <-keyReleased:
 		}
 	}
 }

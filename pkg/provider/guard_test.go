@@ -532,11 +532,13 @@ func TestGuardUsesReadyKey(t *testing.T) {
 		cool     bool // the leased key enters cooldown before the call
 		wantWait bool // the call waits for the cooldown to end
 		cancel   bool // the call is canceled while waiting instead
+		release  bool // another lease on the key is released while waiting instead
 		want     outcome
 	}{
 		{name: "keyReady", keys: []string{"a", "b"}, want: outcome{Result: okResult, Keys: []string{"a"}}},
 		{name: "keyCooledSwapped", keys: []string{"a", "b"}, cool: true, want: outcome{Result: okResult, Keys: []string{"b"}}},
 		{name: "allKeysCooledWaits", keys: []string{"a"}, cool: true, wantWait: true, want: outcome{Result: okResult, Keys: []string{"a"}}},
+		{name: "keyReleasedWakesWaiter", keys: []string{"a"}, cool: true, wantWait: true, release: true, want: outcome{Result: okResult, Keys: []string{"a"}}},
 		{
 			name: "canceledWhileKeyCooling", keys: []string{"a"}, cool: true, wantWait: true, cancel: true,
 			want: outcome{Result: provider.CallResult{Outcome: provider.OutcomeTerminal, Err: context.Canceled}, Cooling: true},
@@ -547,6 +549,10 @@ func TestGuardUsesReadyKey(t *testing.T) {
 			f := newGuardFixture(t, []step{{res: okResult}})
 			pool := provider.NewKeyPoolWithClock(tt.keys, f.clock)
 			lease := acquireLease(t, pool)
+			var other *provider.Lease[string]
+			if tt.release {
+				other = acquireLease(t, pool)
+			}
 			if tt.cool {
 				coolKey(t, pool, lease.Index, cooldown)
 			}
@@ -557,9 +563,12 @@ func TestGuardUsesReadyKey(t *testing.T) {
 			go func() { done <- f.guard.Call(ctx, lease, "", nil) }()
 			if tt.wantWait {
 				<-f.metrics.waited
-				if tt.cancel {
+				switch {
+				case tt.cancel:
 					cancel()
-				} else {
+				case tt.release:
+					other.Release()
+				default:
 					f.clock.advance(cooldown)
 				}
 			}

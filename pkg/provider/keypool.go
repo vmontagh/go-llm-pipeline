@@ -38,6 +38,8 @@ type KeyPool[T any] struct {
 	mu    sync.Mutex
 	slots []*keySlot[T]
 	clock PoolClock
+	// released is closed and replaced on every slot release, waking Guard calls waiting for a key.
+	released chan struct{}
 }
 
 // NewKeyPool returns a pool over items. items is copied internally so
@@ -172,25 +174,29 @@ func (p *KeyPool[T]) minCooldownLocked(now time.Time) time.Duration {
 }
 
 // ensureReady moves l to a ready key if its key is cooling. When every key
-// is cooling it returns false and the wait until one is ready.
-func (l *Lease[T]) ensureReady() (time.Duration, bool) {
+// is cooling it returns false, the wait until one is ready, and a channel
+// closed when a key is released sooner.
+func (l *Lease[T]) ensureReady() (time.Duration, <-chan struct{}, bool) {
 	if l == nil || l.pool == nil || l.slot == nil || l.released {
-		return 0, true
+		return 0, nil, true
 	}
 	p := l.pool
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.clock.Now()
 	if !l.slot.cooldownTo.After(now) {
-		return 0, true
+		return 0, nil, true
 	}
 	best := p.pickAvailableLocked(now)
 	if best == nil {
-		return p.minCooldownLocked(now), false
+		if p.released == nil {
+			p.released = make(chan struct{})
+		}
+		return p.minCooldownLocked(now), p.released, false
 	}
 	best.lastUsed = now
 	l.Value, l.Index, l.slot = best.value, best.idx, best
-	return 0, true
+	return 0, nil, true
 }
 
 // drop gives up an unused lease without touching its key's cooldown;
@@ -238,5 +244,9 @@ func (p *KeyPool[T]) releaseSlot(s *keySlot[T], cooldown time.Duration) {
 	s.cooldownTo = time.Time{}
 	if cooldown > 0 {
 		s.cooldownTo = now.Add(cooldown)
+	}
+	if p.released != nil {
+		close(p.released)
+		p.released = nil
 	}
 }
