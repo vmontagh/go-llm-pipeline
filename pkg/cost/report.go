@@ -37,17 +37,26 @@ const tabPadding = 2
 // Use encoding/json for a machine-readable form.
 func (r Report) WriteText(w io.Writer) error {
 	tw := tabwriter.NewWriter(w, 0, 0, tabPadding, ' ', 0)
-	fmt.Fprintln(tw, "MODEL\tCALLS\tINPUT\tOUTPUT\tCOST\tUNPRICED")
-	for _, m := range r.Models {
-		writeRow(tw, m.Model, m.Totals)
+	if _, err := fmt.Fprintln(tw, "MODEL\tCALLS\tINPUT\tOUTPUT\tCOST\tUNPRICED"); err != nil {
+		return fmt.Errorf("writing report: %w", err)
 	}
-	writeRow(tw, "TOTAL", r.Total)
+	for _, m := range r.Models {
+		if err := writeRow(tw, m.Model, m.Totals); err != nil {
+			return err
+		}
+	}
+	if err := writeRow(tw, "TOTAL", r.Total); err != nil {
+		return err
+	}
 	if err := tw.Flush(); err != nil {
 		return fmt.Errorf("writing report: %w", err)
 	}
 	return nil
 }
 
-func writeRow(w io.Writer, name string, t Totals) {
-	fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\n", name, t.Calls, t.Usage.Input, t.Usage.Output, t.Cost, t.Unpriced)
+func writeRow(w io.Writer, name string, t Totals) error {
+	if _, err := fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%d\n", name, t.Calls, t.Usage.Input, t.Usage.Output, t.Cost, t.Unpriced); err != nil {
+		return fmt.Errorf("writing report row %q: %w", name, err)
+	}
+	return nil
 }

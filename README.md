@@ -118,7 +118,7 @@ borderline conditions surface without blocking automation.
 | `pkg/vectorstore` | Optional, dependency-free local vector store: in-memory nearest-neighbor search, deduplication, and threshold clustering over caller-supplied embeddings. |
 | `pkg/promptregistry` | Versioned, offline-rendered prompt templates loaded from an `fs.FS`, with versioned rule overlays (`WithOverlay`, `VersionID`), byte budgets and golden-file tests. |
 | `pkg/cost` | Token usage and exact cost estimates: parses provider-reported usage, prices it with a caller-supplied `PriceTable`, aggregates per asset and model in a `Tracker` (optionally exporting metrics), and compares reports against a baseline. |
-| `pkg/cost/costtest` | Test helper that prices the calls recorded in cassettes and fails the test on unpriced models or a cost regression over a saved baseline, offline (`costtest.Check`). A pluggable `Counter` estimates tokens when the provider reports none. |
+| `pkg/cost/costtest` | Test helper that prices the calls recorded in cassettes and fails the test on unpriced models or a cost regression over a saved baseline, offline (`costtest.Check`). Responses without provider-reported usage (for example Gemini streams or SSE) are skipped and not counted. |
 | `contrib/tiktoken` | Optional separate module: an exact OpenAI `cost.Counter` built on tiktoken-go with embedded encodings. The core module does not depend on it. |
 | `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 
@@ -173,7 +173,8 @@ report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, costtest.Opt
 })
 ```
 
-The cost changes only when someone re-records cassettes, for example after editing a prompt. The
+Responses that carry no provider-reported usage are skipped, so they add nothing to the total; check
+the `CALLS` column in the `-v` output if a model looks under-counted. The cost changes only when someone re-records cassettes, for example after editing a prompt. The
 test then fails if the new recordings cost more than the allowed increase, or if a call uses a model
 missing from the price table. Run it with `-v` to see the per-model table. When an increase is
 intended, rerun with `-update-cost` and commit the new baseline in the same pull request, so
