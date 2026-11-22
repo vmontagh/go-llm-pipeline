@@ -2,7 +2,6 @@ package promptregistry
 
 import (
 	"bytes"
-	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -252,141 +251,27 @@ func (c *renderConfig) checkLimit() error {
 	return nil
 }
 
-// maxAssignmentSteps bounds the exact search in hasDisjointOccurrences.
-// Choosing one disjoint occurrence per rule is NP-hard in general, but rules
-// are normally distinct sentences with few occurrences, so the bound is only
-// reached by pathological overlaps, which then fail closed.
-const maxAssignmentSteps = 100_000
-
-// rule is one overlay rule and the section holding it.
-type rule struct{ section, text string }
-
 // unrenderedSections returns, sorted, the sections with a rule that does not
 // appear verbatim in out. Checking the output rather than the template source
 // holds however the template reaches the rules: through dot, $, a variable,
-// or a nested template. Each rule must claim its own non-overlapping
-// occurrence, so a rule present only inside a longer rule, or a repeated rule
-// rendered once, is still reported.
+// or a nested template. A rule defined n times must appear at least n times,
+// so a rule shared by two sections but rendered once is reported. Counting is
+// linear in the output; a rule that appears only inside a longer rule's text
+// still counts as rendered.
 func unrenderedSections(sections map[string][]string, out string) []string {
-	var rules []rule
-	for name, texts := range sections {
-		for _, text := range texts {
-			rules = append(rules, rule{section: name, text: text})
+	need := make(map[string]int)
+	for _, rules := range sections {
+		for _, r := range rules {
+			need[r]++
 		}
 	}
-	slices.SortFunc(rules, func(a, b rule) int {
-		return cmp.Or(cmp.Compare(len(b.text), len(a.text)), strings.Compare(a.text, b.text), strings.Compare(a.section, b.section))
-	})
-	missing := greedyMissing(rules, out)
-	if len(missing) == 0 || hasDisjointOccurrences(rules, out) {
-		return nil
-	}
-	return missing
-}
-
-// greedyMissing gives each rule, longest first, its first occurrence not yet
-// claimed and returns the sorted sections of rules left without one. An empty
-// result proves every rule has its own occurrence; a non-empty one may be a
-// false alarm that hasDisjointOccurrences rules out.
-func greedyMissing(rules []rule, out string) []string {
-	var claimed []span
 	missing := make(map[string]bool)
-	for _, r := range rules {
-		s, ok := claimOccurrence(out, r.text, claimed)
-		if !ok {
-			missing[r.section] = true
-			continue
+	for name, rules := range sections {
+		for _, r := range rules {
+			if strings.Count(out, r) < need[r] {
+				missing[name] = true
+			}
 		}
-		claimed = append(claimed, s)
 	}
 	return slices.Sorted(maps.Keys(missing))
-}
-
-// hasDisjointOccurrences reports whether every rule can be given its own
-// occurrence in out with no two overlapping, searching exhaustively within
-// maxAssignmentSteps.
-func hasDisjointOccurrences(rules []rule, out string) bool {
-	for _, r := range rules {
-		if !strings.Contains(out, r.text) {
-			return false
-		}
-	}
-	// Building candidates spends the same budget as the search, so heavily
-	// overlapping input cannot allocate unbounded spans.
-	steps := 0
-	candidates := make([][]span, len(rules))
-	for i, r := range rules {
-		spans, ok := occurrences(out, r.text, maxAssignmentSteps-steps)
-		if !ok {
-			return false
-		}
-		steps += len(spans)
-		candidates[i] = spans
-	}
-	// Most constrained rules first keeps the search small.
-	slices.SortStableFunc(candidates, func(a, b []span) int { return cmp.Compare(len(a), len(b)) })
-	var claimed []span
-	var place func(k int) bool
-	place = func(k int) bool {
-		if k == len(candidates) {
-			return true
-		}
-		for _, s := range candidates[k] {
-			steps++
-			if steps > maxAssignmentSteps {
-				return false
-			}
-			if overlapsAny(s, claimed) {
-				continue
-			}
-			claimed = append(claimed, s)
-			if place(k + 1) {
-				return true
-			}
-			claimed = claimed[:len(claimed)-1]
-		}
-		return false
-	}
-	return place(0)
-}
-
-// occurrences returns every, possibly overlapping, occurrence of text in out,
-// or false if there are more than limit.
-func occurrences(out, text string, limit int) ([]span, bool) {
-	var spans []span
-	for from := 0; ; {
-		i := strings.Index(out[from:], text)
-		if i < 0 {
-			return spans, true
-		}
-		if len(spans) == limit {
-			return nil, false
-		}
-		spans = append(spans, span{start: from + i, end: from + i + len(text)})
-		from += i + 1
-	}
-}
-
-func overlapsAny(s span, claimed []span) bool {
-	return slices.ContainsFunc(claimed, func(c span) bool { return s.start < c.end && c.start < s.end })
-}
-
-// span is a half-open byte range [start, end) of the rendered output.
-type span struct{ start, end int }
-
-// claimOccurrence returns the first occurrence of text in out that overlaps
-// no claimed span.
-func claimOccurrence(out, text string, claimed []span) (span, bool) {
-	for from := 0; from <= len(out); {
-		i := strings.Index(out[from:], text)
-		if i < 0 {
-			return span{}, false
-		}
-		s := span{start: from + i, end: from + i + len(text)}
-		if !overlapsAny(s, claimed) {
-			return s, true
-		}
-		from = s.start + 1
-	}
-	return span{}, false
 }

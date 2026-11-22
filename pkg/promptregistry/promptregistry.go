@@ -405,8 +405,8 @@ func validateFuncs(funcs template.FuncMap) (err error) {
 // when the rules exceed WithOverlayLimit, and ErrUnusedRules when any rule
 // does not appear verbatim in the output, for example because the template
 // skips a section or transforms the rule text. The check matches text, so a
-// rule whose exact text also appears in the caller's data or the template
-// itself can pass without being rendered from the overlay.
+// rule whose exact text also appears in the caller's data, the template, or a
+// longer rule can pass without being rendered from the overlay.
 //
 // The context is checked for cancellation before execution begins but is not
 // stored; because text/template exposes no execution hook, an already-started

@@ -312,41 +312,26 @@ func TestRenderWithOverlay(t *testing.T) {
 			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
-			name:     "rule present only inside a longer rule",
+			name:     "rule only inside a longer rule matches by text",
 			src:      `{{index .Rules.guidelines 1}}`,
 			sections: map[string][]string{"guidelines": {"no blur", "no blur at night"}},
-			wantErr:  promptregistry.ErrUnusedRules,
+			want:     "no blur at night",
 		},
+
 		{
-			name:     "rule inside a longer rule rendered after it",
-			src:      `{{index .Rules.guidelines 1}}; {{index .Rules.guidelines 0}}`,
-			sections: map[string][]string{"guidelines": {"no blur", "no blur at night"}},
-			want:     "no blur at night; no blur",
-		},
-		{
-			name:     "rules overlapping where the longest match first fails",
+			name:     "overlapping rules",
 			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"ab", "aba"}},
 			want:     "ababa",
 		},
-		{
-			name:     "rules too long to fit without overlapping",
-			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
-			sections: map[string][]string{"guidelines": {"ab", "aba"}, "rejection": {"bab"}},
-			wantErr:  promptregistry.ErrUnusedRules,
-		},
+
 		{
 			name:     "absent rule after heavily overlapping rules",
 			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {strings.Repeat("a", 100_000), "a"}, "rejection": {"z"}},
 			wantErr:  promptregistry.ErrUnusedRules,
 		},
-		{
-			name:     "too many overlapping occurrences fail closed",
-			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
-			sections: map[string][]string{"guidelines": {"ab", "aba", "c", strings.Repeat("c", 200_001)}},
-			wantErr:  promptregistry.ErrUnusedRules,
-		},
+
 		{
 			name:     "rule shared by two sections rendered once",
 			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
