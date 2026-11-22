@@ -97,11 +97,11 @@ func ValidateMessages(msgs []Message) error {
 }
 
 // AsMessageCaller returns p as a MessageCaller when it takes typed messages.
-// A Guard counts only if the provider it wraps does, though a Guard always
+// Guards count only if the provider they wrap does, though a Guard always
 // has CallMessages.
 func AsMessageCaller[T any](p Provider[T]) (MessageCaller[T], bool) {
 	inner := p
-	if g, ok := p.(*Guard[T]); ok {
+	for g, ok := inner.(*Guard[T]); ok; g, ok = inner.(*Guard[T]) {
 		inner = g.Provider
 	}
 	if _, ok := inner.(MessageCaller[T]); !ok {
