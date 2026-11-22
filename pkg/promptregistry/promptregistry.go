@@ -28,8 +28,8 @@
 //	{{range .Rules.guidelines}}- {{.}}
 //	{{end}}
 //
-// Overlays fail closed: a section with rules the template never references
-// returns [ErrUnusedRules], and rules over [WithOverlayLimit] return
+// Overlays fail closed: a rule that does not appear verbatim in the rendered
+// prompt returns [ErrUnusedRules], and rules over [WithOverlayLimit] return
 // [ErrOverlayTooLarge] instead of being truncated. [VersionID] names the exact
 // template and rules behind an output, such as
 // "judge/v3+photo-rules@7#3f2a9c1b0d4e", so it can be stored for rollback.
@@ -139,7 +139,6 @@ func WithFuncs(funcs template.FuncMap) Option {
 // The zero value is not usable; construct one with New.
 type Registry struct {
 	templates map[Ref]*template.Template
-	ruleRefs  map[Ref]ruleRefs
 	refs      []Ref
 	names     []string
 }
@@ -206,13 +205,8 @@ func New(fsys fs.FS, opts ...Option) (*Registry, error) {
 		return nil, fmt.Errorf("%w: no templates found", ErrInvalidTemplate)
 	}
 
-	refs := make(map[Ref]ruleRefs, len(templates))
-	for ref, tmpl := range templates {
-		refs[ref] = referencedSections(tmpl)
-	}
 	return &Registry{
 		templates: templates,
-		ruleRefs:  refs,
 		refs:      sortedRefs(templates),
 		names:     uniqueNames(templates),
 	}, nil
@@ -407,9 +401,12 @@ func validateFuncs(funcs template.FuncMap) (err error) {
 // any other execution failure.
 //
 // With WithOverlay, the template receives the data as {{.Data}} and the
-// overlay's sections as {{.Rules}}. Render then also returns ErrUnusedRules
-// when a section with rules is never referenced, and ErrOverlayTooLarge when
-// the rules exceed WithOverlayLimit.
+// overlay's sections as {{.Rules}}. Render then also returns ErrOverlayTooLarge
+// when the rules exceed WithOverlayLimit, and ErrUnusedRules when any rule
+// does not appear verbatim in the output, for example because the template
+// skips a section or transforms the rule text. The check matches text, so a
+// rule whose exact text also appears in the caller's data or the template
+// itself can pass without being rendered from the overlay.
 //
 // The context is checked for cancellation before execution begins but is not
 // stored; because text/template exposes no execution hook, an already-started
@@ -431,7 +428,7 @@ func (r *Registry) Render(ctx context.Context, name, version string, data any, o
 		}
 	}
 	if cfg.overlay != nil {
-		if err := checkOverlay(cfg, r.ruleRefs[ref]); err != nil {
+		if err := cfg.checkLimit(); err != nil {
 			return "", fmt.Errorf("%s/%s: %w", name, version, err)
 		}
 		// A copy keeps caller-supplied template funcs from mutating the overlay.
@@ -444,7 +441,13 @@ func (r *Registry) Render(ctx context.Context, name, version string, data any, o
 		}
 		return "", fmt.Errorf("%w: %s/%s: %w", ErrRenderFailed, name, version, err)
 	}
-	return buf.String(), nil
+	out := buf.String()
+	if cfg.overlay != nil {
+		if missing := unrenderedSections(cfg.overlay.sections, out); len(missing) > 0 {
+			return "", fmt.Errorf("%w: %s/%s: %s sections %q", ErrUnusedRules, name, version, cfg.overlay.ID(), missing)
+		}
+	}
+	return out, nil
 }
 
 // missingKeyMarkers are the substrings text/template uses to report a

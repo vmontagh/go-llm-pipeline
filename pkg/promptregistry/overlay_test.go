@@ -149,22 +149,34 @@ func TestLoadOverlayMissingFile(t *testing.T) {
 	}
 }
 
+func TestLoadOverlayNilFS(t *testing.T) {
+	t.Parallel()
+
+	_, err := promptregistry.LoadOverlay(nil, "rules.yaml")
+
+	if diff := cmp.Diff(promptregistry.ErrInvalidOverlay, err, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("LoadOverlay(nil) error mismatch (-want +got):\n%s", diff)
+	}
+}
+
 func TestVersionID(t *testing.T) {
 	t.Parallel()
-	ref := promptregistry.Ref{Name: "judge", Version: "v1"}
 	tests := []struct {
 		name    string
+		ref     promptregistry.Ref
 		overlay *promptregistry.Overlay
 		want    string
 	}{
-		{name: "no overlay", want: "judge/v1"},
-		{name: "overlay", overlay: loadPhotoRules(t), want: "judge/v1+" + photoRulesID},
+		{name: "no overlay", ref: promptregistry.Ref{Name: "judge", Version: "v1"}, want: "judge/v1"},
+		{name: "overlay", ref: promptregistry.Ref{Name: "judge", Version: "v1"}, overlay: loadPhotoRules(t), want: "judge/v1+" + photoRulesID},
+		{name: "plus in template escaped", ref: promptregistry.Ref{Name: "judge", Version: "v1+" + photoRulesID}, want: "judge/v1%2B" + photoRulesID},
+		{name: "percent in template escaped", ref: promptregistry.Ref{Name: "a%2Bb", Version: "v1"}, want: "a%252Bb/v1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := promptregistry.VersionID(ref, tt.overlay); got != tt.want {
-				t.Errorf("VersionID(%v) = %q, want %q", ref, got, tt.want)
+			if got := promptregistry.VersionID(tt.ref, tt.overlay); got != tt.want {
+				t.Errorf("VersionID(%v) = %q, want %q", tt.ref, got, tt.want)
 			}
 		})
 	}
@@ -201,10 +213,11 @@ func TestOverlayHash(t *testing.T) {
 func TestRenderWithOverlay(t *testing.T) {
 	t.Parallel()
 	rules := map[string][]string{"guidelines": {"be brief", "be kind"}, "rejection": nil}
-	data := map[string]any{"Title": "beach"}
+	callerRules := map[string]any{"Title": "beach", "Rules": map[string][]string{"guidelines": {"caller"}}}
 	tests := []struct {
 		name     string
 		src      string
+		data     any
 		sections map[string][]string
 		opts     []promptregistry.RenderOption
 		want     string
@@ -229,10 +242,78 @@ func TestRenderWithOverlay(t *testing.T) {
 			want:     "a",
 		},
 		{
-			name:     "chained reference counts as every section",
+			name:     "parenthesized rules",
 			src:      `{{range (.Rules).guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"a"}},
 			want:     "a",
+		},
+		{
+			name:     "parenthesized rules skipping a section",
+			src:      `{{range (.Rules).guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}, "rejection": {"b"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "parenthesized root",
+			src:      `{{range ($).Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}},
+			want:     "a",
+		},
+		{
+			name:     "root saved in a variable",
+			src:      `{{$root := .}}{{with .Data}}{{range $root.Rules.guidelines}}{{.}}{{end}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}},
+			want:     "a",
+		},
+		{
+			name:     "dot changed to caller rules",
+			src:      `{{with .Data}}{{range .Rules.guidelines}}{{.}}{{end}}{{end}}`,
+			data:     callerRules,
+			sections: map[string][]string{"guidelines": {"be brief"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "variable bound to caller rules",
+			src:      `{{$d := .Data}}{{range $d.Rules.guidelines}}{{.}}{{end}}`,
+			data:     callerRules,
+			sections: map[string][]string{"guidelines": {"be brief"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "rules only in a branch that does not run",
+			src:      `{{if false}}{{range .Rules.guidelines}}{{.}}{{end}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "rule present only inside a longer rule",
+			src:      `{{index .Rules.guidelines 1}}`,
+			sections: map[string][]string{"guidelines": {"no blur", "no blur at night"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "rule inside a longer rule rendered after it",
+			src:      `{{index .Rules.guidelines 1}}; {{index .Rules.guidelines 0}}`,
+			sections: map[string][]string{"guidelines": {"no blur", "no blur at night"}},
+			want:     "no blur at night; no blur",
+		},
+		{
+			name:     "rule shared by two sections rendered once",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}, "rejection": {"a"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "rule shared by two sections rendered twice",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}{{range .Rules.rejection}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"a"}, "rejection": {"a"}},
+			want:     "aa",
+		},
+		{
+			name:     "transformed rule",
+			src:      `{{range .Rules.guidelines}}{{printf "%q" .}}{{end}}`,
+			sections: map[string][]string{"guidelines": {`say "hi"`}},
+			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
 			name:     "reference inside define",
@@ -241,10 +322,10 @@ func TestRenderWithOverlay(t *testing.T) {
 			want:     "a",
 		},
 		{
-			name:     "whole rules counts as every section",
-			src:      `{{range $s, $r := .Rules}}{{$s}}={{len $r}} {{end}}`,
+			name:     "ranging over all rules",
+			src:      `{{range $s, $r := .Rules}}{{$s}}:{{range $r}} {{.}}{{end}};{{end}}`,
 			sections: rules,
-			want:     "guidelines=2 rejection=0 ",
+			want:     "guidelines: be brief be kind;rejection:;",
 		},
 		{
 			name:     "unreferenced empty section allowed",
@@ -259,19 +340,14 @@ func TestRenderWithOverlay(t *testing.T) {
 			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
-			name:     "user field named Rules is not a reference",
-			src:      `{{.Data.Rules.rejection}}`,
-			sections: map[string][]string{"rejection": {"b"}},
+			name:     "caller field named Rules",
+			src:      `{{.Data.Rules.guidelines}}`,
+			data:     callerRules,
+			sections: map[string][]string{"guidelines": {"b"}},
 			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
 			name:     "section typo",
-			src:      `{{range .Rules.rejecton}}{{.}}{{end}}`,
-			sections: rules,
-			wantErr:  promptregistry.ErrUnusedRules,
-		},
-		{
-			name:     "missing empty section",
 			src:      `{{range .Rules.rejecton}}{{.}}{{end}}`,
 			sections: map[string][]string{"rejection": nil},
 			wantErr:  promptregistry.ErrMissingField,
@@ -284,24 +360,24 @@ func TestRenderWithOverlay(t *testing.T) {
 		},
 		{
 			name:     "within limit",
-			src:      `{{len .Rules.guidelines}}`,
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"1234", "56"}},
 			opts:     []promptregistry.RenderOption{promptregistry.WithOverlayLimit(6)},
-			want:     "2",
+			want:     "123456",
 		},
 		{
 			name:     "over limit",
-			src:      `{{len .Rules.guidelines}}`,
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"1234", "567"}},
 			opts:     []promptregistry.RenderOption{promptregistry.WithOverlayLimit(6)},
 			wantErr:  promptregistry.ErrOverlayTooLarge,
 		},
 		{
 			name:     "zero limit is no limit",
-			src:      `{{len .Rules.guidelines}}`,
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"1234", "567"}},
 			opts:     []promptregistry.RenderOption{promptregistry.WithOverlayLimit(0)},
-			want:     "2",
+			want:     "1234567",
 		},
 	}
 	for _, tt := range tests {
@@ -310,6 +386,11 @@ func TestRenderWithOverlay(t *testing.T) {
 			reg := registry(t, tt.src)
 			o := newOverlay(t, promptregistry.OverlaySpec{Name: "r", Version: "1", Sections: tt.sections})
 			opts := append([]promptregistry.RenderOption{promptregistry.WithOverlay(o)}, tt.opts...)
+
+			data := tt.data
+			if data == nil {
+				data = map[string]any{"Title": "beach"}
+			}
 
 			got, err := reg.Render(t.Context(), "prompt", "v1", data, opts...)
 

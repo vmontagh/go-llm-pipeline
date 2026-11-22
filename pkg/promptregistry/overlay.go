@@ -2,6 +2,7 @@ package promptregistry
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -13,8 +14,6 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"text/template"
-	"text/template/parse"
 
 	"gopkg.in/yaml.v3"
 )
@@ -25,20 +24,13 @@ var (
 	// ErrInvalidOverlay is returned by NewOverlay and LoadOverlay when an
 	// overlay is malformed.
 	ErrInvalidOverlay = errors.New("invalid overlay")
-	// ErrUnusedRules is returned by Render when the overlay has rules in a
-	// section the template never references, so a learned rule cannot be
-	// silently dropped from the prompt.
+	// ErrUnusedRules is returned by Render when a rule of the overlay does not
+	// appear verbatim in the rendered prompt, so a learned rule cannot be
+	// silently dropped.
 	ErrUnusedRules = errors.New("unused overlay rules")
 	// ErrOverlayTooLarge is returned by Render when the overlay's rules exceed
 	// the limit set with WithOverlayLimit. Rules are never truncated.
 	ErrOverlayTooLarge = errors.New("overlay too large")
-)
-
-// rulesField is the reserved field holding the overlay's sections in the data
-// of a template rendered with WithOverlay; the caller's data is in dataField.
-const (
-	rulesField = "Rules"
-	dataField  = "Data"
 )
 
 // idHashLen is the number of hex digits of the content hash shown in an ID.
@@ -132,6 +124,9 @@ func NewOverlay(spec OverlaySpec) (*Overlay, error) {
 // NewOverlay does. Unknown fields and multiple YAML documents are rejected
 // with ErrInvalidOverlay.
 func LoadOverlay(fsys fs.FS, name string) (*Overlay, error) {
+	if fsys == nil {
+		return nil, fmt.Errorf("%w: reading %q: nil filesystem", ErrInvalidOverlay, name)
+	}
 	src, err := fs.ReadFile(fsys, name)
 	if err != nil {
 		return nil, fmt.Errorf("%w: reading %q: %w", ErrInvalidOverlay, name, err)
@@ -192,12 +187,17 @@ func (o *Overlay) ID() string {
 	return o.name + "@" + o.version + "#" + o.hash[:idHashLen]
 }
 
+// refEscaper escapes "+" in template references, and "%" so the escaping is
+// reversible, so a VersionID's first "+" always starts the overlay ID.
+var refEscaper = strings.NewReplacer("%", "%25", "+", "%2B")
+
 // VersionID returns a stable identifier for the prompt produced by rendering
 // ref with overlay o: "judge/v3" without an overlay, or
 // "judge/v3+photo-rules@7#3f2a9c1b0d4e" with one. Store it with each output to
-// know exactly which template and rules produced it.
+// know exactly which template and rules produced it. "%" and "+" in ref are
+// percent-encoded, so distinct template and overlay pairs never share an ID.
 func VersionID(ref Ref, o *Overlay) string {
-	id := ref.Name + "/" + ref.Version
+	id := refEscaper.Replace(ref.Name + "/" + ref.Version)
 	if o == nil {
 		return id
 	}
@@ -242,100 +242,63 @@ type overlayData struct {
 	Rules map[string][]string
 }
 
-// ruleRefs records which overlay sections a template references.
-type ruleRefs struct {
-	all      bool // the template uses .Rules as a whole, e.g. ranges over it
-	sections map[string]bool
-}
-
-// referencedSections walks every tree of tmpl, including {{define}} blocks,
-// for .Rules.<section> and $.Rules.<section>. Any other use of .Rules counts
-// as referencing every section. The check is static: a reference in a branch
-// that does not run still counts.
-func referencedSections(tmpl *template.Template) ruleRefs {
-	refs := ruleRefs{sections: make(map[string]bool)}
-	note := func(ident []string) {
-		switch {
-		case len(ident) == 0 || ident[0] != rulesField:
-		case len(ident) > 1:
-			refs.sections[ident[1]] = true
-		default:
-			refs.all = true
-		}
-	}
-	var walk func(parse.Node)
-	walk = func(n parse.Node) {
-		switch n := n.(type) {
-		case *parse.ListNode:
-			if n == nil {
-				return
-			}
-			for _, c := range n.Nodes {
-				walk(c)
-			}
-		case *parse.ActionNode:
-			walk(n.Pipe)
-		case *parse.PipeNode:
-			if n == nil {
-				return
-			}
-			for _, c := range n.Cmds {
-				walk(c)
-			}
-		case *parse.CommandNode:
-			for _, a := range n.Args {
-				walk(a)
-			}
-		case *parse.FieldNode:
-			note(n.Ident)
-		case *parse.VariableNode:
-			if len(n.Ident) > 0 && n.Ident[0] == "$" {
-				note(n.Ident[1:])
-			}
-		case *parse.ChainNode:
-			walk(n.Node)
-		case *parse.IfNode:
-			walkBranch(walk, &n.BranchNode)
-		case *parse.RangeNode:
-			walkBranch(walk, &n.BranchNode)
-		case *parse.WithNode:
-			walkBranch(walk, &n.BranchNode)
-		case *parse.TemplateNode:
-			walk(n.Pipe)
-		}
-	}
-	for _, t := range tmpl.Templates() {
-		if t.Tree != nil {
-			walk(t.Root)
-		}
-	}
-	return refs
-}
-
-func walkBranch(walk func(parse.Node), b *parse.BranchNode) {
-	walk(b.Pipe)
-	walk(b.List)
-	walk(b.ElseList)
-}
-
-// checkOverlay applies the overlay's limit and returns ErrUnusedRules for
-// every non-empty section the template does not reference.
-func checkOverlay(cfg renderConfig, refs ruleRefs) error {
-	o := cfg.overlay
-	if cfg.limit > 0 && o.size > cfg.limit {
-		return fmt.Errorf("%w: %s has %d bytes of rules, limit %d", ErrOverlayTooLarge, o.ID(), o.size, cfg.limit)
-	}
-	if refs.all {
-		return nil
-	}
-	var unused []string
-	for _, name := range slices.Sorted(maps.Keys(o.sections)) {
-		if len(o.sections[name]) > 0 && !refs.sections[name] {
-			unused = append(unused, name)
-		}
-	}
-	if len(unused) > 0 {
-		return fmt.Errorf("%w: %s sections %q", ErrUnusedRules, o.ID(), unused)
+// checkLimit returns ErrOverlayTooLarge when the overlay's rules exceed the
+// configured limit.
+func (c *renderConfig) checkLimit() error {
+	o := c.overlay
+	if c.limit > 0 && o.size > c.limit {
+		return fmt.Errorf("%w: %s has %d bytes of rules, limit %d", ErrOverlayTooLarge, o.ID(), o.size, c.limit)
 	}
 	return nil
+}
+
+// unrenderedSections returns, sorted, the sections with a rule that does not
+// appear verbatim in out. Checking the output rather than the template source
+// holds however the template reaches the rules: through dot, $, a variable,
+// or a nested template. Each rule claims its own occurrence, longest first, so
+// a rule present only inside a longer rule, or a repeated rule rendered once,
+// is still reported.
+func unrenderedSections(sections map[string][]string, out string) []string {
+	type rule struct{ section, text string }
+	var rules []rule
+	for name, texts := range sections {
+		for _, text := range texts {
+			rules = append(rules, rule{section: name, text: text})
+		}
+	}
+	slices.SortFunc(rules, func(a, b rule) int {
+		return cmp.Or(cmp.Compare(len(b.text), len(a.text)), strings.Compare(a.text, b.text), strings.Compare(a.section, b.section))
+	})
+	var claimed []span
+	missing := make(map[string]bool)
+	for _, r := range rules {
+		s, ok := claimOccurrence(out, r.text, claimed)
+		if !ok {
+			missing[r.section] = true
+			continue
+		}
+		claimed = append(claimed, s)
+	}
+	return slices.Sorted(maps.Keys(missing))
+}
+
+// span is a half-open byte range [start, end) of the rendered output.
+type span struct{ start, end int }
+
+// claimOccurrence returns the first occurrence of text in out that overlaps
+// no claimed span.
+func claimOccurrence(out, text string, claimed []span) (span, bool) {
+	for from := 0; from <= len(out); {
+		i := strings.Index(out[from:], text)
+		if i < 0 {
+			return span{}, false
+		}
+		s := span{start: from + i, end: from + i + len(text)}
+		overlaps := slices.ContainsFunc(claimed, func(c span) bool { return s.start < c.end && c.start < s.end })
+		if !overlaps {
+			return s, true
+		}
+		from = s.start + 1
+	}
+	return span{}, false
 }
