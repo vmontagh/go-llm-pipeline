@@ -4,12 +4,12 @@ package doclinks
 
 import (
 	"fmt"
-	"html"
 	"io/fs"
 	"net/url"
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/yuin/goldmark"
@@ -77,7 +77,7 @@ func decode(dest []byte) string {
 	var b strings.Builder
 	start := 0
 	flush := func(end int) {
-		b.WriteString(entityPattern.ReplaceAllStringFunc(s[start:end], html.UnescapeString))
+		b.WriteString(entityPattern.ReplaceAllStringFunc(s[start:end], resolveReference))
 	}
 	for i := 0; i < len(s); i++ {
 		if s[i] != '\\' || i+1 == len(s) || !util.IsPunct(s[i+1]) {
@@ -91,6 +91,38 @@ func decode(dest []byte) string {
 	flush(len(s))
 	return b.String()
 }
+
+// resolveReference decodes one character reference matched by entityPattern
+// as CommonMark does. Unlike html.UnescapeString, it never decodes a known
+// prefix of an unknown name ("&notit;" stays as written) and never remaps
+// code points 128-159 to Windows-1252 characters.
+func resolveReference(ref string) string {
+	body := ref[1 : len(ref)-1]
+	num, isNumeric := strings.CutPrefix(body, "#")
+	if !isNumeric {
+		e, ok := util.LookUpHTML5EntityByName(body)
+		if !ok {
+			return ref
+		}
+		return string(e.Characters)
+	}
+	base := decimalBase
+	if hex, ok := strings.CutPrefix(strings.ToLower(num), "x"); ok {
+		num, base = hex, hexBase
+	}
+	// entityPattern caps the digits, so the value always fits in a rune.
+	v, err := strconv.ParseInt(num, base, runeBits)
+	if err != nil {
+		return ref
+	}
+	return string(util.ToValidRune(rune(v)))
+}
+
+const (
+	decimalBase = 10
+	hexBase     = 16
+	runeBits    = 32
+)
 
 // addLinks calls add with the destination of every link and image under n.
 func addLinks(n ast.Node, add func(dest []byte)) {
