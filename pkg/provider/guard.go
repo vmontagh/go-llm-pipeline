@@ -313,7 +313,9 @@ func (g *Guard[T]) onTransient(res *CallResult, probe bool) {
 	switch {
 	case probe || (g.state == BreakerClosed && g.failures >= g.cfg.breakerFailures):
 		g.state = BreakerOpen
-		g.openUntil = now.Add(max(g.cfg.breakerOpenFor, res.RetryAfter))
+		if until := now.Add(max(g.cfg.breakerOpenFor, res.RetryAfter)); until.After(g.openUntil) {
+			g.openUntil = until
+		}
 		g.add(MetricGuardBreakerOpens)
 	case g.state != BreakerClosed && res.RetryAfter > 0 && now.Add(res.RetryAfter).After(g.openUntil):
 		// A late Retry-After extends the open window, or reopens a half-open breaker.

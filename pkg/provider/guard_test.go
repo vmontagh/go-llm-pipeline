@@ -363,6 +363,17 @@ func TestGuardAdapts(t *testing.T) {
 			want: outcome{Limit: 2, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
 		},
 		{
+			name: "failedProbeKeepsLaterRetryAfter",
+			opts: []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
+			steps: []step{
+				{gate: make(chan struct{}), res: retryAfterResult},
+				{res: transientResult},
+				{before: openFor + time.Second, gate: make(chan struct{}), res: transientResult}, // the probe
+			},
+			advanceAfter: openFor + time.Second,
+			want:         outcome{Limit: 2, State: provider.BreakerOpen, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 2}},
+		},
+		{
 			name: "lateTransientKeepsProbe",
 			opts: []provider.GuardOption{provider.WithConcurrencyLimits(2, 4), provider.WithBreaker(1, openFor)},
 			steps: []step{
