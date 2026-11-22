@@ -180,7 +180,8 @@ func TestPromptCost(t *testing.T) {
 		opts.Baseline = &base
 	}
 	report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, opts)
-	if *updateCost {
+	// Never overwrite a good baseline with a failed or partial report.
+	if *updateCost && !t.Failed() {
 		src, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			t.Fatal(err)
