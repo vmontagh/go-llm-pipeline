@@ -114,6 +114,26 @@ a, err := analyzer.NewBuilder(p, parse).
 Share the built analyzer across workers so every call goes through the same guard. To read
 `Limit()` and `State()`, call `provider.NewGuard` yourself and pass the guard to `NewBuilder`.
 
+#### Multi-turn conversations
+
+`AnalyzeMessages` sends a typed conversation instead of a single prompt. Each `provider.Message`
+has a role (system, user or assistant) and parts holding text or, in user messages, JPEG image bytes. The OpenAI,
+Gemini and Ollama providers map the roles natively, and a `Guard` passes messages through:
+
+```go
+res, err := a.AnalyzeMessages(ctx, []provider.Message{
+	provider.TextMessage(provider.RoleSystem, "Answer in JSON."),
+	provider.TextMessage(provider.RoleUser, "Describe this photo."),
+	provider.TextMessage(provider.RoleAssistant, `{"heading":"A beach"}`),
+	{Role: provider.RoleUser, Parts: []provider.Part{{Text: "Now this one."}, {Image: jpeg}}},
+}, "job-1", nil)
+```
+
+Invalid messages return `provider.ErrInvalidMessages`. A custom provider takes messages by
+implementing `provider.MessageCaller`; otherwise `AnalyzeMessages` returns
+`provider.ErrMessagesUnsupported`. Keeping the history within the model's context window is up to
+the caller.
+
 ### Doctor diagnostics
 
 `pkg/doctor` checks local environment readiness before batch jobs. It is exposed

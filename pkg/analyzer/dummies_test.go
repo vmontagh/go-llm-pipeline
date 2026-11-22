@@ -58,3 +58,14 @@ func (m *mockProvider) Call(_ context.Context, _ *provider.Lease[string], prompt
 	}
 	return m.callResult
 }
+
+// messageProvider is a mockProvider that also takes typed messages.
+type messageProvider struct {
+	*mockProvider
+	got []provider.Message
+}
+
+func (m *messageProvider) CallMessages(_ context.Context, _ *provider.Lease[string], msgs []provider.Message) provider.CallResult {
+	m.got = msgs
+	return m.callResult
+}

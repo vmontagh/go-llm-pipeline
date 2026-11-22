@@ -2,6 +2,7 @@ package provider_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -124,6 +125,19 @@ func (f *fakeGuarded) Call(_ context.Context, lease *provider.Lease[string], _ s
 	}
 	f.clock.advance(s.latency)
 	return s.res
+}
+
+func (f *fakeGuarded) ProviderLabel() string { return "fake" }
+
+// messageGuarded is a fakeGuarded that also takes typed messages.
+type messageGuarded struct {
+	*fakeGuarded
+	got []provider.Message
+}
+
+func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease[string], msgs []provider.Message) provider.CallResult {
+	m.got = msgs
+	return m.Call(ctx, lease, "", nil)
 }
 
 func (f *fakeGuarded) callCount() int {
@@ -602,4 +616,86 @@ func coolKey(t *testing.T, pool *provider.KeyPool[string], index int, d time.Dur
 		}
 	}
 	t.Fatalf("no lease on key %d", index)
+}
+
+func TestGuardCallMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
+	fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
+	mg := &messageGuarded{fakeGuarded: fake}
+	g := wrapInGuards(t, mg, fake.clock, 1)
+
+	got := g.CallMessages(t.Context(), nil, msgs)
+
+	if diff := cmp.Diff(okResult, got, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(msgs, mg.got); diff != "" {
+		t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		guards int
+	}{
+		{name: "one guard", guards: 1},
+		{name: "nested guards", guards: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
+			g := wrapInGuards(t, fake, fake.clock, tt.guards)
+			// A canceled context proves the rejection does not wait.
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			got := g.CallMessages(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+
+			want := provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal}
+			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+			}
+			if got := fake.callCount(); got != 0 {
+				t.Errorf("calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// wrapInGuards wraps p in n Guards (n >= 1) that share clk.
+func wrapInGuards(t *testing.T, p provider.Provider[string], clk provider.GuardClock, n int) *provider.Guard[string] {
+	t.Helper()
+	var g *provider.Guard[string]
+	for range n {
+		var err error
+		g, err = provider.NewGuard(p, provider.WithGuardClock(clk))
+		if err != nil {
+			t.Fatalf("NewGuard() error = %v", err)
+		}
+		p = g
+	}
+	return g
+}
+
+func TestGuardCallMessagesDropsUnusedLease(t *testing.T) {
+	t.Parallel()
+	fake := &fakeGuarded{clock: newFakeGuardClock()}
+	g, err := provider.NewGuard[string](fake, provider.WithGuardClock(fake.clock))
+	if err != nil {
+		t.Fatalf("NewGuard() error = %v", err)
+	}
+	pool := provider.NewKeyPool([]string{"k"})
+	lease := acquireLease(t, pool)
+	coolKey(t, pool, 0, time.Minute)
+
+	g.CallMessages(t.Context(), lease, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+	lease.Release()
+
+	if _, err := pool.Acquire(t.Context()); !errors.Is(err, provider.ErrAllKeysCoolingDown) {
+		t.Errorf("Acquire() after Release error = %v, want %v", err, provider.ErrAllKeysCoolingDown)
+	}
 }

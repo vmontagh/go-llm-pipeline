@@ -63,6 +63,7 @@ const (
 	jsonMIMEType          = "application/json"
 	imageMIMEType         = "image/jpeg"
 	userRole              = "user"
+	modelRole             = "model"
 )
 
 // maxRedirects mirrors net/http's default redirect limit, which no longer
@@ -120,8 +121,9 @@ func newAPIError(statusCode int, body []byte) *APIError {
 }
 
 type generateContentRequest struct {
-	Contents         []content         `json:"contents"`
-	GenerationConfig *generationConfig `json:"generationConfig,omitempty"`
+	SystemInstruction *content          `json:"systemInstruction,omitempty"`
+	Contents          []content         `json:"contents"`
+	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
 }
 
 type content struct {
@@ -218,8 +220,18 @@ func (t *transport) EnrichError(tier provpkg.ErrorTier, rawErr error, _ []byte) 
 
 // Call performs a single generateContent POST against Gemini.
 func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prompt string, imageData []byte) provpkg.CallResult {
+	m := provpkg.TextMessage(provpkg.RoleUser, prompt)
+	if len(imageData) > 0 {
+		m.Parts = append(m.Parts, provpkg.Part{Image: imageData})
+	}
+	return t.CallMessages(ctx, lease, []provpkg.Message{m})
+}
+
+// CallMessages implements provpkg.MessageCaller. System messages become the
+// system instruction and assistant turns use the "model" role.
+func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	reqB, err := json.Marshal(t.buildRequest(prompt, imageData))
+	reqB, err := json.Marshal(t.buildRequest(msgs))
 	if err != nil {
 		return terminal(fmt.Errorf("marshaling gemini request: %w", err))
 	}
@@ -302,12 +314,29 @@ func (t *transport) endpoint() string {
 	return t.baseURL + "/" + name + generateContentMethod
 }
 
-func (t *transport) buildRequest(prompt string, imageData []byte) generateContentRequest {
-	parts := []part{{Text: &prompt}}
-	if len(imageData) > 0 {
-		parts = append(parts, part{InlineData: &blob{MIMEType: imageMIMEType, Data: imageData}})
+func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest {
+	var req generateContentRequest
+	for _, m := range msgs {
+		parts := make([]part, 0, len(m.Parts))
+		for _, p := range m.Parts {
+			if len(p.Image) > 0 {
+				parts = append(parts, part{InlineData: &blob{MIMEType: imageMIMEType, Data: p.Image}})
+				continue
+			}
+			parts = append(parts, part{Text: &p.Text})
+		}
+		switch m.Role {
+		case provpkg.RoleSystem:
+			if req.SystemInstruction == nil {
+				req.SystemInstruction = &content{}
+			}
+			req.SystemInstruction.Parts = append(req.SystemInstruction.Parts, parts...)
+		case provpkg.RoleAssistant:
+			req.Contents = append(req.Contents, content{Role: modelRole, Parts: parts})
+		default:
+			req.Contents = append(req.Contents, content{Role: userRole, Parts: parts})
+		}
 	}
-	req := generateContentRequest{Contents: []content{{Role: userRole, Parts: parts}}}
 	if t.responseSchema != nil {
 		req.GenerationConfig = &generationConfig{
 			ResponseMIMEType: jsonMIMEType,

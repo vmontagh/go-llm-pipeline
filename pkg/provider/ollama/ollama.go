@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -39,6 +40,11 @@ const (
 const formatJSONSentinel = "json"
 const doneReasonLength = "length"
 
+const (
+	generatePath = "/api/generate"
+	chatPath     = "/api/chat"
+)
+
 var ErrOutputLimitExhausted = errors.New("output generation limit exhausted")
 var ErrContextWindowExhausted = errors.New("context window exhausted")
 
@@ -55,13 +61,47 @@ type Request struct {
 	Think *bool `json:"think,omitempty"`
 }
 
+// chatRequest is the /api/chat body. Its fields match Request, except
+// Messages replaces Prompt and Images.
+type chatRequest struct {
+	Model     string         `json:"model"`
+	Messages  []chatMessage  `json:"messages"`
+	Stream    bool           `json:"stream"`
+	Format    any            `json:"format,omitempty"`
+	Options   map[string]any `json:"options,omitempty"`
+	KeepAlive string         `json:"keep_alive,omitempty"`
+	Think     *bool          `json:"think,omitempty"`
+}
+
+type chatMessage struct {
+	Role    string   `json:"role"`
+	Content string   `json:"content"`
+	Images  []string `json:"images,omitempty"`
+}
+
+// ChatMessage is the reply message of the /api/chat endpoint.
+type ChatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type Response struct {
-	Response        string `json:"response"`
-	Done            bool   `json:"done"`
-	DoneReason      string `json:"done_reason,omitempty"`
-	PromptEvalCount int    `json:"prompt_eval_count,omitempty"`
-	EvalCount       int    `json:"eval_count,omitempty"`
-	TotalDuration   int64  `json:"total_duration,omitempty"`
+	// Message is set by /api/chat in place of Response.
+	Message         *ChatMessage `json:"message,omitempty"`
+	Response        string       `json:"response"`
+	Done            bool         `json:"done"`
+	DoneReason      string       `json:"done_reason,omitempty"`
+	PromptEvalCount int          `json:"prompt_eval_count,omitempty"`
+	EvalCount       int          `json:"eval_count,omitempty"`
+	TotalDuration   int64        `json:"total_duration,omitempty"`
+}
+
+// text returns the model output of either endpoint.
+func (r *Response) text() string {
+	if r.Message != nil {
+		return r.Message.Content
+	}
+	return r.Response
 }
 
 type transport struct {
@@ -128,13 +168,59 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 		think:          t.think,
 		responseSchema: t.responseSchema,
 	})
+	return t.post(ctx, generatePath, reqData)
+}
 
+// CallMessages implements provpkg.MessageCaller through the /api/chat
+// endpoint, which takes native roles.
+func (t *transport) CallMessages(ctx context.Context, _ *provpkg.Lease[struct{}], msgs []provpkg.Message) provpkg.CallResult {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	r := buildRequest(&buildRequestParams{
+		model:          t.model,
+		keepAlive:      t.keepAlive,
+		numCtx:         t.numCtx,
+		numPredict:     t.numPredict,
+		think:          t.think,
+		responseSchema: t.responseSchema,
+	})
+	return t.post(ctx, chatPath, &chatRequest{
+		Model:     r.Model,
+		Messages:  chatMessages(msgs),
+		Format:    r.Format,
+		Options:   r.Options,
+		KeepAlive: r.KeepAlive,
+		Think:     r.Think,
+	})
+}
+
+// chatMessages joins each message's text parts with newlines, since an
+// Ollama chat message holds one content string.
+func chatMessages(msgs []provpkg.Message) []chatMessage {
+	out := make([]chatMessage, 0, len(msgs))
+	for _, m := range msgs {
+		cm := chatMessage{Role: m.Role.String()}
+		var texts []string
+		for _, p := range m.Parts {
+			if len(p.Image) > 0 {
+				cm.Images = append(cm.Images, base64.StdEncoding.EncodeToString(p.Image))
+				continue
+			}
+			texts = append(texts, p.Text)
+		}
+		cm.Content = strings.Join(texts, "\n")
+		out = append(out, cm)
+	}
+	return out
+}
+
+// post sends body to path and turns the reply into a CallResult.
+func (t *transport) post(ctx context.Context, path string, body any) provpkg.CallResult {
 	res, err := doJSONPost(ctx, jsonPostRequest{
 		client: t.client,
 		logger: t.logger,
 		host:   t.host,
-		path:   "/api/generate",
-		body:   reqData,
+		path:   path,
+		body:   body,
 	})
 	if err != nil {
 		if errors.Is(err, errRequestNotSent) {
@@ -182,7 +268,7 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 		"prompt_eval_count", ollamaResp.PromptEvalCount,
 		"eval_count", ollamaResp.EvalCount,
 		"total_duration_ms", ollamaResp.TotalDuration/1e6,
-		"response_len", len(ollamaResp.Response),
+		"response_len", len(ollamaResp.text()),
 	)
 
 	if ollamaResp.DoneReason == doneReasonLength {
@@ -219,7 +305,7 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 			)),
 		}
 	}
-	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: ollamaResp.Response}
+	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: ollamaResp.text()}
 }
 
 type buildRequestParams struct {

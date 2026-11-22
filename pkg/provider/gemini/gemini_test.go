@@ -84,6 +84,15 @@ func call(t *testing.T, p provpkg.Provider[string], image []byte) provpkg.CallRe
 	return p.Call(t.Context(), &provpkg.Lease[string]{Value: testAPIKey}, testPrompt, image)
 }
 
+func callMessages(t *testing.T, p provpkg.Provider[string], msgs []provpkg.Message) provpkg.CallResult {
+	t.Helper()
+	mc, ok := p.(provpkg.MessageCaller[string])
+	if !ok {
+		t.Fatal("provider is not a MessageCaller")
+	}
+	return mc.CallMessages(t.Context(), &provpkg.Lease[string]{Value: testAPIKey}, msgs)
+}
+
 func TestCall_Request(t *testing.T) {
 	t.Parallel()
 	textOnlyContents := []any{map[string]any{
@@ -94,6 +103,7 @@ func TestCall_Request(t *testing.T) {
 		name     string
 		opts     []gemini.ProviderOption
 		image    []byte
+		msgs     []provpkg.Message
 		wantPath string
 		wantBody map[string]any
 	}{
@@ -133,6 +143,26 @@ func TestCall_Request(t *testing.T) {
 			},
 		},
 		{
+			name: "messages map system and assistant roles",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleSystem, "s"),
+				provpkg.TextMessage(provpkg.RoleUser, "u"),
+				provpkg.TextMessage(provpkg.RoleAssistant, "a"),
+				{Role: provpkg.RoleUser, Parts: []provpkg.Part{{Image: []byte("img")}}},
+			},
+			wantPath: apiVersionPath + "/models/" + gemini.DefaultModel + ":generateContent",
+			wantBody: map[string]any{
+				"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "s"}}},
+				"contents": []any{
+					map[string]any{"role": "user", "parts": []any{map[string]any{"text": "u"}}},
+					map[string]any{"role": "model", "parts": []any{map[string]any{"text": "a"}}},
+					map[string]any{"role": "user", "parts": []any{
+						map[string]any{"inlineData": map[string]any{"mimeType": "image/jpeg", "data": "aW1n"}},
+					}},
+				},
+			},
+		},
+		{
 			name:     "resource-qualified model is not prefixed",
 			opts:     []gemini.ProviderOption{gemini.WithModel("tunedModels/t1")},
 			wantPath: apiVersionPath + "/tunedModels/t1:generateContent",
@@ -146,10 +176,15 @@ func TestCall_Request(t *testing.T) {
 			opts := append([]gemini.ProviderOption{gemini.WithBaseURL(srv.URL + apiVersionPath + "/")}, tt.opts...)
 			p := gemini.NewProvider(nil, opts...)
 
-			got := call(t, p, tt.image)
+			var got provpkg.CallResult
+			if tt.msgs != nil {
+				got = callMessages(t, p, tt.msgs)
+			} else {
+				got = call(t, p, tt.image)
+			}
 
 			if got.Err != nil {
-				t.Fatalf("Call() error = %v", got.Err)
+				t.Fatalf("call error = %v", got.Err)
 			}
 			want := capturedRequest{
 				Method:      http.MethodPost,

@@ -184,6 +184,87 @@ func TestTemplate_Analyze(t *testing.T) {
 	}
 }
 
+func TestTemplate_AnalyzeMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{
+		provider.TextMessage(provider.RoleSystem, "s"),
+		{Role: provider.RoleUser, Parts: []provider.Part{{Text: "u"}, {Image: []byte("img")}}},
+	}
+	mp := &messageProvider{mockProvider: newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess, Text: "ok"})}
+	logs := &capturingHandler{}
+	tmpl := newEchoTemplate(t, mp, WithTemplateLogger(slog.New(logs)))
+
+	got, err := tmpl.AnalyzeMessages(t.Context(), msgs, "job", nil)
+	if err != nil {
+		t.Fatalf("AnalyzeMessages() error = %v", err)
+	}
+
+	if diff := cmp.Diff(parsedResult{Value: "ok"}, got); diff != "" {
+		t.Errorf("AnalyzeMessages() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(msgs, mp.got); diff != "" {
+		t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff("system: s\n\tuser: u [image]", logs.attr("prompt sent", "body")); diff != "" {
+		t.Errorf("logged prompt mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestTemplate_AnalyzeMessagesRejects(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "u")}
+	tests := []struct {
+		name    string
+		guards  int
+		msgs    []provider.Message
+		wantErr error
+	}{
+		{name: "invalid messages", wantErr: provider.ErrInvalidMessages},
+		{name: "provider without messages", msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+		{name: "guarded provider without messages", guards: 1, msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+		{name: "nested guarded provider without messages", guards: 2, msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// No keys: a rejection must come before any key is needed.
+			mock := newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess})
+			mock.keys = provider.NewKeyPool[string](nil)
+			tmpl := newEchoTemplate(t, wrapInGuards(t, mock, tt.guards))
+
+			_, err := tmpl.AnalyzeMessages(t.Context(), tt.msgs, "job", nil)
+
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("AnalyzeMessages() error mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// newEchoTemplate returns a Template whose parser keeps the raw response.
+func newEchoTemplate(t *testing.T, p provider.Provider[string], opts ...TemplateConfigurator) *Template[string, parsedResult] {
+	t.Helper()
+	parse := func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }
+	tmpl, err := NewTemplate[string, parsedResult](p, parse, opts...)
+	if err != nil {
+		t.Fatalf("NewTemplate() error = %v", err)
+	}
+	return tmpl
+}
+
+// wrapInGuards wraps p in n Guards.
+func wrapInGuards(t *testing.T, p provider.Provider[string], n int) provider.Provider[string] {
+	t.Helper()
+	for range n {
+		g, err := provider.NewGuard(p)
+		if err != nil {
+			t.Fatalf("NewGuard() error = %v", err)
+		}
+		p = g
+	}
+	return p
+}
+
 func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -261,7 +342,7 @@ func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 				t.Fatalf("NewTemplate() = %v, want nil", err)
 			}
 
-			_, err = tmpl.callOnce(context.Background(), &callOnceParams{prompt: "prompt"})
+			_, err = tmpl.callOnce(context.Background(), &callOnceParams[string]{prompt: "prompt"})
 			if diff := cmp.Diff(provider.ErrAllKeysCoolingDown, err, cmpopts.EquateErrors()); diff != "" {
 				t.Fatalf("callOnce error mismatch (-want +got):\n%s", diff)
 			}
@@ -340,6 +421,21 @@ type capturingHandler struct {
 type logRecord struct {
 	msg   string
 	attrs []slog.Attr
+}
+
+// attr returns the value of key in the first record with message msg, or "".
+func (h *capturingHandler) attr(msg, key string) string {
+	for _, r := range h.records {
+		if r.msg != msg {
+			continue
+		}
+		for _, a := range r.attrs {
+			if a.Key == key {
+				return a.Value.String()
+			}
+		}
+	}
+	return ""
 }
 
 func (h *capturingHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }

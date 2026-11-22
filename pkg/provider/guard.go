@@ -55,7 +55,7 @@ func (s BreakerState) String() string {
 	case BreakerHalfOpen:
 		return "half-open"
 	default:
-		return "unknown"
+		return unknownName
 	}
 }
 
@@ -191,6 +191,22 @@ func (g *Guard[T]) State() BreakerState {
 // calls the wrapped provider. A cooling lease moves to a ready key in place.
 // If ctx ends while waiting, it returns an OutcomeTerminal result.
 func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, imageData []byte) CallResult {
+	return g.do(ctx, lease, func() CallResult { return g.Provider.Call(ctx, lease, prompt, imageData) })
+}
+
+// CallMessages is Call for typed messages. It returns ErrMessagesUnsupported
+// when the wrapped provider is not a MessageCaller.
+func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Message) CallResult {
+	mc, ok := AsMessageCaller(g.Provider)
+	if !ok {
+		// Drop the unused lease so the caller's Release cannot clear another call's cooldown.
+		lease.drop()
+		return CallResult{Err: backoff.Permanent(fmt.Errorf("%w: %s", ErrMessagesUnsupported, g.ProviderLabel())), Outcome: OutcomeTerminal}
+	}
+	return g.do(ctx, lease, func() CallResult { return mc.CallMessages(ctx, lease, msgs) })
+}
+
+func (g *Guard[T]) do(ctx context.Context, lease *Lease[T], call func() CallResult) CallResult {
 	for {
 		probe, err := g.acquire(ctx)
 		if err != nil {
@@ -199,7 +215,7 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 		keyWait, keyReleased, ready := lease.ensureReady()
 		if ready {
 			start := g.cfg.clock.Now()
-			res := g.Provider.Call(ctx, lease, prompt, imageData)
+			res := call()
 			if ctx.Err() != nil {
 				// A canceled call says nothing about the provider's health.
 				g.release(probe, nil, 0)
