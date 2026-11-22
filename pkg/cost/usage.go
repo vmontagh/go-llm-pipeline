@@ -132,6 +132,9 @@ func parseUsageJSON(doc []byte) (string, Usage, error) {
 		}
 		return "", Usage{}, fmt.Errorf("%w: %w", ErrNoUsage, err)
 	}
+	if err := checkNullCounts(doc); err != nil {
+		return "", Usage{}, err
+	}
 	var in, out []int
 	switch {
 	case b.Usage != nil:
@@ -155,14 +158,50 @@ func parseUsageJSON(doc []byte) (string, Usage, error) {
 	return cmp.Or(b.ModelVersion, b.Model), Usage{Input: inTotal, Output: outTotal}, nil
 }
 
-// usageFields are the top-level JSON fields that carry token counts.
-var usageFields = []string{"usage", "usageMetadata", "prompt_eval_count", "eval_count"}
+// countKeys maps each usage object to its token-count keys; the empty object
+// name holds the top-level Ollama counts.
+var countKeys = map[string][]string{
+	"":              {"prompt_eval_count", "eval_count"},
+	"usage":         {"prompt_tokens", "completion_tokens", "input_tokens", "output_tokens"},
+	"usageMetadata": {"promptTokenCount", "candidatesTokenCount", "thoughtsTokenCount"},
+}
+
+// jsonNull is the JSON null literal.
+var jsonNull = []byte("null")
+
+// checkNullCounts returns ErrInvalidUsage when doc sets a token count to an
+// explicit null, which json.Unmarshal would silently read as zero. Absent
+// counts stay valid: providers omit counts that do not apply.
+func checkNullCounts(doc []byte) error {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(doc, &top); err != nil {
+		return nil //nolint:nilerr // the caller already decoded doc; a non-object has no counts
+	}
+	for obj, keys := range countKeys {
+		fields := top
+		if obj != "" {
+			// An absent or non-object usage field is handled by the caller.
+			if err := json.Unmarshal(top[obj], &fields); err != nil {
+				continue
+			}
+		}
+		for _, k := range keys {
+			if v, ok := fields[k]; ok && bytes.Equal(bytes.TrimSpace(v), jsonNull) {
+				return fmt.Errorf("%w: %s.%s is null", ErrInvalidUsage, obj, k)
+			}
+		}
+	}
+	return nil
+}
 
 // isUsageField reports whether a JSON field path is, or is inside, a usage
 // field.
 func isUsageField(path string) bool {
 	top, _, _ := strings.Cut(path, ".")
-	return slices.Contains(usageFields, top)
+	if _, ok := countKeys[top]; ok && top != "" {
+		return true
+	}
+	return slices.Contains(countKeys[""], top)
 }
 
 func derefOrZero(p *int) int {

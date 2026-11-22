@@ -70,6 +70,11 @@ func TestParseUsage(t *testing.T) {
 		{name: "string count", body: `{"usageMetadata":{"promptTokenCount":"7"}}`, wantErr: cost.ErrInvalidUsage},
 		{name: "usage not an object", body: `{"usage":3}`, wantErr: cost.ErrInvalidUsage},
 		{name: "oversized count in stream", body: "{\"prompt_eval_count\":1}\n{\"prompt_eval_count\":1e30}", wantErr: cost.ErrInvalidUsage},
+		{name: "null openai count", body: `{"model":"m","usage":{"prompt_tokens":null,"completion_tokens":3}}`, wantErr: cost.ErrInvalidUsage},
+		{name: "null gemini count", body: `{"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":null}}`, wantErr: cost.ErrInvalidUsage},
+		{name: "null ollama count", body: `{"prompt_eval_count":4,"eval_count":null}`, wantErr: cost.ErrInvalidUsage},
+		{name: "top-level array", body: `[1,2]`, wantErr: cost.ErrNoUsage},
+		{name: "null usage object", body: `{"model":"m","usage":null}`, wantErr: cost.ErrNoUsage},
 		{name: "non-usage type mismatch", body: `{"model":5}`, wantErr: cost.ErrNoUsage},
 		{name: "stream overflow", body: "{\"prompt_eval_count\":9223372036854775807}\n{\"prompt_eval_count\":1}", wantErr: cost.ErrOverflow},
 	}
