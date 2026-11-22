@@ -166,7 +166,7 @@ borderline conditions surface without blocking automation.
 | `pkg/scrub` | Regexp-based text scrubbing to redact sensitive patterns and PII. |
 | `pkg/vcrpatch` | Patch and rewrite VCR cassettes (match requests, apply actions). |
 | `pkg/llmvcr` | Standalone VCR record/replay for provider `http.Client`s; auto-redacts secrets (via `pkg/scrub`) before writing cassettes; fail-fast on miss. |
-| `pkg/llmtest` | Mock provider response/interaction fixtures for deterministic tests. |
+| `pkg/llmtest` | Mock provider fixtures and golden-file snapshots for deterministic tests. |
 | `pkg/observ` | Observability HTTP server (pprof) bound to a loopback address. |
 | `pkg/trace` | `runtime/trace`-based `Tracer` plus a no-op implementation. |
 | `pkg/httputil` | Small protocol-level HTTP helpers, independent of business logic. |
@@ -192,7 +192,7 @@ Deterministic, zero-cost CI is a first-class goal. The determinism toolkit is ce
   written.
 - `pkg/vcrpatch` patches and rewrites recorded cassettes for scenario testing.
 - `pkg/scrub` provides the regexp redaction rules reused by `pkg/llmvcr` (and usable for logs).
-- `pkg/llmtest` provides mock provider response and interaction fixtures for tests.
+- `pkg/llmtest` provides mock provider fixtures and the `Golden` snapshot helper for tests.
 
 ```go
 rec, err := llmvcr.New("testdata/openai_success", llmvcr.ModeReplayOnly)
@@ -206,6 +206,26 @@ defer func() {
 }()
 provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 ```
+
+#### Locking results with golden files
+
+`llmtest.Golden` catches unexpected changes to an extraction result. It writes the result as
+indented JSON (map keys sorted) and compares it with `testdata/<name>.golden`, printing a
+`cmp.Diff` on mismatch. Replay a cassette so the result is the same on every run:
+
+```go
+func TestExtract(t *testing.T) {
+    // Build the provider on a replay-only llmvcr client, as above.
+    got, err := extractTags(t.Context(), provider) // your code under test
+    if err != nil {
+        t.Fatal(err)
+    }
+    llmtest.Golden(t, "extract_cat", got)
+}
+```
+
+Run `LLMTEST_UPDATE=1 go test ./...` to create or refresh the golden files, then review and
+commit them.
 
 #### Catching cost regressions in CI
 
