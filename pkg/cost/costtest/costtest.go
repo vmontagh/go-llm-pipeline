@@ -62,9 +62,11 @@
 //		}
 //	}
 //
-// Step 4: run the test once with the flag and commit the baseline:
+// Step 4: run the test once with the flag and commit the baseline. Name only
+// the package that defines the flag (here ./myapp); with ./... every other
+// test binary rejects the unknown flag:
 //
-//	go test -run TestPromptCost -update-cost ./...
+//	go test ./myapp -run TestPromptCost -update-cost
 //
 // Responses without provider-reported usage (for example server-sent-event
 // streams) are skipped and add nothing to the total, so compare the CALLS

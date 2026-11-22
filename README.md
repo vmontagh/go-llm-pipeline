@@ -164,7 +164,9 @@ baseline:
    `models: {gpt-4o-mini: {input: 0.15, output: 0.60}}`.
 3. Add a test that calls `costtest.Check`. The package documentation has a complete test with an
    `-update-cost` flag that writes the baseline.
-4. Run that test once with `-update-cost` and commit `testdata/cost-baseline.json`.
+4. Run that test once with `-update-cost`, naming only its package (for example
+   `go test ./myapp -run TestPromptCost -update-cost`, not `./...`, because other test binaries
+   reject the unknown flag), and commit `testdata/cost-baseline.json`.
 
 ```go
 report := costtest.Check(t, os.DirFS("testdata/cassettes"), prices, costtest.Options{
