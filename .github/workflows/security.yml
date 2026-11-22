@@ -1,0 +1,77 @@
+name: Security
+
+on:
+  # Every branch and tag: a pushed commit is public whether or not a PR exists,
+  # and a tag can point at a commit that no branch contains.
+  push:
+    branches: ['**']
+    tags: ['**']
+  pull_request:
+    branches: [main]
+  schedule:
+    # New advisories are published without any code change, so rescan weekly.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# No concurrency group: every run scans commits no other run covers (a push's
+# new commits, or a PR's commits before a force-push), so none may be canceled.
+
+jobs:
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Scan for reachable vulnerabilities
+        run: make vuln
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Choose commits to scan
+        id: revs
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          case "$EVENT" in
+            pull_request) revs="$PR_BASE..HEAD" ;;
+            push)
+              if [ "$BEFORE" = 0000000000000000000000000000000000000000 ]; then
+                # A new branch: everything not already on the default branch.
+                revs="origin/$DEFAULT_BRANCH..HEAD"
+              else
+                # A force-pushed tip is no longer on any branch, so fetch it.
+                git fetch --no-tags --quiet origin "$BEFORE"
+                revs="$BEFORE..HEAD"
+              fi
+              ;;
+            # Scheduled and manual runs rescan every branch and tag, not just
+            # the checked-out one, so a gitleaks upgrade re-checks all of it.
+            *) revs="--all" ;;
+          esac
+          echo "revs=$revs" >> "$GITHUB_OUTPUT"
+      - name: Scan the tree and those commits for secrets
+        env:
+          REVS: ${{ steps.revs.outputs.revs }}
+        run: make secrets SECRETS_REVS="$REVS"

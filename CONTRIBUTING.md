@@ -21,6 +21,8 @@ All common tasks are wired to `make` targets:
 | `make test-unit-cover` | Run tests with a coverage profile (`coverage.out`). |
 | `make lint` | Run `golangci-lint`. |
 | `make lint-arch` | Run the architecture linter (`go-arch-lint`). |
+| `make vuln` | Report reachable known vulnerabilities (`govulncheck`). |
+| `make secrets` | Scan the tree and commits since `origin/main` (or `SECRETS_REVS`) for secrets (`gitleaks`). |
 | `make fmt` | Format the code with `gofmt`. |
 | `make vet` | Run `go vet`. |
 | `make tidy` | Run `go mod tidy`. |
@@ -30,7 +32,10 @@ All common tasks are wired to `make` targets:
 
 **Run `make test` and `make lint` before submitting. Passing tests and a clean
 lint are required for merge.** Fix all failures and lint findings first. If your
-change touches Markdown docs, also run `gomarklint .` and resolve any issues.
+change touches Markdown docs, also run `gomarklint .` and resolve any issues;
+`make test` also fails on relative links to files that do not exist. Fake
+credentials in tests need a trailing `// gitleaks:allow` comment so
+`make secrets` accepts them.
 
 ### Fuzzing the analyzer schema layer
 

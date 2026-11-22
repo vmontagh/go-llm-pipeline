@@ -7,6 +7,8 @@ components:
     in: pkg/logger/**
   appendfile:
     in: internal/appendfile/**
+  doclinks:
+    in: internal/doclinks/**
   trace:
     in: pkg/trace/**
   httputil:
@@ -58,6 +60,11 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - appendfile
+  doclinks:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - doclinks
 
   logger:
     anyProjectDeps: false

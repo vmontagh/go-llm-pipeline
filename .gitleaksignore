@@ -1,0 +1,12 @@
+# Fake keys committed to test fixtures before they carried `gitleaks:allow`.
+# Listed by fingerprint (commit:file:rule:line) so full-history scans pass;
+# new findings still fail. Never add a real credential here: rotate it instead.
+0f449625c56d322b5df9a4febdc88b38f07c5384:pkg/llmvcr/integration_test.go:generic-api-key:21
+0f449625c56d322b5df9a4febdc88b38f07c5384:pkg/llmvcr/recorder_test.go:generic-api-key:22
+0f449625c56d322b5df9a4febdc88b38f07c5384:pkg/llmvcr/recorder_test.go:generic-api-key:23
+39af8f704211a06542f8529a8cc2d35393d328e2:pkg/vcrtest/vcrtest_test.go:generic-api-key:121
+b43e4e2d0996f6ca9b40db9a04584f4b6de6e39d:pkg/vcrtest/vcrtest_test.go:generic-api-key:121
+f070eb6b91360dcf3ded1eb274eed7716983e51a:pkg/llmvcr/integration_test.go:generic-api-key:22
+f070eb6b91360dcf3ded1eb274eed7716983e51a:pkg/llmvcr/recorder_test.go:generic-api-key:21
+f070eb6b91360dcf3ded1eb274eed7716983e51a:pkg/llmvcr/recorder_test.go:generic-api-key:22
+f4bf309cb55f7d8ee8595de31648a33c3b98437a:pkg/llmvcr/integration_test.go:gcp-api-key:18

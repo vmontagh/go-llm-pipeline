@@ -14,8 +14,8 @@ import (
 const (
 	openAISuccessBody = `{"id":"chatcmpl-1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hello-openai"},"finish_reason":"stop"}]}`
 	geminiSuccessBody = `{"candidates":[{"content":{"parts":[{"text":"hello-gemini"}],"role":"model"}}]}`
-	secretAPIKey      = "sk-integrationSECRET1234567890abcd"
-	geminiAPIKey      = "AIzaIntegrationSECRET1234567890abcdefgh"
+	secretAPIKey      = "sk-integrationSECRET1234567890abcd"      // gitleaks:allow — fake fixture for redaction tests
+	geminiAPIKey      = "AIzaIntegrationSECRET1234567890abcdefgh" // gitleaks:allow — fake fixture for redaction tests
 )
 
 func TestIntegration_OpenAI_RecordReplayScrub(t *testing.T) {
