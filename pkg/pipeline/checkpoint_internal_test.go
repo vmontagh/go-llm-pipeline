@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -176,6 +178,54 @@ func TestFileCheckpointClose(t *testing.T) {
 			got := outcome{Err: err, Closed: journal.closed}
 			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Close() (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// TestSyncDirs is white-box because which directories get fsynced is not
+// observable through a real file.
+func TestSyncDirs(t *testing.T) {
+	t.Parallel()
+	const permDir = 0o755
+	tests := []struct {
+		name string
+		path string // the journal, relative to the temp dir
+		want []string
+	}{
+		{name: "plainPath", path: "real/run/j.jsonl", want: []string{"real/run", "real", "."}},
+		{name: "symlinkedDirectory", path: "link/run/j.jsonl", want: []string{"deep/real/run", "deep/real", "deep", "."}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatalf("EvalSymlinks() = %v", err)
+			}
+			for _, dir := range []string{"real/run", "deep/real/run"} {
+				if err := os.MkdirAll(filepath.Join(root, filepath.FromSlash(dir)), permDir); err != nil {
+					t.Fatalf("MkdirAll() = %v", err)
+				}
+			}
+			if err := os.Symlink(filepath.Join(root, "deep", "real"), filepath.Join(root, "link")); err != nil {
+				t.Skipf("Symlink() = %v", err)
+			}
+			path := filepath.Join(root, filepath.FromSlash(tt.path))
+			var got []string
+			record := func(dir string) error {
+				if rel, err := filepath.Rel(root, dir); err == nil && filepath.IsLocal(rel) {
+					got = append(got, filepath.ToSlash(rel))
+				}
+				return nil
+			}
+
+			if err := syncDirs(path, filepath.Dir(path), record); err != nil {
+				t.Fatalf("syncDirs() = %v", err)
+			}
+
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("syncDirs(%q) synced (-want +got):\n%s", tt.path, diff)
 			}
 		})
 	}

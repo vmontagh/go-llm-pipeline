@@ -82,8 +82,8 @@ func WithSyncEvery(n int) CheckpointOption {
 // locks it until Close. It returns ErrCorruptCheckpoint for an unreadable
 // record, ErrCheckpointInUse if the journal is locked, and
 // errors.ErrUnsupported where file locking is unavailable. Directories above
-// the journal are fsynced; unreadable ones are skipped unless this call
-// created entries in them.
+// the journal, with symlinks resolved, are fsynced; unreadable ones are
+// skipped unless this call created entries in them.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
 	path, err := filepath.Abs(path)
 	if err != nil {
@@ -107,7 +107,7 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 		}
 		return nil, errors.Join(fmt.Errorf("locking checkpoint %q: %w", path, err), file.Close())
 	}
-	if err := syncDirs(path, existing); err != nil {
+	if err := syncDirs(path, existing, appendfile.SyncDir); err != nil {
 		return nil, errors.Join(fmt.Errorf("syncing checkpoint directories: %w", err), file.Close())
 	}
 	c := &FileCheckpoint{syncEvery: defaultSyncEvery, file: file}
@@ -139,15 +139,22 @@ func existingAncestor(dir string) (string, error) {
 	}
 }
 
-// syncDirs fsyncs every directory above path, so entries an earlier run
-// created survive a machine crash even if it crashed before syncing.
-// Directories up to existing hold entries this call created and must sync;
-// unreadable ones above it are skipped, so a crashed earlier run's
-// directory there is not guaranteed durable.
-func syncDirs(path, existing string) error {
+// syncDirs fsyncs every directory above path, after resolving symlinks, so
+// entries an earlier run created survive a machine crash even if it crashed
+// before syncing. Directories up to existing hold entries this call created
+// and must sync; unreadable ones above it are skipped, so a crashed earlier
+// run's directory there is not guaranteed durable.
+func syncDirs(path, existing string, syncDir func(string) error) error {
+	start, err := filepath.EvalSymlinks(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("resolving %q: %w", path, err)
+	}
+	if existing, err = filepath.EvalSymlinks(existing); err != nil {
+		return fmt.Errorf("resolving %q: %w", existing, err)
+	}
 	required := true
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
-		err := appendfile.SyncDir(dir)
+	for dir := start; ; dir = filepath.Dir(dir) {
+		err := syncDir(dir)
 		if err != nil && (required || !errors.Is(err, fs.ErrPermission)) {
 			return fmt.Errorf("syncing %q: %w", dir, err)
 		}
