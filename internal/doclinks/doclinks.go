@@ -204,5 +204,10 @@ func exists(fsys fs.FS, file, target string) bool {
 		return false
 	}
 	// path.Join drops a trailing slash, but GitHub serves "README.md/" as 404.
-	return info.IsDir() || !strings.HasSuffix(p, "/")
+	// A final "." or ".." segment also resolves to a URL ending in a slash.
+	switch p[strings.LastIndex(p, "/")+1:] {
+	case "", ".", "..":
+		return info.IsDir()
+	}
+	return true
 }

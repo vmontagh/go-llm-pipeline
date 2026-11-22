@@ -90,7 +90,7 @@ func TestCheck(t *testing.T) {
 		"docs/100%.md":        {},
 		"docs/café.md":        {},
 		"docs/my file.md":     {},
-		"docs/urls.md":        {Data: []byte(`[v6](http://[::1]/x) [v6port](https://[2001:db8::1]:8080/a) [v6net](//[::1]/x) [colon](1:x.md) [bs](a\b.md) [bsnet](\\\\x.test/a.md) [bsdir](..\docs\a.md) [badpct](%zz.md) [query](a.md?plain=1#top) [qmark](a%3F.md) [pointy](< sp.md >) [pointygone](< a.md >) [tab](a&#9;.md) [nl](a&#10;.md)`)},
+		"docs/urls.md":        {Data: []byte(`[v6](http://[::1]/x) [v6port](https://[2001:db8::1]:8080/a) [v6net](//[::1]/x) [colon](1:x.md) [bs](a\b.md) [bsnet](\\\\x.test/a.md) [bsdir](..\docs\a.md) [badpct](%zz.md) [query](a.md?plain=1#top) [qmark](a%3F.md) [pointy](< sp.md >) [pointygone](< a.md >) [tab](a&#9;.md) [nl](a&#10;.md) [dotfile](../LICENSE/.) [dotdotfile](../LICENSE/x/..) [encdotfile](../LICENSE/%2e) [dotdir](../docs/.) [dotdotdir](a.md/..)`)},
 		"docs/1:x.md":         {},
 		"docs/%zz.md":         {},
 		"docs/a?.md":          {},
@@ -109,6 +109,9 @@ func TestCheck(t *testing.T) {
 		{File: "docs/urls.md", Target: " a.md "},
 		{File: "docs/urls.md", Target: "a\t.md"},
 		{File: "docs/urls.md", Target: "a\n.md"},
+		{File: "docs/urls.md", Target: "../LICENSE/."},
+		{File: "docs/urls.md", Target: "../LICENSE/x/.."},
+		{File: "docs/urls.md", Target: "../LICENSE/%2e"},
 	}
 
 	got, err := doclinks.Check(fsys)
