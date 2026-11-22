@@ -75,4 +75,4 @@ jobs:
           cache: false
 
       - name: Test
-        run: go test ./pkg/pipeline/ ./internal/appendfile/
+        run: go test -v ./pkg/pipeline/ ./internal/appendfile/
