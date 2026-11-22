@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -146,6 +147,36 @@ func TestOpenFileCheckpointErrors(t *testing.T) {
 				t.Errorf("OpenFileCheckpoint() error (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+// TestFileCheckpointConcurrentWorkers shares one checkpoint across workers,
+// with every ID queued twice, and checks the journal after reopening.
+func TestFileCheckpointConcurrentWorkers(t *testing.T) {
+	const (
+		itemCount = 50
+		workers   = 8
+	)
+	path := filepath.Join(t.TempDir(), journalName)
+	cp := openCheckpoint(t, path)
+	var ids []string
+	for i := range itemCount {
+		ids = append(ids, strconv.Itoa(i))
+	}
+	process := pipeline.Checkpointed(cp, func(id string) string { return id },
+		func(context.Context, string) error { return nil },
+		func(id string, err error) { t.Errorf("item %q: %v", id, err) })
+
+	if err := pipeline.ConsumeAll(t.Context(), append(ids, ids...), workers, process); err != nil {
+		t.Fatalf("ConsumeAll() = %v", err)
+	}
+	cp = reopen(t, cp, path)
+
+	if diff := cmp.Diff(ids, doneOf(cp, ids...)); diff != "" {
+		t.Errorf("Done after reopen (-want +got):\n%s", diff)
+	}
+	if got := cp.Len(); got != itemCount {
+		t.Errorf("Len() after reopen = %d, want %d", got, itemCount)
 	}
 }
 
