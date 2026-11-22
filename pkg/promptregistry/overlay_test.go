@@ -336,6 +336,18 @@ func TestRenderWithOverlay(t *testing.T) {
 			wantErr:  promptregistry.ErrUnusedRules,
 		},
 		{
+			name:     "absent rule after heavily overlapping rules",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {strings.Repeat("a", 100_000), "a"}, "rejection": {"z"}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
+			name:     "too many overlapping occurrences fail closed",
+			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
+			sections: map[string][]string{"guidelines": {"ab", "aba", "c", strings.Repeat("c", 200_001)}},
+			wantErr:  promptregistry.ErrUnusedRules,
+		},
+		{
 			name:     "rule shared by two sections rendered once",
 			src:      `{{range .Rules.guidelines}}{{.}}{{end}}`,
 			sections: map[string][]string{"guidelines": {"a"}, "rejection": {"a"}},

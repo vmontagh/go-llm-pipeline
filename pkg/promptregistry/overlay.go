@@ -306,16 +306,25 @@ func greedyMissing(rules []rule, out string) []string {
 // occurrence in out with no two overlapping, searching exhaustively within
 // maxAssignmentSteps.
 func hasDisjointOccurrences(rules []rule, out string) bool {
-	candidates := make([][]span, len(rules))
-	for i, r := range rules {
-		candidates[i] = occurrences(out, r.text)
-		if len(candidates[i]) == 0 {
+	for _, r := range rules {
+		if !strings.Contains(out, r.text) {
 			return false
 		}
 	}
+	// Building candidates spends the same budget as the search, so heavily
+	// overlapping input cannot allocate unbounded spans.
+	steps := 0
+	candidates := make([][]span, len(rules))
+	for i, r := range rules {
+		spans, ok := occurrences(out, r.text, maxAssignmentSteps-steps)
+		if !ok {
+			return false
+		}
+		steps += len(spans)
+		candidates[i] = spans
+	}
 	// Most constrained rules first keeps the search small.
 	slices.SortStableFunc(candidates, func(a, b []span) int { return cmp.Compare(len(a), len(b)) })
-	steps := 0
 	var claimed []span
 	var place func(k int) bool
 	place = func(k int) bool {
@@ -341,13 +350,17 @@ func hasDisjointOccurrences(rules []rule, out string) bool {
 	return place(0)
 }
 
-// occurrences returns every, possibly overlapping, occurrence of text in out.
-func occurrences(out, text string) []span {
+// occurrences returns every, possibly overlapping, occurrence of text in out,
+// or false if there are more than limit.
+func occurrences(out, text string, limit int) ([]span, bool) {
 	var spans []span
 	for from := 0; ; {
 		i := strings.Index(out[from:], text)
 		if i < 0 {
-			return spans
+			return spans, true
+		}
+		if len(spans) == limit {
+			return nil, false
 		}
 		spans = append(spans, span{start: from + i, end: from + i + len(text)})
 		from += i + 1
