@@ -5,9 +5,8 @@
 // otherwise. A caller-supplied [PriceTable] converts usage to an exact
 // [Amount]; the package ships no prices because vendor prices change. A
 // [Tracker] aggregates usage and cost per asset and per model for a batch, and
-// [ReportFromCassettes] computes what recorded cassettes would cost. Call
-// [CheckCassettes] from a test to fail CI, offline, on unpriced models or on a
-// cost regression against a saved baseline [Report].
+// [Compare] flags cost regressions against a saved baseline [Report]; package
+// costtest applies it to recorded cassettes so tests catch them offline.
 package cost
 
 import (

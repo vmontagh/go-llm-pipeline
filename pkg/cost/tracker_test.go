@@ -4,7 +4,6 @@ import (
 	"math"
 	"sync"
 	"testing"
-	"testing/fstest"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -151,66 +150,6 @@ func TestCheckPriced(t *testing.T) {
 		if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 			t.Errorf("%s: CheckPriced() (-want +got):\n%s", tt.name, diff)
 		}
-	}
-}
-
-func TestReportFromCassettes(t *testing.T) {
-	t.Parallel()
-	const cassette = `version: 2
-interactions:
-  - response:
-      body: '{"model":"m","usage":{"prompt_tokens":10,"completion_tokens":2}}'
-  - response:
-      body: '{"status":"ok"}'
-  - response:
-      body: '{"model":"x","prompt_eval_count":3,"eval_count":1}'
-`
-	fsys := fstest.MapFS{
-		"a.yaml":    {Data: []byte(cassette)},
-		"sub/b.yml": {Data: []byte(cassette)},
-		"notes.txt": {Data: []byte("ignored")},
-	}
-	got, err := cost.ReportFromCassettes(fsys, newTable(t, map[string]cost.Rate{"m": {Input: 1, Output: 5}}))
-	if err != nil {
-		t.Fatalf("ReportFromCassettes() = %v", err)
-	}
-	want := cost.Report{
-		Models: []cost.ModelTotals{
-			{Model: "m", Totals: cost.Totals{Calls: 2, Usage: cost.Usage{Input: 20, Output: 4}, Cost: 40}},
-			{Model: "x", Totals: cost.Totals{Calls: 2, Usage: cost.Usage{Input: 6, Output: 2}, Unpriced: 2}},
-		},
-		Total: cost.Totals{Calls: 4, Usage: cost.Usage{Input: 26, Output: 6}, Cost: 40, Unpriced: 2},
-	}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("ReportFromCassettes() (-want +got):\n%s", diff)
-	}
-}
-
-func TestReportFromCassettesErrors(t *testing.T) {
-	t.Parallel()
-	table := newTable(t, map[string]cost.Rate{"m": {Input: 1 << 62}})
-	tests := []struct {
-		name    string
-		fsys    fstest.MapFS
-		wantErr error
-	}{
-		{name: "bad yaml", fsys: fstest.MapFS{"a.yaml": {Data: []byte("interactions: [")}}},
-		{name: "negative usage", fsys: fstest.MapFS{"a.yaml": {Data: []byte(`interactions: [{response: {body: '{"model":"m","prompt_eval_count":-1}'}}]`)}}, wantErr: cost.ErrInvalidUsage},
-		{name: "overflow", fsys: fstest.MapFS{"a.yaml": {Data: []byte(`interactions: [{response: {body: '{"model":"m","prompt_eval_count":2}'}}]`)}}, wantErr: cost.ErrOverflow},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := cost.ReportFromCassettes(tt.fsys, table)
-			if err == nil {
-				t.Fatal("ReportFromCassettes() = nil, want error")
-			}
-			if tt.wantErr != nil {
-				if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
-					t.Errorf("ReportFromCassettes() error (-want +got):\n%s", diff)
-				}
-			}
-		})
 	}
 }
 
