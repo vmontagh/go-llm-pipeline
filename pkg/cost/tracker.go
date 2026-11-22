@@ -116,18 +116,11 @@ func (t *Tracker) Record(asset, model string, u Usage) (Amount, error) {
 		return 0, err
 	}
 	priced := err == nil
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	// Compute every total before committing any, so an overflow leaves the
-	// tracker unchanged.
-	next := [...]Totals{t.byAsset[asset], t.byModel[model], t.total}
-	for i := range next {
-		var addErr error
-		if next[i], addErr = next[i].add(u, c, priced); addErr != nil {
-			return 0, fmt.Errorf("recording %q: %w", model, addErr)
-		}
+	if commitErr := t.commit(asset, model, u, c, priced); commitErr != nil {
+		return 0, commitErr
 	}
-	t.byAsset[asset], t.byModel[model], t.total = next[0], next[1], next[2]
+	// Metrics are emitted after the lock is released, so an Adder that reads
+	// the Tracker cannot deadlock.
 	if t.metrics != nil {
 		t.metrics.Add(MetricCalls, 1)
 		t.metrics.Add(MetricInputTokens, int64(u.Input))
@@ -138,6 +131,23 @@ func (t *Tracker) Record(asset, model string, u Usage) (Amount, error) {
 		}
 	}
 	return c, err
+}
+
+// commit adds one call to the asset, model, and overall totals. It computes
+// every total before committing any, so an overflow leaves the tracker
+// unchanged.
+func (t *Tracker) commit(asset, model string, u Usage, c Amount, priced bool) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	next := [...]Totals{t.byAsset[asset], t.byModel[model], t.total}
+	for i := range next {
+		var err error
+		if next[i], err = next[i].add(u, c, priced); err != nil {
+			return fmt.Errorf("recording %q: %w", model, err)
+		}
+	}
+	t.byAsset[asset], t.byModel[model], t.total = next[0], next[1], next[2]
+	return nil
 }
 
 // Asset returns the totals recorded for asset, or false if none.

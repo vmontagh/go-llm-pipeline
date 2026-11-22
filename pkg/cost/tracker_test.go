@@ -135,6 +135,32 @@ func TestTrackerConcurrent(t *testing.T) {
 	}
 }
 
+// reentrantMetrics reads the Tracker from inside Add.
+type reentrantMetrics struct {
+	tracker *cost.Tracker
+	calls   []int
+}
+
+func (m *reentrantMetrics) Add(name string, _ int64) {
+	if name == cost.MetricCalls {
+		m.calls = append(m.calls, m.tracker.Report().Total.Calls)
+	}
+}
+
+func TestTrackerMetricsReadTracker(t *testing.T) {
+	t.Parallel()
+	metrics := &reentrantMetrics{}
+	metrics.tracker = cost.NewTracker(newTable(t, map[string]cost.Rate{"m": {Input: 1}}), cost.WithMetrics(metrics))
+
+	if _, err := metrics.tracker.Record("a", "m", cost.Usage{Input: 1}); err != nil {
+		t.Fatalf("Record() = %v", err)
+	}
+
+	if diff := cmp.Diff([]int{1}, metrics.calls); diff != "" {
+		t.Errorf("Report().Total.Calls seen by Adder (-want +got):\n%s", diff)
+	}
+}
+
 func TestCheckPriced(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
