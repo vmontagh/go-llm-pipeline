@@ -84,10 +84,6 @@ func WithSyncEvery(n int) CheckpointOption {
 // record, ErrCheckpointInUse if the journal is locked, and
 // errors.ErrUnsupported where file locking is unavailable.
 func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint, error) {
-	created, err := missingPaths(path)
-	if err != nil {
-		return nil, fmt.Errorf("checking checkpoint path: %w", err)
-	}
 	if err := os.MkdirAll(filepath.Dir(path), dirPermissions); err != nil {
 		return nil, fmt.Errorf("creating checkpoint directory: %w", err)
 	}
@@ -102,15 +98,8 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 		}
 		return nil, errors.Join(fmt.Errorf("locking checkpoint %q: %w", path, err), file.Close())
 	}
-	// Sync the journal's directory even if the file already existed: a run
-	// that crashed right after creating it may never have synced the entry.
-	if len(created) == 0 {
-		created = []string{path}
-	}
-	for _, p := range created {
-		if err := appendfile.SyncDir(filepath.Dir(p)); err != nil {
-			return nil, errors.Join(fmt.Errorf("syncing checkpoint directory: %w", err), file.Close())
-		}
+	if err := syncDirs(path); err != nil {
+		return nil, errors.Join(fmt.Errorf("syncing checkpoint directories: %w", err), file.Close())
 	}
 	c := &FileCheckpoint{syncEvery: defaultSyncEvery, file: file}
 	for _, opt := range opts {
@@ -126,21 +115,20 @@ func OpenFileCheckpoint(path string, opts ...CheckpointOption) (*FileCheckpoint,
 	return c, nil
 }
 
-// missingPaths returns path and each of its ancestors that does not exist
-// yet, deepest first: the entries OpenFileCheckpoint will create.
-func missingPaths(path string) ([]string, error) {
-	var missing []string
-	for p := filepath.Clean(path); ; p = filepath.Dir(p) {
-		_, err := os.Lstat(p)
-		if err == nil {
-			return missing, nil
+// syncDirs fsyncs every directory above path, so entries an earlier run
+// created survive a machine crash even if that run crashed before syncing.
+// Ancestors we cannot read are skipped: we did not create them.
+func syncDirs(path string) error {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving %q: %w", path, err)
+	}
+	for dir := filepath.Dir(abs); ; dir = filepath.Dir(dir) {
+		if err := appendfile.SyncDir(dir); err != nil && !errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("syncing %q: %w", dir, err)
 		}
-		if !errors.Is(err, fs.ErrNotExist) {
-			return nil, err
-		}
-		missing = append(missing, p)
-		if filepath.Dir(p) == p {
-			return missing, nil
+		if filepath.Dir(dir) == dir {
+			return nil
 		}
 	}
 }

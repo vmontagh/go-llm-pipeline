@@ -15,7 +15,10 @@ import (
 	"github.com/vmontagh/go-llm-pipeline/pkg/pipeline"
 )
 
-const journalName = "run/checkpoint.jsonl"
+const (
+	journalName = "run/checkpoint.jsonl"
+	dirPerm     = 0o700
+)
 
 var (
 	errProcess = errors.New("process failed")
@@ -70,7 +73,7 @@ func reopen(t *testing.T, cp *pipeline.FileCheckpoint, path string) *pipeline.Fi
 // writeJournal writes raw journal content at path.
 func writeJournal(t *testing.T, path, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), dirPerm); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(content), permOwnerRW); err != nil {
@@ -177,6 +180,27 @@ func TestFileCheckpointConcurrentWorkers(t *testing.T) {
 	}
 	if got := cp.Len(); got != itemCount {
 		t.Errorf("Len() after reopen = %d, want %d", got, itemCount)
+	}
+}
+
+func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
+	const permTraverseOnly = 0o311
+	root := t.TempDir()
+	if err := os.Chmod(root, permTraverseOnly); err != nil {
+		t.Fatalf("Chmod() = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(root, dirPerm); err != nil {
+			t.Errorf("restoring permissions: %v", err)
+		}
+	})
+
+	cp, err := pipeline.OpenFileCheckpoint(filepath.Join(root, journalName))
+	if err != nil {
+		t.Fatalf("OpenFileCheckpoint() = %v", err)
+	}
+	if err := cp.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
 	}
 }
 
