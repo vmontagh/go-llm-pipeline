@@ -90,10 +90,12 @@ func TestCheck(t *testing.T) {
 		"docs/100%.md":        {},
 		"docs/café.md":        {},
 		"docs/my file.md":     {},
-		"docs/urls.md":        {Data: []byte(`[v6](http://[::1]/x) [v6port](https://[2001:db8::1]:8080/a) [v6net](//[::1]/x) [colon](1:x.md) [bs](..\docs\a.md) [bsnet](\\\\x.test/a.md) [bsgone](..\missing.md) [badpct](%zz.md) [query](a.md?plain=1#top) [qmark](a%3F.md) [pointy](< a.md >) [ctl](a&#9;&#10;.&#13;md)`)},
+		"docs/urls.md":        {Data: []byte(`[v6](http://[::1]/x) [v6port](https://[2001:db8::1]:8080/a) [v6net](//[::1]/x) [colon](1:x.md) [bs](a\b.md) [bsnet](\\\\x.test/a.md) [bsdir](..\docs\a.md) [badpct](%zz.md) [query](a.md?plain=1#top) [qmark](a%3F.md) [pointy](< sp.md >) [pointygone](< a.md >) [tab](a&#9;.md) [nl](a&#10;.md)`)},
 		"docs/1:x.md":         {},
 		"docs/%zz.md":         {},
 		"docs/a?.md":          {},
+		`docs/a\b.md`:         {},
+		"docs/ sp.md ":        {},
 		"docs/notes.txt":      {Data: []byte("[ignored](missing.md)")},
 		"testdata/fixture.md": {Data: []byte("[fixture](missing.md)")},
 	}
@@ -102,7 +104,11 @@ func TestCheck(t *testing.T) {
 		{File: "docs/a.md", Target: "../../outside.md"},
 		{File: "docs/a.md", Target: "50%.md"},
 		{File: "docs/a.md", Target: "../LICENSE/"},
-		{File: "docs/urls.md", Target: `..\missing.md`},
+		{File: "docs/urls.md", Target: `\\x.test/a.md`},
+		{File: "docs/urls.md", Target: `..\docs\a.md`},
+		{File: "docs/urls.md", Target: " a.md "},
+		{File: "docs/urls.md", Target: "a\t.md"},
+		{File: "docs/urls.md", Target: "a\n.md"},
 	}
 
 	got, err := doclinks.Check(fsys)

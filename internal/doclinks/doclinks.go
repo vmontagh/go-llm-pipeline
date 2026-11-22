@@ -177,26 +177,21 @@ func Check(fsys fs.FS) ([]Broken, error) {
 // urlScheme matches a URL scheme, which makes a target external.
 var urlScheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]*:`)
 
-// browserNormalizer applies the browser URL parser's rewrites for an http(s)
-// page: tabs and newlines are dropped, and a backslash is a slash.
-var browserNormalizer = strings.NewReplacer("\t", "", "\n", "", "\r", "", `\`, "/")
-
 // exists reports whether target, linked from file, resolves to a path in fsys.
-// Targets are read as a browser reads the rendered href. Those with a scheme
-// or host are external and count as existing; a leading slash is relative to
-// the root of fsys, and a query or fragment is ignored.
+// Targets with a scheme or host are external and count as existing; a leading
+// slash is relative to the root of fsys, and a query or fragment is ignored.
 func exists(fsys fs.FS, file, target string) bool {
-	target = browserNormalizer.Replace(strings.TrimFunc(target, isControlOrSpace))
-	// Classify before escaping: escaping would mangle hosts such as "[::1]".
-	if urlScheme.MatchString(target) || strings.HasPrefix(target, "//") {
+	// Read the href the renderer emits: it percent-escapes characters a URL
+	// does not allow, such as spaces, backslashes and the "%" in "100%.md",
+	// and keeps existing %XX escapes. Classifying this string with a regexp
+	// rather than url.Parse keeps escaped IPv6 hosts such as "[::1]" external.
+	href := string(util.URLEscape([]byte(target), false))
+	if urlScheme.MatchString(href) || strings.HasPrefix(href, "//") {
 		return true
 	}
-	p, _, _ := strings.Cut(target, "#")
+	p, _, _ := strings.Cut(href, "#")
 	p, _, _ = strings.Cut(p, "?")
-	// Markdown allows characters a URL does not, such as a literal "100%.md";
-	// escape them as goldmark's renderer does, keeping existing %XX escapes,
-	// then decode once as the browser does.
-	p, err := url.PathUnescape(string(util.URLEscape([]byte(p), false)))
+	p, err := url.PathUnescape(p)
 	if err != nil {
 		return false
 	}
@@ -211,7 +206,3 @@ func exists(fsys fs.FS, file, target string) bool {
 	// path.Join drops a trailing slash, but GitHub serves "README.md/" as 404.
 	return info.IsDir() || !strings.HasSuffix(p, "/")
 }
-
-// isControlOrSpace reports whether r is a C0 control or space, which the
-// browser URL parser trims from both ends of a URL.
-func isControlOrSpace(r rune) bool { return r <= ' ' }
