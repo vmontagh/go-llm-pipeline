@@ -193,6 +193,8 @@ func TestTemplate_AnalyzeMessages(t *testing.T) {
 	tests := []struct {
 		name     string
 		messages bool
+		guard    bool
+		noKeys   bool
 		msgs     []provider.Message
 		want     parsedResult
 		wantMsgs []provider.Message
@@ -209,6 +211,7 @@ func TestTemplate_AnalyzeMessages(t *testing.T) {
 		},
 		{name: "rejects invalid messages", messages: true, wantErr: provider.ErrInvalidMessages},
 		{name: "rejects a provider without messages", msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+		{name: "rejects a guarded provider without messages", guard: true, noKeys: true, msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -218,6 +221,16 @@ func TestTemplate_AnalyzeMessages(t *testing.T) {
 			p := provider.Provider[string](mock)
 			if tt.messages {
 				p = mp
+			}
+			if tt.noKeys {
+				mock.keys = provider.NewKeyPool[string](nil)
+			}
+			if tt.guard {
+				g, err := provider.NewGuard(p)
+				if err != nil {
+					t.Fatalf("NewGuard() error = %v", err)
+				}
+				p = g
 			}
 			logs := &capturingHandler{}
 			parse := func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }

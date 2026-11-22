@@ -13,9 +13,10 @@ func TestValidateMessages(t *testing.T) {
 	t.Parallel()
 	user := provider.TextMessage(provider.RoleUser, "u")
 	tests := []struct {
-		name    string
-		msgs    []provider.Message
-		wantErr error
+		name         string
+		msgs         []provider.Message
+		wantErr      error
+		wantProblems int
 	}{
 		{
 			name: "valid conversation",
@@ -31,6 +32,12 @@ func TestValidateMessages(t *testing.T) {
 		{name: "empty part", msgs: []provider.Message{{Role: provider.RoleUser, Parts: []provider.Part{{}}}}, wantErr: provider.ErrInvalidMessages},
 		{name: "text and image in one part", msgs: []provider.Message{{Role: provider.RoleUser, Parts: []provider.Part{{Text: "u", Image: []byte("img")}}}}, wantErr: provider.ErrInvalidMessages},
 		{name: "system image", msgs: []provider.Message{{Role: provider.RoleSystem, Parts: []provider.Part{{Image: []byte("img")}}}, user}, wantErr: provider.ErrInvalidMessages},
+		{
+			name:         "reports every problem",
+			msgs:         []provider.Message{provider.TextMessage(provider.RoleUnknown, "u"), {Role: provider.RoleUser, Parts: []provider.Part{{}}}},
+			wantErr:      provider.ErrInvalidMessages,
+			wantProblems: 2,
+		},
 		{name: "only system", msgs: []provider.Message{provider.TextMessage(provider.RoleSystem, "s")}, wantErr: provider.ErrInvalidMessages},
 	}
 	for _, tt := range tests {
@@ -39,6 +46,16 @@ func TestValidateMessages(t *testing.T) {
 			err := provider.ValidateMessages(tt.msgs)
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("ValidateMessages() error mismatch (-want +got):\n%s", diff)
+			}
+			if tt.wantProblems == 0 {
+				return
+			}
+			joined, ok := err.(interface{ Unwrap() []error })
+			if !ok {
+				t.Fatalf("ValidateMessages() = %v, want joined errors", err)
+			}
+			if diff := cmp.Diff(tt.wantProblems, len(joined.Unwrap())); diff != "" {
+				t.Errorf("problem count mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

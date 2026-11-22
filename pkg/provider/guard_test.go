@@ -2,6 +2,7 @@ package provider_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"testing"
@@ -665,5 +666,24 @@ func TestGuardCallMessages(t *testing.T) {
 				t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestGuardCallMessagesDropsUnusedLease(t *testing.T) {
+	t.Parallel()
+	fake := &fakeGuarded{clock: newFakeGuardClock()}
+	g, err := provider.NewGuard[string](fake, provider.WithGuardClock(fake.clock))
+	if err != nil {
+		t.Fatalf("NewGuard() error = %v", err)
+	}
+	pool := provider.NewKeyPool([]string{"k"})
+	lease := acquireLease(t, pool)
+	coolKey(t, pool, 0, time.Minute)
+
+	g.CallMessages(t.Context(), lease, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+	lease.Release()
+
+	if _, err := pool.Acquire(t.Context()); !errors.Is(err, provider.ErrAllKeysCoolingDown) {
+		t.Errorf("Acquire() after Release error = %v, want %v", err, provider.ErrAllKeysCoolingDown)
 	}
 }

@@ -165,9 +165,9 @@ func (t *Template[T, R]) AnalyzeMessages(
 ) (R, error) {
 	var zero R
 	if err := provider.ValidateMessages(msgs); err != nil {
-		return zero, err
+		return zero, fmt.Errorf("analyzing messages: %w", err)
 	}
-	mc, ok := t.provider.(provider.MessageCaller[T])
+	mc, ok := provider.AsMessageCaller(t.provider)
 	if !ok {
 		return zero, fmt.Errorf("%w: %s", provider.ErrMessagesUnsupported, t.provider.ProviderLabel())
 	}

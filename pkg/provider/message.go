@@ -64,34 +64,51 @@ var ErrInvalidMessages = errors.New("invalid messages")
 // messages.
 var ErrMessagesUnsupported = errors.New("provider does not support messages")
 
-// ValidateMessages checks that every role is known, every part holds exactly
-// one of Text or Image, system messages are text only, and at least one
-// message is a user or assistant turn.
+// ValidateMessages reports every problem in msgs, joined. It checks that
+// every role is known, every part holds exactly one of Text or Image, system
+// messages are text only, and at least one message is a user or assistant
+// turn.
 func ValidateMessages(msgs []Message) error {
+	var errs []error
 	conversation := false
 	for i, m := range msgs {
 		switch m.Role {
 		case RoleSystem, RoleUser, RoleAssistant:
 		default:
-			return fmt.Errorf("%w: message %d has role %v", ErrInvalidMessages, i, m.Role)
+			errs = append(errs, fmt.Errorf("%w: message %d has role %v", ErrInvalidMessages, i, m.Role))
 		}
 		if len(m.Parts) == 0 {
-			return fmt.Errorf("%w: message %d has no parts", ErrInvalidMessages, i)
+			errs = append(errs, fmt.Errorf("%w: message %d has no parts", ErrInvalidMessages, i))
 		}
 		for j, p := range m.Parts {
 			if (p.Text == "") == (len(p.Image) == 0) {
-				return fmt.Errorf("%w: message %d part %d must hold exactly one of text or image", ErrInvalidMessages, i, j)
+				errs = append(errs, fmt.Errorf("%w: message %d part %d must hold exactly one of text or image", ErrInvalidMessages, i, j))
 			}
 			if m.Role == RoleSystem && len(p.Image) > 0 {
-				return fmt.Errorf("%w: system message %d has an image", ErrInvalidMessages, i)
+				errs = append(errs, fmt.Errorf("%w: system message %d has an image", ErrInvalidMessages, i))
 			}
 		}
-		conversation = conversation || m.Role != RoleSystem
+		conversation = conversation || m.Role == RoleUser || m.Role == RoleAssistant
 	}
 	if !conversation {
-		return fmt.Errorf("%w: no user or assistant message", ErrInvalidMessages)
+		errs = append(errs, fmt.Errorf("%w: no user or assistant message", ErrInvalidMessages))
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+// AsMessageCaller returns p as a MessageCaller when it takes typed messages.
+// A Guard counts only if the provider it wraps does, though a Guard always
+// has CallMessages.
+func AsMessageCaller[T any](p Provider[T]) (MessageCaller[T], bool) {
+	inner := p
+	if g, ok := p.(*Guard[T]); ok {
+		inner = g.Provider
+	}
+	if _, ok := inner.(MessageCaller[T]); !ok {
+		return nil, false
+	}
+	mc, ok := p.(MessageCaller[T])
+	return mc, ok
 }
 
 // MessageCaller is implemented by providers that accept typed multi-turn

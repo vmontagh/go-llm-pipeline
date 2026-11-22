@@ -199,6 +199,8 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Message) CallResult {
 	mc, ok := g.Provider.(MessageCaller[T])
 	if !ok {
+		// Drop the unused lease so the caller's Release cannot clear another call's cooldown.
+		lease.drop()
 		return CallResult{Err: backoff.Permanent(fmt.Errorf("%w: %s", ErrMessagesUnsupported, g.ProviderLabel())), Outcome: OutcomeTerminal}
 	}
 	return g.do(ctx, lease, func() CallResult { return mc.CallMessages(ctx, lease, msgs) })
