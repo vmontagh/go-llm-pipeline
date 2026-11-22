@@ -624,6 +624,8 @@ func TestGuardCallMessages(t *testing.T) {
 	tests := []struct {
 		name      string
 		messages  bool
+		nested    bool
+		canceled  bool // rejection must not wait, so a canceled context still gets it
 		want      provider.CallResult
 		wantCalls int
 		wantMsgs  []provider.Message
@@ -636,8 +638,15 @@ func TestGuardCallMessages(t *testing.T) {
 			wantMsgs:  msgs,
 		},
 		{
-			name: "rejects other providers",
-			want: provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
+			name:     "rejects a nested guard over other providers",
+			nested:   true,
+			canceled: true,
+			want:     provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
+		},
+		{
+			name:     "rejects other providers",
+			canceled: true,
+			want:     provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal},
 		},
 	}
 	for _, tt := range tests {
@@ -649,12 +658,25 @@ func TestGuardCallMessages(t *testing.T) {
 			if tt.messages {
 				inner = mg
 			}
+			if tt.nested {
+				innerGuard, err := provider.NewGuard(inner, provider.WithGuardClock(fake.clock))
+				if err != nil {
+					t.Fatalf("NewGuard() error = %v", err)
+				}
+				inner = innerGuard
+			}
 			g, err := provider.NewGuard(inner, provider.WithGuardClock(fake.clock))
 			if err != nil {
 				t.Fatalf("NewGuard() error = %v", err)
 			}
 
-			got := g.CallMessages(t.Context(), nil, msgs)
+			ctx, cancel := context.WithCancel(t.Context())
+			if tt.canceled {
+				cancel()
+			}
+			defer cancel()
+
+			got := g.CallMessages(ctx, nil, msgs)
 
 			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)

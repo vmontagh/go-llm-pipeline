@@ -41,7 +41,7 @@ func (r Role) String() string {
 type Part struct {
 	// Text is a text segment.
 	Text string
-	// Image is raw JPEG image data.
+	// Image is raw JPEG image data, allowed in user messages only.
 	Image []byte
 }
 
@@ -65,8 +65,8 @@ var ErrInvalidMessages = errors.New("invalid messages")
 var ErrMessagesUnsupported = errors.New("provider does not support messages")
 
 // ValidateMessages reports every problem in msgs, joined. It checks that
-// every role is known, every part holds exactly one of Text or Image, system
-// messages are text only, and at least one message is a user or assistant
+// every role is known, every part holds exactly one of Text or Image, only
+// user messages have images, and at least one message is a user or assistant
 // turn.
 func ValidateMessages(msgs []Message) error {
 	var errs []error
@@ -84,8 +84,8 @@ func ValidateMessages(msgs []Message) error {
 			if (p.Text == "") == (len(p.Image) == 0) {
 				errs = append(errs, fmt.Errorf("%w: message %d part %d must hold exactly one of text or image", ErrInvalidMessages, i, j))
 			}
-			if m.Role == RoleSystem && len(p.Image) > 0 {
-				errs = append(errs, fmt.Errorf("%w: system message %d has an image", ErrInvalidMessages, i))
+			if m.Role != RoleUser && len(p.Image) > 0 {
+				errs = append(errs, fmt.Errorf("%w: %v message %d has an image", ErrInvalidMessages, m.Role, i))
 			}
 		}
 		conversation = conversation || m.Role == RoleUser || m.Role == RoleAssistant

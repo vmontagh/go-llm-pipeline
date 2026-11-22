@@ -197,7 +197,7 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 // CallMessages is Call for typed messages. It returns ErrMessagesUnsupported
 // when the wrapped provider is not a MessageCaller.
 func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Message) CallResult {
-	mc, ok := g.Provider.(MessageCaller[T])
+	mc, ok := AsMessageCaller(g.Provider)
 	if !ok {
 		// Drop the unused lease so the caller's Release cannot clear another call's cooldown.
 		lease.drop()

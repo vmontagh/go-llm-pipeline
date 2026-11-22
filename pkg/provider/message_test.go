@@ -38,6 +38,7 @@ func TestValidateMessages(t *testing.T) {
 			wantErr:      provider.ErrInvalidMessages,
 			wantProblems: 2,
 		},
+		{name: "assistant image", msgs: []provider.Message{user, {Role: provider.RoleAssistant, Parts: []provider.Part{{Image: []byte("img")}}}}, wantErr: provider.ErrInvalidMessages},
 		{name: "only system", msgs: []provider.Message{provider.TextMessage(provider.RoleSystem, "s")}, wantErr: provider.ErrInvalidMessages},
 	}
 	for _, tt := range tests {

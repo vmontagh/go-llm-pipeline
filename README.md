@@ -117,7 +117,7 @@ Share the built analyzer across workers so every call goes through the same guar
 #### Multi-turn conversations
 
 `AnalyzeMessages` sends a typed conversation instead of a single prompt. Each `provider.Message`
-has a role (system, user or assistant) and parts holding text or JPEG image bytes. The OpenAI,
+has a role (system, user or assistant) and parts holding text or, in user messages, JPEG image bytes. The OpenAI,
 Gemini and Ollama providers map the roles natively, and a `Guard` passes messages through:
 
 ```go
