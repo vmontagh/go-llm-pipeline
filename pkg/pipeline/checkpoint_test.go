@@ -184,8 +184,30 @@ func TestFileCheckpointConcurrentWorkers(t *testing.T) {
 	}
 }
 
-func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
+// makeUnreadable removes read access to dir, skipping the test where that
+// is not enforced (Windows, root).
+func makeUnreadable(t *testing.T, dir string) {
+	t.Helper()
 	const permTraverseOnly = 0o311
+	if err := os.Chmod(dir, permTraverseOnly); err != nil {
+		t.Fatalf("Chmod() = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, dirPerm); err != nil {
+			t.Errorf("restoring permissions: %v", err)
+		}
+	})
+	f, err := os.Open(dir)
+	if err != nil {
+		return
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close() = %v", err)
+	}
+	t.Skip("directory read permission is not enforced")
+}
+
+func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
 	tests := []struct {
 		name         string
 		journalExist bool
@@ -201,14 +223,7 @@ func TestOpenFileCheckpointUnreadableAncestor(t *testing.T) {
 			if tt.journalExist {
 				writeJournal(t, path, "")
 			}
-			if err := os.Chmod(root, permTraverseOnly); err != nil {
-				t.Fatalf("Chmod() = %v", err)
-			}
-			t.Cleanup(func() {
-				if err := os.Chmod(root, dirPerm); err != nil {
-					t.Errorf("restoring permissions: %v", err)
-				}
-			})
+			makeUnreadable(t, root)
 
 			cp, err := pipeline.OpenFileCheckpoint(path)
 
