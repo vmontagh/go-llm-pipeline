@@ -37,6 +37,8 @@ components:
     in: pkg/vcrpatch/**
   llmtest:
     in: pkg/llmtest/**
+  eval:
+    in: pkg/eval/**
   scrub:
     in: pkg/scrub/**
   llmvcr:
@@ -186,6 +188,12 @@ deps:
     mayDependOn:
       - vcrpatch
       - llmtest
+
+  eval:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - eval
 
   scrub:
     anyProjectDeps: false
