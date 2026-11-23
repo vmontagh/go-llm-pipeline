@@ -211,7 +211,7 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 			}
 			var line streamLine
 			if err := dec.Decode(&line); err != nil {
-				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if ctx.Err() == nil {
 					err = fmt.Errorf("%w: %w", provpkg.ErrIncompleteStream, err)
 				}
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
@@ -228,12 +228,14 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 				continue
 			}
 			t.logMeta(&line.Response)
-			if err := t.lengthError(&line.Response); err != nil {
-				yield(provpkg.Chunk{}, err)
+			usage := &provpkg.Usage{Input: line.PromptEvalCount, Output: line.EvalCount}
+			if !yield(provpkg.Chunk{Text: line.text(), Usage: usage}, nil) {
 				return
 			}
-			usage := &provpkg.Usage{Input: line.PromptEvalCount, Output: line.EvalCount}
-			yield(provpkg.Chunk{Text: line.text(), Usage: usage}, nil)
+			// A cut-off reply still reports its usage, so the error comes last.
+			if err := t.lengthError(&line.Response); err != nil {
+				yield(provpkg.Chunk{}, err)
+			}
 			return
 		}
 	}

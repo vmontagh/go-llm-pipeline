@@ -71,17 +71,20 @@ func (m *messageProvider) CallMessages(_ context.Context, _ *provider.Lease[stri
 	return m.callResult
 }
 
-// streamProvider is a mockProvider that streams chunks. Each attempt to open
-// the stream takes the next of opens.
+// streamProvider is a mockProvider that streams chunks, then err if set.
+// Each attempt to open the stream takes the next of opens.
 type streamProvider struct {
 	*mockProvider
 	opens  []provider.CallResult
 	chunks []provider.Chunk
+	err    error
 	got    []provider.Message
+	opened int
 }
 
 func (s *streamProvider) Stream(_ context.Context, _ *provider.Lease[string], msgs []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
 	s.got = msgs
+	s.opened++
 	res := s.opens[0]
 	s.opens = s.opens[1:]
 	if res.Outcome != provider.OutcomeSuccess {
@@ -92,6 +95,9 @@ func (s *streamProvider) Stream(_ context.Context, _ *provider.Lease[string], ms
 			if !yield(c, nil) {
 				return
 			}
+		}
+		if s.err != nil {
+			yield(provider.Chunk{}, s.err)
 		}
 	}, res
 }

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -396,6 +397,7 @@ func TestTransport_Stream(t *testing.T) {
 		name       string
 		status     int
 		body       string
+		readErr    error // returned after body; nil means io.EOF
 		numPredict int
 		take       int // chunks read before stopping; 0 reads all
 		want       []provpkg.Chunk
@@ -434,6 +436,15 @@ func TestTransport_Stream(t *testing.T) {
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
+			name:    "connection drops",
+			status:  http.StatusOK,
+			body:    hel,
+			readErr: errTest,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
 			name:    "fails mid-stream",
 			status:  http.StatusOK,
 			body:    hel + `{"error":"model crashed"}` + "\n",
@@ -446,7 +457,7 @@ func TestTransport_Stream(t *testing.T) {
 			status:     http.StatusOK,
 			body:       hel + `{"done":true,"done_reason":"length","eval_count":2}` + "\n",
 			numPredict: 2,
-			want:       []provpkg.Chunk{{Text: "Hel"}},
+			want:       []provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{Output: 2}}},
 			wantRes:    provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
 			wantErr:    ErrOutputLimitExhausted,
 		},
@@ -462,7 +473,11 @@ func TestTransport_Stream(t *testing.T) {
 			t.Parallel()
 			var gotPath string
 			var gotBody map[string]any
-			body := &closeTracker{Reader: strings.NewReader(tt.body)}
+			var r io.Reader = strings.NewReader(tt.body)
+			if tt.readErr != nil {
+				r = io.MultiReader(r, iotest.ErrReader(tt.readErr))
+			}
+			body := &closeTracker{Reader: r}
 			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				gotPath = r.URL.Path
 				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {

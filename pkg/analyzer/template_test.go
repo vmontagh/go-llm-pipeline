@@ -245,30 +245,61 @@ func TestTemplate_StreamMessages(t *testing.T) {
 	t.Parallel()
 	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "u")}
 	chunks := []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
-	mock := newMockProvider(&provider.CallResult{})
-	mock.keys = provider.NewKeyPool([]string{"k1", "k2"})
-	mock.classifyTier = provider.TierShortTransient
-	sp := &streamProvider{
-		mockProvider: mock,
-		// The first open fails and cools its key, so the retry uses the other key.
-		opens:  []provider.CallResult{{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}, {Outcome: provider.OutcomeSuccess}},
-		chunks: chunks,
+	failedOpen := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	okOpen := provider.CallResult{Outcome: provider.OutcomeSuccess}
+	tests := []struct {
+		name       string
+		opens      []provider.CallResult
+		streamErr  error
+		wantErrs   []error
+		wantOpened int
+	}{
+		{
+			// The first open fails and cools its key, so the retry uses the other key.
+			name:       "retries a failed open",
+			opens:      []provider.CallResult{failedOpen, okOpen},
+			wantErrs:   []error{nil, nil},
+			wantOpened: 2,
+		},
+		{
+			name:       "forwards an error after delivery without reopening",
+			opens:      []provider.CallResult{okOpen},
+			streamErr:  provider.ErrIncompleteStream,
+			wantErrs:   []error{nil, nil, provider.ErrIncompleteStream},
+			wantOpened: 1,
+		},
 	}
-	tmpl := newEchoTemplate(t, sp, WithTemplateBackOff(&backoff.ZeroBackOff{}))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock := newMockProvider(&provider.CallResult{})
+			mock.keys = provider.NewKeyPool([]string{"k1", "k2"})
+			mock.classifyTier = provider.TierShortTransient
+			sp := &streamProvider{mockProvider: mock, opens: tt.opens, chunks: chunks, err: tt.streamErr}
+			tmpl := newEchoTemplate(t, sp, WithTemplateBackOff(&backoff.ZeroBackOff{}))
 
-	var got []provider.Chunk
-	for c, err := range tmpl.StreamMessages(t.Context(), msgs, "job", nil) {
-		if err != nil {
-			t.Fatalf("StreamMessages() error = %v", err)
-		}
-		got = append(got, c)
-	}
+			var got []provider.Chunk
+			var errs []error
+			for c, err := range tmpl.StreamMessages(t.Context(), msgs, "job", nil) {
+				errs = append(errs, err)
+				if err == nil {
+					got = append(got, c)
+				}
+			}
 
-	if diff := cmp.Diff(chunks, got); diff != "" {
-		t.Errorf("StreamMessages() mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(msgs, sp.got); diff != "" {
-		t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+			if diff := cmp.Diff(chunks, got); diff != "" {
+				t.Errorf("StreamMessages() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantErrs, errs, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("StreamMessages() errors mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantOpened, sp.opened); diff != "" {
+				t.Errorf("opens mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(msgs, sp.got); diff != "" {
+				t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

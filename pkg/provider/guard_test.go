@@ -742,6 +742,49 @@ func TestGuardStream(t *testing.T) {
 	}
 }
 
+func TestGuardStreamFreesSlotOnFailedOpen(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		open provider.CallResult
+	}{
+		{name: "provider error", open: transientResult},
+		{name: "terminal", open: terminalResult},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newFakeGuardClock()
+			fake := &fakeGuarded{clock: clock, steps: []step{{res: tt.open}, {res: okResult}}}
+			metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, 1)}
+			g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake}, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
+			if err != nil {
+				t.Fatalf("NewGuard() error = %v", err)
+			}
+
+			seq, res := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+			next := make(chan provider.CallResult, 1)
+			go func() { next <- g.Call(t.Context(), nil, "", nil) }()
+			var got provider.CallResult
+			select {
+			case got = <-next:
+			case <-metrics.waited:
+				t.Fatal("Call() waited: the failed open kept the only slot")
+			}
+
+			if diff := cmp.Diff(tt.open, res, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if seq != nil {
+				t.Error("Stream() iterator is not nil, want nil")
+			}
+			if diff := cmp.Diff(okResult, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Call() after the failed open mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestGuardStreamRejectsUnsupported(t *testing.T) {
 	t.Parallel()
 	fake := &fakeGuarded{clock: newFakeGuardClock()}
