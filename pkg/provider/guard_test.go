@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"net/http"
 	"sync"
 	"testing"
@@ -28,6 +29,7 @@ var (
 	overloadedResult = provider.CallResult{Err: errTestSentinel, Outcome: provider.OutcomeProviderError, StatusCode: statusOverloaded}
 	badRequestResult = provider.CallResult{Err: errTestSentinel, Outcome: provider.OutcomeProviderError, StatusCode: http.StatusBadRequest}
 	terminalResult   = provider.CallResult{Err: backoff.Permanent(errTestSentinel), Outcome: provider.OutcomeTerminal}
+	streamChunks     = []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
 )
 
 // fakeGuardClock fires After channels when advance passes their deadline.
@@ -81,8 +83,21 @@ type step struct {
 	latency time.Duration // clock advance inside the call
 	gate    chan struct{} // if set, the call signals entered and blocks until closed
 	cancel  bool          // the caller's context is canceled during the call
-	res     provider.CallResult
+	stream  bool          // the call opens a stream and reads it
+	// afterFirst is what a stream step does after its first chunk.
+	afterFirst firstChunk
+	reply      time.Duration // clock advance per streamed chunk
+	res        provider.CallResult
 }
+
+// firstChunk is what a stream step does after its first chunk.
+type firstChunk uint8
+
+const (
+	readAll    firstChunk = iota // keep reading to the end
+	leaveOpen                    // stop reading but keep the stream open
+	cancelRead                   // cancel the caller's context, then keep reading
+)
 
 // fakeGuarded returns scripted results; only Call and ClassifyError are used.
 type fakeGuarded struct {
@@ -140,6 +155,23 @@ func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease
 	return m.Call(ctx, lease, "", nil)
 }
 
+// streamGuarded is a fakeGuarded that also streams streamChunks. Opening the
+// stream is a Call.
+type streamGuarded struct {
+	*fakeGuarded
+}
+
+func (s *streamGuarded) Stream(ctx context.Context, lease *provider.Lease[string], _ []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
+	res := s.Call(ctx, lease, "", nil)
+	return func(yield func(provider.Chunk, error) bool) {
+		for _, c := range streamChunks {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}, res
+}
+
 func (f *fakeGuarded) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -182,7 +214,7 @@ func newGuardFixture(t *testing.T, steps []step, opts ...provider.GuardOption) *
 	fake := &fakeGuarded{clock: clock, steps: steps, entered: make(chan struct{}, 1)}
 	metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, len(steps))}
 	opts = append(opts, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
-	g, err := provider.NewGuard[string](fake, opts...)
+	g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake}, opts...)
 	if err != nil {
 		t.Fatalf("NewGuard() error = %v", err)
 	}
@@ -203,6 +235,10 @@ func (f *guardFixture) runSteps(t *testing.T, n int) {
 			<-f.fake.entered
 			continue
 		}
+		if s.stream {
+			f.readStream(t, &s)
+			continue
+		}
 		ctx, cancel := context.WithCancel(t.Context())
 		f.fake.mu.Lock()
 		f.fake.cancel = cancel
@@ -221,6 +257,68 @@ func (f *guardFixture) goCall(ctx context.Context) <-chan provider.CallResult {
 	out := make(chan provider.CallResult, 1)
 	go func() { out <- f.guard.Call(ctx, nil, "", nil) }()
 	return out
+}
+
+// readStream opens a stream for s and reads it as s says. A stream left
+// open is closed when the test ends.
+func (f *guardFixture) readStream(t *testing.T, s *step) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	seq, _ := f.guard.Stream(ctx, nil, nil)
+	if seq == nil {
+		return
+	}
+	next, stop := iter.Pull2(seq)
+	for _, err, ok := next(); ok; _, err, ok = next() {
+		if err != nil {
+			t.Fatalf("reading stream: %v", err)
+		}
+		f.clock.advance(s.reply)
+		switch s.afterFirst {
+		case leaveOpen:
+			t.Cleanup(stop)
+			return
+		case cancelRead:
+			cancel()
+		}
+	}
+	stop()
+}
+
+// callRunsNow reports whether a Call gets a slot without waiting. A call
+// that has to wait is canceled, so it uses no step.
+func (f *guardFixture) callRunsNow(t *testing.T) bool {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := f.goCall(ctx)
+	select {
+	case <-done:
+		return true
+	case <-f.metrics.waited:
+		cancel()
+		<-done
+		return false
+	}
+}
+
+// rangeStream reads seq, which is nil when opening failed, calls each after
+// every chunk, and returns the chunks.
+func rangeStream(t *testing.T, seq iter.Seq2[provider.Chunk, error], each func()) []provider.Chunk {
+	t.Helper()
+	if seq == nil {
+		return nil
+	}
+	var got []provider.Chunk
+	for c, err := range seq {
+		if err != nil {
+			t.Fatalf("ranging over stream: %v", err)
+		}
+		got = append(got, c)
+		each()
+	}
+	return got
 }
 
 func repeat(n int, res *provider.CallResult) []step {
@@ -320,6 +418,37 @@ func TestGuardAdapts(t *testing.T) {
 			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
 			steps: append(toFour, step{res: okResult, latency: 2 * time.Second}),
 			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			name:  "slowStreamOpenShrinks",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, latency: 2 * time.Second}),
+			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			// Only the open counts, so a long reply is not mistaken for overload.
+			name:  "longStreamReplyKeepsLimit",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, reply: time.Minute}),
+			want:  outcome{Limit: 4, State: provider.BreakerClosed},
+		},
+		{
+			name:  "canceledReadKeepsOpenFeedback",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, latency: 2 * time.Second, afterFirst: cancelRead}),
+			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			name:  "streamProbeClosesBreakerBeforeReplyEnds",
+			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
+			steps: []step{{res: transientResult}, {before: openFor, res: okResult, stream: true, afterFirst: leaveOpen}},
+			want:  outcome{Limit: 2, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
+		},
+		{
+			name:  "failedProbeAllowsNextProbe",
+			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
+			steps: []step{{res: transientResult}, {before: openFor, res: transientResult}, {before: openFor, res: okResult}},
+			want:  outcome{Limit: 2, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 2}},
 		},
 		{
 			name:  "canceledFailureIgnored",
@@ -635,14 +764,18 @@ func TestGuardCallMessages(t *testing.T) {
 	}
 }
 
-func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
+func TestGuardRejectsUnsupported(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		guards int
+		name    string
+		stream  bool // Stream instead of CallMessages
+		guards  int
+		wantErr error
 	}{
-		{name: "one guard", guards: 1},
-		{name: "nested guards", guards: 2},
+		{name: "messages, one guard", guards: 1, wantErr: provider.ErrMessagesUnsupported},
+		{name: "messages, nested guards", guards: 2, wantErr: provider.ErrMessagesUnsupported},
+		{name: "stream, one guard", stream: true, guards: 1, wantErr: provider.ErrStreamUnsupported},
+		{name: "stream, nested guards", stream: true, guards: 2, wantErr: provider.ErrStreamUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -652,15 +785,59 @@ func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
 			// A canceled context proves the rejection does not wait.
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
+			msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
 
-			got := g.CallMessages(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+			var got provider.CallResult
+			if tt.stream {
+				_, got = g.Stream(ctx, nil, msgs)
+			} else {
+				got = g.CallMessages(ctx, nil, msgs)
+			}
 
-			want := provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal}
+			want := provider.CallResult{Err: tt.wantErr, Outcome: provider.OutcomeTerminal}
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+				t.Errorf("call mismatch (-want +got):\n%s", diff)
 			}
 			if got := fake.callCount(); got != 0 {
 				t.Errorf("calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestGuardStream(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		open       provider.CallResult
+		wantChunks []provider.Chunk
+	}{
+		{name: "streams chunks", open: okResult, wantChunks: streamChunks},
+		{name: "provider error on open", open: transientResult},
+		{name: "terminal error on open", open: terminalResult},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// One slot at most, so a call can only run when the stream frees it.
+			f := newGuardFixture(t, []step{{res: tt.open}, {res: okResult}}, provider.WithConcurrencyLimits(1, 1))
+
+			seq, res := f.guard.Stream(t.Context(), nil, nil)
+			heldWhileReading := true
+			got := rangeStream(t, seq, func() { heldWhileReading = heldWhileReading && !f.callRunsNow(t) })
+			freedAfter := f.callRunsNow(t)
+
+			if diff := cmp.Diff(tt.open, res, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantChunks, got); diff != "" {
+				t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if !heldWhileReading {
+				t.Error("a call ran while the stream held the only slot")
+			}
+			if !freedAfter {
+				t.Error("a call waited after the stream ended, want the slot freed")
 			}
 		})
 	}

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -382,6 +384,230 @@ func TestTransport_CallMessages(t *testing.T) {
 	if diff := cmp.Diff("m", gotBody["model"]); diff != "" {
 		t.Errorf("model mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func TestTransport_Stream(t *testing.T) {
+	t.Parallel()
+	const (
+		hel  = `{"message":{"content":"Hel"}}` + "\n"
+		lo   = `{"message":{"content":"lo"}}` + "\n"
+		done = `{"message":{"content":""},"done":true,"prompt_eval_count":3,"eval_count":2}` + "\n"
+	)
+	opened := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+	tests := []struct {
+		name       string
+		status     int
+		body       io.Reader
+		numPredict int
+		onFirst    readAction // what the caller does after the first chunk
+		want       []provpkg.Chunk
+		wantRes    provpkg.CallResult
+		wantErr    error
+	}{
+		{
+			name:    "streams chunks and usage",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + lo + done),
+			want:    []provpkg.Chunk{{Text: "Hel"}, {Text: "lo"}, {Usage: &provpkg.Usage{Input: 3, Output: 2}}},
+			wantRes: opened,
+		},
+		{
+			name:    "caller stops early",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + lo + done),
+			onFirst: stopReading,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+		},
+		{
+			// The second line is already buffered when the caller cancels.
+			name:    "caller cancels",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + lo + done),
+			onFirst: cancelContext,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: context.Canceled,
+		},
+		{
+			name:    "ends before done",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "ends mid-line",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + `{"message":{"con`),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "connection drops",
+			status:  http.StatusOK,
+			body:    io.MultiReader(strings.NewReader(hel), iotest.ErrReader(errTest)),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "model fails mid-stream",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + `{"error":"model crashed"}` + "\n"),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:       "stops at the output limit",
+			status:     http.StatusOK,
+			body:       strings.NewReader(hel + `{"done":true,"done_reason":"length","eval_count":2}` + "\n"),
+			numPredict: 2,
+			want:       []provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{Output: 2}}},
+			wantRes:    opened,
+			wantErr:    ErrOutputLimitExhausted,
+		},
+		{
+			name:    "fails to open",
+			status:  http.StatusServiceUnavailable,
+			body:    strings.NewReader("busy"),
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: provpkg.ErrUnexpectedStatus, StatusCode: http.StatusServiceUnavailable, Body: []byte("busy")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			tr, body := newStreamTransport(t, tt.status, tt.body)
+			tr.numPredict = tt.numPredict
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			seq, res := tr.Stream(ctx, nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+			got, err := readStream(seq, func() bool {
+				if tt.onFirst == cancelContext {
+					cancel()
+				}
+				return tt.onFirst == stopReading
+			})
+
+			if diff := cmp.Diff(tt.wantRes, res, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
+			}
+			if !body.closed {
+				t.Error("response body not closed")
+			}
+		})
+	}
+}
+
+func TestTransport_StreamDeliversIncrementally(t *testing.T) {
+	t.Parallel()
+	pr, pw := io.Pipe()
+	restSent := make(chan struct{})
+	go func() {
+		// Each Write blocks until read, so restSent closes only after the
+		// reader has taken the last line.
+		for _, line := range []string{`{"message":{"content":"Hel"}}`, `{"message":{"content":""},"done":true}`} {
+			if _, err := pw.Write([]byte(line + "\n")); err != nil {
+				t.Errorf("writing body: %v", err)
+			}
+		}
+		close(restSent)
+		pw.Close() // A pipe writer's Close always returns nil.
+	}()
+	tr, _ := newStreamTransport(t, http.StatusOK, pr)
+
+	seq, _ := tr.Stream(t.Context(), nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+	var restSentBeforeFirst bool
+	got, err := readStream(seq, func() bool {
+		select {
+		case <-restSent:
+			restSentBeforeFirst = true
+		default:
+		}
+		return false
+	})
+
+	if err != nil {
+		t.Fatalf("ranging over stream: %v", err)
+	}
+	if diff := cmp.Diff([]provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{}}}, got); diff != "" {
+		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+	}
+	if restSentBeforeFirst {
+		t.Error("first chunk came after the whole body was read, want it as soon as its line arrives")
+	}
+}
+
+// readAction is what a test caller does after the first chunk.
+type readAction int
+
+const (
+	keepReading readAction = iota
+	stopReading
+	cancelContext
+)
+
+// newStreamTransport returns a transport whose server answers a streaming
+// chat request with status and body, and the body so a test can check that it
+// was closed. Any other request fails the test.
+func newStreamTransport(t *testing.T, status int, body io.Reader) (*transport, *closeTracker) {
+	t.Helper()
+	tracked := &closeTracker{Reader: body}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if r.URL.Path != chatPath || !req.Stream {
+			t.Errorf("request = %s stream=%t, want %s stream=true", r.URL.Path, req.Stream, chatPath)
+		}
+		return &http.Response{StatusCode: status, Body: tracked, Header: make(http.Header)}, nil
+	})}
+	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+	return tr, tracked
+}
+
+// readStream returns the chunks of seq up to its first error, and that error.
+// It calls afterFirst after the first chunk and stops if it returns true. A
+// nil seq has no chunks.
+func readStream(seq iter.Seq2[provpkg.Chunk, error], afterFirst func() (stop bool)) ([]provpkg.Chunk, error) {
+	if seq == nil {
+		return nil, nil
+	}
+	var got []provpkg.Chunk
+	for c, err := range seq {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, c)
+		if len(got) == 1 && afterFirst() {
+			break
+		}
+	}
+	return got, nil
+}
+
+// closeTracker records whether the response body was closed.
+type closeTracker struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error {
+	c.closed = true
+	return nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

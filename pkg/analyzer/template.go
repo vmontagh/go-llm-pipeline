@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"log/slog"
 	"strings"
 	"time"
@@ -171,12 +172,75 @@ func (t *Template[T, R]) AnalyzeMessages(
 	if !ok {
 		return zero, fmt.Errorf("%w: %s", provider.ErrMessagesUnsupported, t.provider.ProviderLabel())
 	}
-	return t.run(ctx, &callOnceParams[T]{messages: msgs, caller: mc, jobID: jobID, publish: publish})
+	return t.run(ctx, &callOnceParams[T]{
+		call: func(lease *provider.Lease[T]) provider.CallResult {
+			return mc.CallMessages(ctx, lease, msgs)
+		},
+		logText: messagesText(msgs),
+		jobID:   jobID,
+		publish: publish,
+	})
+}
+
+// StreamMessages is AnalyzeMessages for a streamed reply: it yields the reply
+// in chunks as they arrive and does not parse it. Opening the stream is
+// retried like Analyze; an error after that ends the stream. The provider must
+// implement provider.Streamer; otherwise it yields
+// provider.ErrStreamUnsupported. Nothing is sent until the result is ranged.
+func (t *Template[T, R]) StreamMessages(
+	ctx context.Context,
+	msgs []provider.Message,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) iter.Seq2[provider.Chunk, error] {
+	return func(yield func(provider.Chunk, error) bool) {
+		seq, err := t.openStream(ctx, msgs, jobID, publish)
+		if err != nil {
+			yield(provider.Chunk{}, err)
+			return
+		}
+		seq(yield)
+	}
+}
+
+func (t *Template[T, R]) openStream(
+	ctx context.Context,
+	msgs []provider.Message,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) (iter.Seq2[provider.Chunk, error], error) {
+	if err := provider.ValidateMessages(msgs); err != nil {
+		return nil, fmt.Errorf("streaming messages: %w", err)
+	}
+	s, ok := provider.AsStreamer(t.provider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", provider.ErrStreamUnsupported, t.provider.ProviderLabel())
+	}
+	var seq iter.Seq2[provider.Chunk, error]
+	_, err := retry(ctx, t, &callOnceParams[T]{
+		call: func(lease *provider.Lease[T]) provider.CallResult {
+			var res provider.CallResult
+			seq, res = s.Stream(ctx, lease, msgs)
+			return res
+		},
+		logText: messagesText(msgs),
+		jobID:   jobID,
+		publish: publish,
+	}, func(string) (struct{}, error) { return struct{}{}, nil })
+	if err != nil {
+		return nil, err
+	}
+	return seq, nil
 }
 
 // run traces the analysis and retries callOnce until the parser accepts a
 // response.
 func (t *Template[T, R]) run(ctx context.Context, p *callOnceParams[T]) (R, error) {
+	return retry(ctx, t, p, t.parser)
+}
+
+// retry is run with any parser.
+func retry[T, R, V any](ctx context.Context, t *Template[T, R], p *callOnceParams[T], parse func(string) (V, error)) (V, error) {
 	defer t.tracer.StartRegion(ctx, t.provider.TraceRegionName()).End()
 
 	if p.publish != nil {
@@ -185,7 +249,7 @@ func (t *Template[T, R]) run(ctx context.Context, p *callOnceParams[T]) (R, erro
 
 	retryStart := time.Now()
 	attempt := 0
-	return ExecuteWithRetries[R](ctx, &RetryConfig{
+	return ExecuteWithRetries[V](ctx, &RetryConfig{
 		ModelName:       t.provider.Model(),
 		JobID:           p.jobID,
 		Publish:         p.publish,
@@ -199,7 +263,7 @@ func (t *Template[T, R]) run(ctx context.Context, p *callOnceParams[T]) (R, erro
 		params := *p
 		params.rc = rc
 		return t.callOnce(ctx, &params)
-	}, t.parser)
+	}, parse)
 }
 
 // AnalyzeAsset runs the analysis Template for a single Asset. It reads the
@@ -261,11 +325,12 @@ func messagesText(msgs []provider.Message) string {
 type callOnceParams[T any] struct {
 	prompt    string
 	imageData []byte
-	messages  []provider.Message // sent by caller, when set, instead of prompt and imageData
-	caller    provider.MessageCaller[T]
-	jobID     string
-	publish   func(eventType, itemID, message string, isError bool)
-	rc        provider.RetryContext
+	// call, when set, replaces the provider Call with prompt and imageData.
+	call    func(lease *provider.Lease[T]) provider.CallResult
+	logText string // logged instead of prompt when call is set
+	jobID   string
+	publish func(eventType, itemID, message string, isError bool)
+	rc      provider.RetryContext
 }
 
 func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams[T]) (string, error) {
@@ -278,11 +343,8 @@ func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams[T]) (st
 		return t.provider.Call(ctx, lease, prompt, imageData)
 	}
 	logText := prompt
-	if p.caller != nil {
-		call = func(lease *provider.Lease[T]) provider.CallResult {
-			return p.caller.CallMessages(ctx, lease, p.messages)
-		}
-		logText = messagesText(p.messages)
+	if p.call != nil {
+		call, logText = p.call, p.logText
 	}
 	lease, err := t.provider.Keys().Acquire(ctx)
 	if err != nil {

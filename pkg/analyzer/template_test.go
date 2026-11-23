@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"errors"
+	"iter"
 	"log/slog"
 	"strings"
 	"testing"
@@ -236,6 +237,84 @@ func TestTemplate_AnalyzeMessagesRejects(t *testing.T) {
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("AnalyzeMessages() error mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestTemplate_StreamMessages(t *testing.T) {
+	t.Parallel()
+	failed := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	opened := provider.CallResult{Outcome: provider.OutcomeSuccess}
+	tests := []struct {
+		name      string
+		opens     []provider.CallResult // the result of each attempt to open
+		streamErr error                 // sent after the chunks
+	}{
+		{name: "retries a failed open", opens: []provider.CallResult{failed, opened}},
+		{name: "does not reopen after a mid-stream error", opens: []provider.CallResult{opened}, streamErr: provider.ErrIncompleteStream},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			sp := newStreamProvider(tt.opens, tt.streamErr)
+			tmpl := newEchoTemplate(t, sp, WithTemplateBackOff(&backoff.ZeroBackOff{}))
+			msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "u")}
+
+			got, err := readStream(tmpl.StreamMessages(t.Context(), msgs, "job", nil))
+
+			if diff := cmp.Diff(sp.chunks, got); diff != "" {
+				t.Errorf("StreamMessages() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.streamErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("StreamMessages() error mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(msgs, sp.got); diff != "" {
+				t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+			}
+			if sp.opened != len(tt.opens) {
+				t.Errorf("stream opened %d times, want %d", sp.opened, len(tt.opens))
+			}
+		})
+	}
+}
+
+// readStream returns the chunks of seq up to its first error, and that error.
+func readStream(seq iter.Seq2[provider.Chunk, error]) ([]provider.Chunk, error) {
+	var got []provider.Chunk
+	for c, err := range seq {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, c)
+	}
+	return got, nil
+}
+
+func TestTemplate_StreamMessagesRejects(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		msgs    []provider.Message
+		wantErr error
+	}{
+		{name: "invalid messages", wantErr: provider.ErrInvalidMessages},
+		{name: "provider without streaming", msgs: []provider.Message{provider.TextMessage(provider.RoleUser, "u")}, wantErr: provider.ErrStreamUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock := newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess})
+			// Guarded, so the check must look past the Guard's own Stream.
+			tmpl := newEchoTemplate(t, wrapInGuards(t, mock, 1))
+
+			var errs []error
+			for _, err := range tmpl.StreamMessages(t.Context(), tt.msgs, "job", nil) {
+				errs = append(errs, err)
+			}
+
+			if diff := cmp.Diff([]error{tt.wantErr}, errs, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("StreamMessages() errors mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

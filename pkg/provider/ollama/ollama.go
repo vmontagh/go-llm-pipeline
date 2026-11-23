@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -175,6 +177,78 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 // endpoint, which takes native roles.
 func (t *transport) CallMessages(ctx context.Context, _ *provpkg.Lease[struct{}], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	return t.post(ctx, chatPath, t.chatRequest(msgs, false))
+}
+
+// Stream implements provpkg.Streamer through /api/chat, which streams one
+// JSON object per line.
+func (t *transport) Stream(ctx context.Context, _ *provpkg.Lease[struct{}], msgs []provpkg.Message) (iter.Seq2[provpkg.Chunk, error], provpkg.CallResult) {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	req := t.jsonRequest(chatPath, t.chatRequest(msgs, true))
+	resp, err := sendJSON(ctx, req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		return t.chunks(ctx, resp.Body), provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+	}
+	var res jsonPostResult
+	if err == nil {
+		res, err = readJSONResult(ctx, t.logger, resp)
+	}
+	// A status other than 200 always fails.
+	failed, _ := failedResult(res, err)
+	return nil, failed
+}
+
+// chunks yields the text of each streamed line, and the usage on the last.
+func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[provpkg.Chunk, error] {
+	return func(yield func(provpkg.Chunk, error) bool) {
+		defer closeBody(ctx, t.logger, body)
+		dec := json.NewDecoder(body)
+		for {
+			// The decoder may hold buffered lines that a canceled read would not stop.
+			if err := ctx.Err(); err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			var line streamLine
+			if err := dec.Decode(&line); err != nil {
+				if ctx.Err() == nil {
+					err = fmt.Errorf("%w: %w", provpkg.ErrIncompleteStream, err)
+				}
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			switch {
+			case line.Error != "":
+				yield(provpkg.Chunk{}, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, line.Error))
+				return
+			case !line.Done:
+				if !yield(provpkg.Chunk{Text: line.text()}, nil) {
+					return
+				}
+				continue
+			}
+			t.logMeta(&line.Response)
+			usage := &provpkg.Usage{Input: line.PromptEvalCount, Output: line.EvalCount}
+			if !yield(provpkg.Chunk{Text: line.text(), Usage: usage}, nil) {
+				return
+			}
+			// A cut-off reply still reports its usage, so the error comes last.
+			if err := t.lengthError(&line.Response); err != nil {
+				yield(provpkg.Chunk{}, err)
+			}
+			return
+		}
+	}
+}
+
+// streamLine is one line of a stream; Error is set when the model fails
+// mid-stream.
+type streamLine struct {
+	Response
+	Error string `json:"error"`
+}
+
+func (t *transport) chatRequest(msgs []provpkg.Message, stream bool) *chatRequest {
 	r := buildRequest(&buildRequestParams{
 		model:          t.model,
 		keepAlive:      t.keepAlive,
@@ -183,14 +257,15 @@ func (t *transport) CallMessages(ctx context.Context, _ *provpkg.Lease[struct{}]
 		think:          t.think,
 		responseSchema: t.responseSchema,
 	})
-	return t.post(ctx, chatPath, &chatRequest{
+	return &chatRequest{
 		Model:     r.Model,
 		Messages:  chatMessages(msgs),
+		Stream:    stream,
 		Format:    r.Format,
 		Options:   r.Options,
 		KeepAlive: r.KeepAlive,
 		Think:     r.Think,
-	})
+	}
 }
 
 // chatMessages joins each message's text parts with newlines, since an
@@ -215,97 +290,94 @@ func chatMessages(msgs []provpkg.Message) []chatMessage {
 
 // post sends body to path and turns the reply into a CallResult.
 func (t *transport) post(ctx context.Context, path string, body any) provpkg.CallResult {
-	res, err := doJSONPost(ctx, jsonPostRequest{
-		client: t.client,
-		logger: t.logger,
-		host:   t.host,
-		path:   path,
-		body:   body,
-	})
-	if err != nil {
-		if errors.Is(err, errRequestNotSent) {
-			return provpkg.CallResult{
-				Outcome: provpkg.OutcomeTerminal,
-				Err:     backoff.Permanent(err),
-			}
-		}
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        err,
-			StatusCode: res.statusCode,
-		}
+	res, err := doJSONPost(ctx, t.jsonRequest(path, body))
+	if failed, ok := failedResult(res, err); ok {
+		return failed
 	}
-	bodyBytes := res.body
-
-	if res.statusCode == http.StatusTooManyRequests || res.statusCode >= http.StatusInternalServerError {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(bodyBytes)),
-			StatusCode: res.statusCode,
-			Body:       bodyBytes,
-			RetryAfter: res.retryAfter,
-		}
-	}
-
-	if res.statusCode != http.StatusOK {
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(bodyBytes))),
-		}
-	}
-
 	var ollamaResp Response
-	if err := json.Unmarshal(bodyBytes, &ollamaResp); err != nil {
+	if err := json.Unmarshal(res.body, &ollamaResp); err != nil {
 		return provpkg.CallResult{
 			Outcome: provpkg.OutcomeTerminal,
 			Err:     backoff.Permanent(fmt.Errorf("%w: parsing response: %w", provpkg.ErrInvalidResponsePart, err)),
 		}
 	}
-	t.logger.Debug("ollama call meta",
-		"model", t.model,
-		"done", ollamaResp.Done,
-		"done_reason", ollamaResp.DoneReason,
-		"prompt_eval_count", ollamaResp.PromptEvalCount,
-		"eval_count", ollamaResp.EvalCount,
-		"total_duration_ms", ollamaResp.TotalDuration/1e6,
-		"response_len", len(ollamaResp.text()),
-	)
-
-	if ollamaResp.DoneReason == doneReasonLength {
-		total := ollamaResp.PromptEvalCount + ollamaResp.EvalCount
-
-		limit := t.numPredict
-		if limit <= 0 {
-			limit = defaultNumPredict
-		}
-
-		if ollamaResp.EvalCount >= limit {
-			return provpkg.CallResult{
-				Outcome: provpkg.OutcomeTerminal,
-				Err: backoff.Permanent(fmt.Errorf(
-					"%w: model used %d eval tokens (model=%s, num_predict=%d); the model tried to generate a response longer than allowed, increase ollama.num_predict in config.yaml",
-					ErrOutputLimitExhausted, ollamaResp.EvalCount, t.model, limit,
-				)),
-			}
-		}
-
-		var hint string
-		remaining := t.contextLength - ollamaResp.PromptEvalCount
-		if t.contextLength > 0 && remaining > 0 && ollamaResp.EvalCount >= remaining {
-			hint = "the response was too long to fit in the remaining context window; try lowering ollama.num_predict, or reduce prompt/EXIF size, or use a model with a larger context window"
-		} else {
-			hint = "reduce EXIF data via llm_context_budgets or llm_max_exif_bytes in config.yaml, or use a model with a larger context window"
-		}
-
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err: backoff.Permanent(fmt.Errorf(
-				"%w: model used %d prompt tokens + %d eval tokens = %d total (model=%s, context_length=%d); %s",
-				ErrContextWindowExhausted, ollamaResp.PromptEvalCount, ollamaResp.EvalCount, total, t.model, t.contextLength, hint,
-			)),
-		}
+	t.logMeta(&ollamaResp)
+	if err := t.lengthError(&ollamaResp); err != nil {
+		return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
 	}
 	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: ollamaResp.text()}
+}
+
+func (t *transport) jsonRequest(path string, body any) jsonPostRequest {
+	return jsonPostRequest{client: t.client, logger: t.logger, host: t.host, path: path, body: body}
+}
+
+// failedResult reports whether a request failed, and how, from its error
+// and status.
+func failedResult(res jsonPostResult, err error) (provpkg.CallResult, bool) {
+	switch {
+	case errors.Is(err, errRequestNotSent):
+		return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}, true
+	case err != nil:
+		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err, StatusCode: res.statusCode}, true
+	case res.statusCode == http.StatusTooManyRequests || res.statusCode >= http.StatusInternalServerError:
+		return provpkg.CallResult{
+			Outcome:    provpkg.OutcomeProviderError,
+			Err:        fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(res.body)),
+			StatusCode: res.statusCode,
+			Body:       res.body,
+			RetryAfter: res.retryAfter,
+		}, true
+	case res.statusCode != http.StatusOK:
+		return provpkg.CallResult{
+			Outcome: provpkg.OutcomeTerminal,
+			Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, res.statusCode, string(res.body))),
+		}, true
+	default:
+		return provpkg.CallResult{}, false
+	}
+}
+
+func (t *transport) logMeta(r *Response) {
+	t.logger.Debug("ollama call meta",
+		"model", t.model,
+		"done", r.Done,
+		"done_reason", r.DoneReason,
+		"prompt_eval_count", r.PromptEvalCount,
+		"eval_count", r.EvalCount,
+		"total_duration_ms", r.TotalDuration/1e6,
+		"response_len", len(r.text()),
+	)
+}
+
+// lengthError explains a reply cut off by the output or context limit, or
+// returns nil.
+func (t *transport) lengthError(r *Response) error {
+	if r.DoneReason != doneReasonLength {
+		return nil
+	}
+	limit := t.numPredict
+	if limit <= 0 {
+		limit = defaultNumPredict
+	}
+	if r.EvalCount >= limit {
+		return fmt.Errorf(
+			"%w: model used %d eval tokens (model=%s, num_predict=%d); the model tried to generate a response longer than allowed, increase ollama.num_predict in config.yaml",
+			ErrOutputLimitExhausted, r.EvalCount, t.model, limit,
+		)
+	}
+
+	var hint string
+	remaining := t.contextLength - r.PromptEvalCount
+	if t.contextLength > 0 && remaining > 0 && r.EvalCount >= remaining {
+		hint = "the response was too long to fit in the remaining context window; try lowering ollama.num_predict, or reduce prompt/EXIF size, or use a model with a larger context window"
+	} else {
+		hint = "reduce EXIF data via llm_context_budgets or llm_max_exif_bytes in config.yaml, or use a model with a larger context window"
+	}
+	return fmt.Errorf(
+		"%w: model used %d prompt tokens + %d eval tokens = %d total (model=%s, context_length=%d); %s",
+		ErrContextWindowExhausted, r.PromptEvalCount, r.EvalCount, r.PromptEvalCount+r.EvalCount, t.model, t.contextLength, hint,
+	)
 }
 
 type buildRequestParams struct {

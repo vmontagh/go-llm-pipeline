@@ -48,27 +48,38 @@ type jsonPostResult struct {
 // request) is wrapped with errRequestNotSent so callers can treat it as
 // terminal. A read failure returns the status code that was already received.
 func doJSONPost(ctx context.Context, req jsonPostRequest) (jsonPostResult, error) {
+	resp, err := sendJSON(ctx, req)
+	if err != nil {
+		return jsonPostResult{}, err
+	}
+	return readJSONResult(ctx, req.logger, resp)
+}
+
+// sendJSON POSTs req.body (JSON-encoded) and returns the response unread.
+// The caller must close its body.
+func sendJSON(ctx context.Context, req jsonPostRequest) (*http.Response, error) {
 	reqBytes, err := json.Marshal(req.body)
 	if err != nil {
-		return jsonPostResult{}, fmt.Errorf("%w: marshaling request body: %w", errRequestNotSent, err)
+		return nil, fmt.Errorf("%w: marshaling request body: %w", errRequestNotSent, err)
 	}
 
 	url := strings.TrimRight(req.host, "/") + req.path
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBytes))
 	if err != nil {
-		return jsonPostResult{}, fmt.Errorf("%w: creating request: %w", errRequestNotSent, err)
+		return nil, fmt.Errorf("%w: creating request: %w", errRequestNotSent, err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	resp, err := req.client.Do(httpReq)
 	if err != nil {
-		return jsonPostResult{}, fmt.Errorf("sending request: %w", err)
+		return nil, fmt.Errorf("sending request: %w", err)
 	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			req.logger.WarnContext(ctx, "close error", "err", cerr)
-		}
-	}()
+	return resp, nil
+}
+
+// readJSONResult reads and closes resp.
+func readJSONResult(ctx context.Context, logger *slog.Logger, resp *http.Response) (jsonPostResult, error) {
+	defer closeBody(ctx, logger, resp.Body)
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -80,4 +91,10 @@ func doJSONPost(ctx context.Context, req jsonPostRequest) (jsonPostResult, error
 		body:       bodyBytes,
 		retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}, nil
+}
+
+func closeBody(ctx context.Context, logger *slog.Logger, body io.Closer) {
+	if err := body.Close(); err != nil {
+		logger.WarnContext(ctx, "close error", "err", err)
+	}
 }
