@@ -483,7 +483,8 @@ func parseResponse(body []byte) provpkg.CallResult {
 }
 
 // parseToolResponse returns the function calls of the first candidate, in
-// order, and its text without the model's thoughts.
+// order, and its text without the model's thoughts. Parts also keeps the
+// signatures of other parts, such as thoughts, so they can be sent back.
 func parseToolResponse(body []byte) provpkg.CallResult {
 	cand, failed, ok := firstCandidate(body)
 	if !ok {
@@ -512,6 +513,8 @@ func parseToolResponse(body []byte) provpkg.CallResult {
 			if *p.Text != "" || p.ThoughtSignature != "" {
 				res.Parts = append(res.Parts, provpkg.Part{Text: *p.Text, Signature: p.ThoughtSignature})
 			}
+		case p.ThoughtSignature != "":
+			res.Parts = append(res.Parts, provpkg.Part{Signature: p.ThoughtSignature})
 		}
 	}
 	if !hasText && len(res.ToolCalls) == 0 {

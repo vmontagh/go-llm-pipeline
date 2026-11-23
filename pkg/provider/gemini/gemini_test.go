@@ -321,9 +321,10 @@ func TestCallTools_Response(t *testing.T) {
 		want provpkg.CallResult
 	}{
 		{
-			name: "calls and text in order with signatures, without thoughts",
+			name: "calls and text in order with signatures, without thought text",
 			body: `{"candidates":[{"content":{"parts":[` +
 				`{"text":"thinking","thought":true},` +
+				`{"text":"reasoning","thought":true,"thoughtSignature":"th"},` +
 				`{"text":"checking","thoughtSignature":"ts"},` +
 				`{"functionCall":{"id":"c1","name":"add","args":{"A":1}},"thoughtSignature":"sig"},` +
 				`{"text":"","thoughtSignature":"es"},` +
@@ -335,6 +336,7 @@ func TestCallTools_Response(t *testing.T) {
 				Text:      "checking more",
 				ToolCalls: []provpkg.ToolCall{{ID: "c1", Name: "add", Arguments: `{"A":1}`}, {Name: "now"}},
 				Parts: []provpkg.Part{
+					{Signature: "th"},
 					{Text: "checking", Signature: "ts"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}, Signature: "sig"},
 					{Signature: "es"},
@@ -370,7 +372,7 @@ func TestCallTools_Response(t *testing.T) {
 		},
 		{
 			name: "only thoughts",
-			body: `{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true},{"inlineData":{"mimeType":"image/png","data":""}}]}}]}`,
+			body: `{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true,"thoughtSignature":"th"},{"inlineData":{"mimeType":"image/png","data":""}}]}}]}`,
 			want: provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: provpkg.ErrInvalidResponsePart},
 		},
 	}
