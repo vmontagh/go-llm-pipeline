@@ -25,6 +25,9 @@ type ToolCall struct {
 	// Arguments is the JSON arguments object as the model sent it. It may be
 	// malformed.
 	Arguments string
+	// Signature is opaque provider state that must go back with the call,
+	// such as Gemini's thought signature. Keep it as received.
+	Signature string
 }
 
 // ToolResult is the outcome of a ToolCall, sent back to the model.

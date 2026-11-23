@@ -97,6 +97,15 @@ func callMessages(t *testing.T, p provpkg.Provider[string], msgs []provpkg.Messa
 	return mc.CallMessages(t.Context(), &provpkg.Lease[string]{Value: testAPIKey}, msgs)
 }
 
+func callTools(t *testing.T, p provpkg.Provider[string], msgs []provpkg.Message, tools []provpkg.ToolSpec) provpkg.CallResult {
+	t.Helper()
+	tc, ok := provpkg.AsToolCaller(p)
+	if !ok {
+		t.Fatal("provider is not a ToolCaller")
+	}
+	return tc.CallTools(t.Context(), &provpkg.Lease[string]{Value: testAPIKey}, msgs, tools)
+}
+
 func TestCall_Request(t *testing.T) {
 	t.Parallel()
 	textOnlyContents := []any{map[string]any{
@@ -108,6 +117,7 @@ func TestCall_Request(t *testing.T) {
 		opts     []gemini.ProviderOption
 		image    []byte
 		msgs     []provpkg.Message
+		tools    []provpkg.ToolSpec
 		wantPath string
 		wantBody map[string]any
 	}{
@@ -172,6 +182,41 @@ func TestCall_Request(t *testing.T) {
 			wantPath: apiVersionPath + "/tunedModels/t1:generateContent",
 			wantBody: map[string]any{"contents": textOnlyContents},
 		},
+		{
+			name: "tool round-trip",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleUser, "u"),
+				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
+					{Text: "checking"},
+					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`, Signature: "sig"}},
+					{ToolCall: &provpkg.ToolCall{Name: "now"}},
+				}},
+				{Role: provpkg.RoleTool, Parts: []provpkg.Part{
+					{ToolResult: &provpkg.ToolResult{CallID: "c1", Name: "add", Content: `{"Sum":1}`}},
+					{ToolResult: &provpkg.ToolResult{Name: "now", Content: "clock broken"}},
+				}},
+			},
+			tools:    []provpkg.ToolSpec{{Name: "add", Description: "adds", Parameters: map[string]any{"type": "object"}}, {Name: "now"}},
+			wantPath: apiVersionPath + "/models/" + gemini.DefaultModel + ":generateContent",
+			wantBody: map[string]any{
+				"contents": []any{
+					map[string]any{"role": "user", "parts": []any{map[string]any{"text": "u"}}},
+					map[string]any{"role": "model", "parts": []any{
+						map[string]any{"text": "checking"},
+						map[string]any{"functionCall": map[string]any{"id": "c1", "name": "add", "args": map[string]any{"A": 1.0}}, "thoughtSignature": "sig"},
+						map[string]any{"functionCall": map[string]any{"name": "now", "args": map[string]any{}}},
+					}},
+					map[string]any{"role": "user", "parts": []any{
+						map[string]any{"functionResponse": map[string]any{"id": "c1", "name": "add", "response": map[string]any{"result": map[string]any{"Sum": 1.0}}}},
+						map[string]any{"functionResponse": map[string]any{"name": "now", "response": map[string]any{"result": "clock broken"}}},
+					}},
+				},
+				"tools": []any{map[string]any{"functionDeclarations": []any{
+					map[string]any{"name": "add", "description": "adds", "parametersJsonSchema": map[string]any{"type": "object"}},
+					map[string]any{"name": "now"},
+				}}},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,9 +226,12 @@ func TestCall_Request(t *testing.T) {
 			p := gemini.NewProvider(nil, opts...)
 
 			var got provpkg.CallResult
-			if tt.msgs != nil {
+			switch {
+			case tt.tools != nil:
+				got = callTools(t, p, tt.msgs, tt.tools)
+			case tt.msgs != nil:
 				got = callMessages(t, p, tt.msgs)
-			} else {
+			default:
 				got = call(t, p, tt.image)
 			}
 
@@ -252,6 +300,51 @@ func TestCall_Response(t *testing.T) {
 
 			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+func TestCallTools_Response(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		want provpkg.CallResult
+	}{
+		{
+			name: "calls in order with text, without thoughts",
+			body: `{"candidates":[{"content":{"parts":[` +
+				`{"text":"thinking","thought":true},` +
+				`{"text":"checking"},` +
+				`{"functionCall":{"id":"c1","name":"add","args":{"A":1}},"thoughtSignature":"sig"},` +
+				`{"functionCall":{"name":"now"}}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "checking", ToolCalls: []provpkg.ToolCall{
+				{ID: "c1", Name: "add", Arguments: `{"A":1}`, Signature: "sig"},
+				{Name: "now"},
+			}},
+		},
+		{
+			name: "final reply joins text parts",
+			body: `{"candidates":[{"content":{"parts":[{"text":"do"},{"text":"ne"}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "done"},
+		},
+		{
+			name: "candidate without parts",
+			body: `{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: provpkg.ErrEmptyCandidate},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := newStubServer(t, http.StatusOK, nil, tt.body)
+			p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL))
+
+			got := callTools(t, p, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, testPrompt)}, []provpkg.ToolSpec{{Name: "add"}})
+
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("CallTools() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

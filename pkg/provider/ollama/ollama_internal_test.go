@@ -342,47 +342,111 @@ func TestTransport_Call(t *testing.T) {
 	}
 }
 
-func TestTransport_CallMessages(t *testing.T) {
+func TestTransport_CallTools(t *testing.T) {
 	t.Parallel()
-	var gotPath string
-	var gotBody map[string]any
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		gotPath = r.URL.Path
-		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-			t.Errorf("decoding request body: %v", err)
-		}
-		return &http.Response{
-			StatusCode: http.StatusOK,
-			Body:       io.NopCloser(strings.NewReader(`{"message":{"role":"assistant","content":"ok"}}`)),
-			Header:     make(http.Header),
-		}, nil
-	})}
-	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
-	msgs := []provpkg.Message{
-		provpkg.TextMessage(provpkg.RoleSystem, "s"),
-		{Role: provpkg.RoleUser, Parts: []provpkg.Part{{Text: "u1"}, {Text: "u2"}, {Image: []byte("img")}}},
-		provpkg.TextMessage(provpkg.RoleAssistant, "a"),
+	tests := []struct {
+		name         string
+		msgs         []provpkg.Message
+		tools        []provpkg.ToolSpec
+		reply        string
+		want         provpkg.CallResult
+		wantMessages []any
+		wantTools    any
+		wantFormat   any
+	}{
+		{
+			name: "messages",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleSystem, "s"),
+				{Role: provpkg.RoleUser, Parts: []provpkg.Part{{Text: "u1"}, {Text: "u2"}, {Image: []byte("img")}}},
+				provpkg.TextMessage(provpkg.RoleAssistant, "a"),
+			},
+			reply: `{"message":{"role":"assistant","content":"ok"}}`,
+			want:  provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "ok"},
+			wantMessages: []any{
+				map[string]any{"role": "system", "content": "s"},
+				map[string]any{"role": "user", "content": "u1\nu2", "images": []any{"aW1n"}},
+				map[string]any{"role": "assistant", "content": "a"},
+			},
+			wantFormat: formatJSONSentinel,
+		},
+		{
+			name: "tool round-trip",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleUser, "u"),
+				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
+					{Text: "checking"},
+					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}},
+					{ToolCall: &provpkg.ToolCall{Name: "now"}},
+				}},
+				{Role: provpkg.RoleTool, Parts: []provpkg.Part{
+					{ToolResult: &provpkg.ToolResult{CallID: "c1", Name: "add", Content: `{"Sum":1}`}},
+					{ToolResult: &provpkg.ToolResult{Name: "now", Content: "clock broken"}},
+				}},
+			},
+			tools: []provpkg.ToolSpec{{Name: "add", Description: "adds", Parameters: map[string]any{"type": "object"}}},
+			reply: `{"message":{"role":"assistant","content":"","tool_calls":[` +
+				`{"id":"c2","function":{"index":0,"name":"add","arguments":{"A":2}}},` +
+				`{"function":{"index":1,"name":"now","arguments":{}}}]}}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, ToolCalls: []provpkg.ToolCall{
+				{ID: "c2", Name: "add", Arguments: `{"A":2}`},
+				{Name: "now", Arguments: `{}`},
+			}},
+			wantMessages: []any{
+				map[string]any{"role": "user", "content": "u"},
+				map[string]any{"role": "assistant", "content": "checking", "tool_calls": []any{
+					map[string]any{"id": "c1", "function": map[string]any{"name": "add", "arguments": map[string]any{"A": 1.0}}},
+					map[string]any{"function": map[string]any{"name": "now", "arguments": map[string]any{}}},
+				}},
+				map[string]any{"role": "tool", "content": `{"Sum":1}`, "tool_name": "add", "tool_call_id": "c1"},
+				map[string]any{"role": "tool", "content": "clock broken", "tool_name": "now"},
+			},
+			wantTools: []any{map[string]any{"type": "function", "function": map[string]any{
+				"name": "add", "description": "adds", "parameters": map[string]any{"type": "object"},
+			}}},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotPath string
+			var gotBody map[string]any
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				gotPath = r.URL.Path
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decoding request body: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tt.reply)), Header: make(http.Header)}, nil
+			})}
+			tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
 
-	got := tr.CallMessages(t.Context(), &provpkg.Lease[struct{}]{}, msgs)
+			// A row without tools goes through CallMessages.
+			var got provpkg.CallResult
+			if tt.tools == nil {
+				got = tr.CallMessages(t.Context(), &provpkg.Lease[struct{}]{}, tt.msgs)
+			} else {
+				got = tr.CallTools(t.Context(), &provpkg.Lease[struct{}]{}, tt.msgs, tt.tools)
+			}
 
-	want := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "ok"}
-	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(chatPath, gotPath); diff != "" {
-		t.Errorf("path mismatch (-want +got):\n%s", diff)
-	}
-	wantMessages := []any{
-		map[string]any{"role": "system", "content": "s"},
-		map[string]any{"role": "user", "content": "u1\nu2", "images": []any{"aW1n"}},
-		map[string]any{"role": "assistant", "content": "a"},
-	}
-	if diff := cmp.Diff(wantMessages, gotBody["messages"]); diff != "" {
-		t.Errorf("messages mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff("m", gotBody["model"]); diff != "" {
-		t.Errorf("model mismatch (-want +got):\n%s", diff)
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("call mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(chatPath, gotPath); diff != "" {
+				t.Errorf("path mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantMessages, gotBody["messages"]); diff != "" {
+				t.Errorf("messages mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantTools, gotBody["tools"]); diff != "" {
+				t.Errorf("tools mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantFormat, gotBody["format"]); diff != "" {
+				t.Errorf("format mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff("m", gotBody["model"]); diff != "" {
+				t.Errorf("model mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }
 

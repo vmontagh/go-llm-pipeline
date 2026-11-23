@@ -5,6 +5,7 @@
 package ollama
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -43,6 +44,14 @@ const formatJSONSentinel = "json"
 const doneReasonLength = "length"
 
 const (
+	// functionType is the only Ollama tool type.
+	functionType = "function"
+	// emptyArguments stands in for a call without arguments; Ollama takes an
+	// object.
+	emptyArguments = "{}"
+)
+
+const (
 	generatePath = "/api/generate"
 	chatPath     = "/api/chat"
 )
@@ -68,6 +77,7 @@ type Request struct {
 type chatRequest struct {
 	Model     string         `json:"model"`
 	Messages  []chatMessage  `json:"messages"`
+	Tools     []chatTool     `json:"tools,omitempty"`
 	Stream    bool           `json:"stream"`
 	Format    any            `json:"format,omitempty"`
 	Options   map[string]any `json:"options,omitempty"`
@@ -75,16 +85,46 @@ type chatRequest struct {
 	Think     *bool          `json:"think,omitempty"`
 }
 
+// chatTool declares a function the model may call.
+type chatTool struct {
+	Type     string       `json:"type"`
+	Function chatFunction `json:"function"`
+}
+
+type chatFunction struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Parameters  map[string]any `json:"parameters,omitempty"`
+}
+
+// chatMessage is one /api/chat message. A tool result names its call in
+// ToolName and ToolCallID.
 type chatMessage struct {
-	Role    string   `json:"role"`
-	Content string   `json:"content"`
-	Images  []string `json:"images,omitempty"`
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	Images     []string   `json:"images,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolName   string     `json:"tool_name,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // ChatMessage is the reply message of the /api/chat endpoint.
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+}
+
+// ToolCall is a model's function call in a chat message.
+type ToolCall struct {
+	ID       string       `json:"id,omitempty"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall names the function and holds its arguments object.
+type FunctionCall struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 type Response struct {
@@ -104,6 +144,18 @@ func (r *Response) text() string {
 		return r.Message.Content
 	}
 	return r.Response
+}
+
+// toolCalls returns the model's function calls, if any.
+func (r *Response) toolCalls() []provpkg.ToolCall {
+	if r.Message == nil || len(r.Message.ToolCalls) == 0 {
+		return nil
+	}
+	out := make([]provpkg.ToolCall, 0, len(r.Message.ToolCalls))
+	for _, c := range r.Message.ToolCalls {
+		out = append(out, provpkg.ToolCall{ID: c.ID, Name: c.Function.Name, Arguments: string(c.Function.Arguments)})
+	}
+	return out
 }
 
 type transport struct {
@@ -175,9 +227,33 @@ func (t *transport) Call(ctx context.Context, _ *provpkg.Lease[struct{}], prompt
 
 // CallMessages implements provpkg.MessageCaller through the /api/chat
 // endpoint, which takes native roles.
-func (t *transport) CallMessages(ctx context.Context, _ *provpkg.Lease[struct{}], msgs []provpkg.Message) provpkg.CallResult {
+func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[struct{}], msgs []provpkg.Message) provpkg.CallResult {
+	return t.CallTools(ctx, lease, msgs, nil)
+}
+
+// CallTools implements provpkg.ToolCaller with Ollama function tools.
+func (t *transport) CallTools(ctx context.Context, _ *provpkg.Lease[struct{}], msgs []provpkg.Message, tools []provpkg.ToolSpec) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	return t.post(ctx, chatPath, t.chatRequest(msgs, false))
+	req := t.chatRequest(msgs, false)
+	if len(tools) > 0 {
+		req.Tools = chatTools(tools)
+		// Ollama writes a constrained reply as text and drops tool_calls,
+		// so tools and a format cannot be combined.
+		req.Format = nil
+	}
+	return t.post(ctx, chatPath, req)
+}
+
+// chatTools declares tools as Ollama functions.
+func chatTools(tools []provpkg.ToolSpec) []chatTool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]chatTool, 0, len(tools))
+	for _, spec := range tools {
+		out = append(out, chatTool{Type: functionType, Function: chatFunction{Name: spec.Name, Description: spec.Description, Parameters: spec.Parameters}})
+	}
+	return out
 }
 
 // Stream implements provpkg.Streamer through /api/chat, which streams one
@@ -269,18 +345,30 @@ func (t *transport) chatRequest(msgs []provpkg.Message, stream bool) *chatReques
 }
 
 // chatMessages joins each message's text parts with newlines, since an
-// Ollama chat message holds one content string.
+// Ollama chat message holds one content string. Each tool result is its own
+// message.
 func chatMessages(msgs []provpkg.Message) []chatMessage {
 	out := make([]chatMessage, 0, len(msgs))
 	for _, m := range msgs {
+		if m.Role == provpkg.RoleTool {
+			for _, p := range m.Parts {
+				r := p.ToolResult
+				out = append(out, chatMessage{Role: m.Role.String(), Content: r.Content, ToolName: r.Name, ToolCallID: r.CallID})
+			}
+			continue
+		}
 		cm := chatMessage{Role: m.Role.String()}
 		var texts []string
 		for _, p := range m.Parts {
-			if len(p.Image) > 0 {
+			switch {
+			case len(p.Image) > 0:
 				cm.Images = append(cm.Images, base64.StdEncoding.EncodeToString(p.Image))
-				continue
+			case p.ToolCall != nil:
+				c := p.ToolCall
+				cm.ToolCalls = append(cm.ToolCalls, ToolCall{ID: c.ID, Function: FunctionCall{Name: c.Name, Arguments: json.RawMessage(cmp.Or(c.Arguments, emptyArguments))}})
+			default:
+				texts = append(texts, p.Text)
 			}
-			texts = append(texts, p.Text)
 		}
 		cm.Content = strings.Join(texts, "\n")
 		out = append(out, cm)
@@ -305,7 +393,7 @@ func (t *transport) post(ctx context.Context, path string, body any) provpkg.Cal
 	if err := t.lengthError(&ollamaResp); err != nil {
 		return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
 	}
-	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: ollamaResp.text()}
+	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: ollamaResp.text(), ToolCalls: ollamaResp.toolCalls()}
 }
 
 func (t *transport) jsonRequest(path string, body any) jsonPostRequest {
