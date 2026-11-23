@@ -120,3 +120,35 @@ func (s *streamProvider) Stream(_ context.Context, _ *provider.Lease[string], ms
 		}
 	}, res
 }
+
+// toolProvider is a messageProvider that takes tools. Each CallTools returns
+// the next of replies and records the messages sent; an extra call fails with
+// errExtraCall.
+type toolProvider struct {
+	*messageProvider
+	replies  []provider.CallResult
+	sent     [][]provider.Message
+	gotTools []provider.ToolSpec
+}
+
+var errExtraCall = errors.New("provider called more often than scripted")
+
+// newToolProvider returns a toolProvider with two keys, so a failed call
+// that cools one key is retried on the other without waiting.
+func newToolProvider(replies []provider.CallResult) *toolProvider {
+	mock := newMockProvider(&provider.CallResult{})
+	mock.keys = provider.NewKeyPool([]string{"k1", "k2"})
+	mock.classifyTier = provider.TierShortTransient
+	return &toolProvider{messageProvider: &messageProvider{mockProvider: mock}, replies: replies}
+}
+
+func (p *toolProvider) CallTools(_ context.Context, _ *provider.Lease[string], msgs []provider.Message, tools []provider.ToolSpec) provider.CallResult {
+	p.sent = append(p.sent, msgs)
+	p.gotTools = tools
+	if len(p.replies) == 0 {
+		return provider.CallResult{Outcome: provider.OutcomeTerminal, Err: backoff.Permanent(errExtraCall)}
+	}
+	res := p.replies[0]
+	p.replies = p.replies[1:]
+	return res
+}

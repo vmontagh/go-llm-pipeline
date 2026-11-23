@@ -187,11 +187,13 @@ func TestTemplate_Analyze(t *testing.T) {
 
 func TestTemplate_AnalyzeMessages(t *testing.T) {
 	t.Parallel()
-	msgs := []provider.Message{
+	msgs := append([]provider.Message{
 		provider.TextMessage(provider.RoleSystem, "s"),
 		{Role: provider.RoleUser, Parts: []provider.Part{{Text: "u"}, {Image: []byte("img")}}},
-	}
-	mp := &messageProvider{mockProvider: newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess, Text: "ok"})}
+	}, toolHistory()...)
+	// A tool caller, so the tool parts in msgs are allowed.
+	mp := newToolProvider(nil)
+	mp.callResult = provider.CallResult{Outcome: provider.OutcomeSuccess, Text: "ok"}
 	logs := &capturingHandler{}
 	tmpl := newEchoTemplate(t, mp, WithTemplateLogger(slog.New(logs)))
 
@@ -206,7 +208,7 @@ func TestTemplate_AnalyzeMessages(t *testing.T) {
 	if diff := cmp.Diff(msgs, mp.got); diff != "" {
 		t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff("system: s\n\tuser: u [image]", logs.attr("prompt sent", "body")); diff != "" {
+	if diff := cmp.Diff("system: s\n\tuser: u [image]\n\tuser: q\n\tassistant: [tool call add]\n\ttool: [tool result add]", logs.attr("prompt sent", "body")); diff != "" {
 		t.Errorf("logged prompt mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -224,6 +226,9 @@ func TestTemplate_AnalyzeMessagesRejects(t *testing.T) {
 		{name: "provider without messages", msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
 		{name: "guarded provider without messages", guards: 1, msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
 		{name: "nested guarded provider without messages", guards: 2, msgs: msgs, wantErr: provider.ErrMessagesUnsupported},
+		{name: "tool parts, provider without tools", msgs: toolHistory(), wantErr: provider.ErrToolsUnsupported},
+		{name: "tool parts, guarded provider without tools", guards: 1, msgs: toolHistory(), wantErr: provider.ErrToolsUnsupported},
+		{name: "tool result only, provider without tools", msgs: []provider.Message{msgs[0], toolHistory()[2]}, wantErr: provider.ErrToolsUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -300,6 +305,7 @@ func TestTemplate_StreamMessagesRejects(t *testing.T) {
 	}{
 		{name: "invalid messages", wantErr: provider.ErrInvalidMessages},
 		{name: "provider without streaming", msgs: []provider.Message{provider.TextMessage(provider.RoleUser, "u")}, wantErr: provider.ErrStreamUnsupported},
+		{name: "tool parts, provider without tools", msgs: toolHistory(), wantErr: provider.ErrToolsUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

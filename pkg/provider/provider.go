@@ -38,6 +38,8 @@ type CallResult struct {
 	Body []byte
 	// RetryAfter is the parsed Retry-After hint (0 when absent).
 	RetryAfter time.Duration
+	// ToolCalls are the tools the model asks to run; see ToolCaller.
+	ToolCalls []ToolCall
 }
 
 // Provider is the per-backend hook surface the analyzer Template

@@ -157,7 +157,8 @@ func (t *Template[T, R]) Analyze(
 
 // AnalyzeMessages is Analyze for a typed multi-turn conversation. The
 // provider must implement provider.MessageCaller; otherwise it returns
-// provider.ErrMessagesUnsupported.
+// provider.ErrMessagesUnsupported. Messages with tool parts also need a
+// provider.ToolCaller; otherwise it returns provider.ErrToolsUnsupported.
 func (t *Template[T, R]) AnalyzeMessages(
 	ctx context.Context,
 	msgs []provider.Message,
@@ -166,6 +167,9 @@ func (t *Template[T, R]) AnalyzeMessages(
 ) (R, error) {
 	var zero R
 	if err := provider.ValidateMessages(msgs); err != nil {
+		return zero, fmt.Errorf("analyzing messages: %w", err)
+	}
+	if err := t.checkToolParts(msgs); err != nil {
 		return zero, fmt.Errorf("analyzing messages: %w", err)
 	}
 	mc, ok := provider.AsMessageCaller(t.provider)
@@ -186,7 +190,8 @@ func (t *Template[T, R]) AnalyzeMessages(
 // in chunks as they arrive and does not parse it. Opening the stream is
 // retried like Analyze; an error after that ends the stream. The provider must
 // implement provider.Streamer; otherwise it yields
-// provider.ErrStreamUnsupported. Nothing is sent until the result is ranged.
+// provider.ErrStreamUnsupported. Messages with tool parts also need a
+// provider.ToolCaller; otherwise it yields provider.ErrToolsUnsupported. Nothing is sent until the result is ranged.
 func (t *Template[T, R]) StreamMessages(
 	ctx context.Context,
 	msgs []provider.Message,
@@ -212,6 +217,9 @@ func (t *Template[T, R]) openStream(
 	if err := provider.ValidateMessages(msgs); err != nil {
 		return nil, fmt.Errorf("streaming messages: %w", err)
 	}
+	if err := t.checkToolParts(msgs); err != nil {
+		return nil, fmt.Errorf("streaming messages: %w", err)
+	}
 	s, ok := provider.AsStreamer(t.provider)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", provider.ErrStreamUnsupported, t.provider.ProviderLabel())
@@ -231,6 +239,15 @@ func (t *Template[T, R]) openStream(
 		return nil, err
 	}
 	return seq, nil
+}
+
+// checkToolParts rejects tool parts in msgs unless the provider is a
+// provider.ToolCaller.
+func (t *Template[T, R]) checkToolParts(msgs []provider.Message) error {
+	if _, ok := provider.AsToolCaller(t.provider); ok || !provider.HasTools(msgs) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s", provider.ErrToolsUnsupported, t.provider.ProviderLabel())
 }
 
 // run traces the analysis and retries callOnce until the parser accepts a
@@ -303,7 +320,8 @@ func joinPromptPayload(prompt string, payload []byte) string {
 }
 
 // messagesText renders msgs as "role: text" lines for debug logs. Images
-// are shown as "[image]".
+// are shown as "[image]" and tool parts as "[tool call NAME]" or
+// "[tool result NAME]".
 func messagesText(msgs []provider.Message) string {
 	var b strings.Builder
 	for _, m := range msgs {
@@ -311,11 +329,16 @@ func messagesText(msgs []provider.Message) string {
 		b.WriteString(":")
 		for _, part := range m.Parts {
 			b.WriteString(" ")
-			if len(part.Image) > 0 {
+			switch {
+			case len(part.Image) > 0:
 				b.WriteString("[image]")
-				continue
+			case part.ToolCall != nil:
+				b.WriteString("[tool call " + part.ToolCall.Name + "]")
+			case part.ToolResult != nil:
+				b.WriteString("[tool result " + part.ToolResult.Name + "]")
+			default:
+				b.WriteString(part.Text)
 			}
-			b.WriteString(part.Text)
 		}
 		b.WriteString("\n")
 	}

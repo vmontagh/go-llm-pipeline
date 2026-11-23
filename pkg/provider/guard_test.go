@@ -155,6 +155,18 @@ func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease
 	return m.Call(ctx, lease, "", nil)
 }
 
+// toolGuarded is a fakeGuarded that also takes tools.
+type toolGuarded struct {
+	*fakeGuarded
+	gotMsgs  []provider.Message
+	gotTools []provider.ToolSpec
+}
+
+func (m *toolGuarded) CallTools(ctx context.Context, lease *provider.Lease[string], msgs []provider.Message, tools []provider.ToolSpec) provider.CallResult {
+	m.gotMsgs, m.gotTools = msgs, tools
+	return m.Call(ctx, lease, "", nil)
+}
+
 // streamGuarded is a fakeGuarded that also streams streamChunks. Opening the
 // stream is a Call.
 type streamGuarded struct {
@@ -227,7 +239,8 @@ func (f *guardFixture) runSteps(t *testing.T, n int) {
 	t.Helper()
 	var gated []step
 	var done []<-chan provider.CallResult
-	for _, s := range f.fake.steps[:n] {
+	for i := range n {
+		s := f.fake.steps[i]
 		f.clock.advance(s.before)
 		if s.gate != nil {
 			gated = append(gated, s)
@@ -246,8 +259,8 @@ func (f *guardFixture) runSteps(t *testing.T, n int) {
 		f.guard.Call(ctx, nil, "", nil)
 		cancel()
 	}
-	for i, s := range gated {
-		close(s.gate)
+	for i := range gated {
+		close(gated[i].gate)
 		<-done[i]
 	}
 }
@@ -764,18 +777,63 @@ func TestGuardCallMessages(t *testing.T) {
 	}
 }
 
+func TestGuardCallTools(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
+	tools := []provider.ToolSpec{{Name: "lookup"}}
+	fake := &fakeGuarded{clock: newFakeGuardClock(), steps: []step{{res: okResult}}}
+	tg := &toolGuarded{fakeGuarded: fake}
+	g := wrapInGuards(t, tg, fake.clock, 1)
+
+	got := g.CallTools(t.Context(), nil, msgs, tools)
+
+	if diff := cmp.Diff(okResult, got, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("CallTools() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(msgs, tg.gotMsgs); diff != "" {
+		t.Errorf("forwarded messages mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(tools, tg.gotTools); diff != "" {
+		t.Errorf("forwarded tools mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// guardMethod is the Guard method a test calls.
+type guardMethod int
+
+const (
+	callMessages guardMethod = iota
+	stream
+	callTools
+)
+
+// callGuard calls method on g and returns its result.
+func callGuard(ctx context.Context, g *provider.Guard[string], method guardMethod, msgs []provider.Message) provider.CallResult {
+	switch method {
+	case stream:
+		_, res := g.Stream(ctx, nil, msgs)
+		return res
+	case callTools:
+		return g.CallTools(ctx, nil, msgs, nil)
+	default:
+		return g.CallMessages(ctx, nil, msgs)
+	}
+}
+
 func TestGuardRejectsUnsupported(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		stream  bool // Stream instead of CallMessages
+		method  guardMethod
 		guards  int
 		wantErr error
 	}{
 		{name: "messages, one guard", guards: 1, wantErr: provider.ErrMessagesUnsupported},
 		{name: "messages, nested guards", guards: 2, wantErr: provider.ErrMessagesUnsupported},
-		{name: "stream, one guard", stream: true, guards: 1, wantErr: provider.ErrStreamUnsupported},
-		{name: "stream, nested guards", stream: true, guards: 2, wantErr: provider.ErrStreamUnsupported},
+		{name: "stream, one guard", method: stream, guards: 1, wantErr: provider.ErrStreamUnsupported},
+		{name: "stream, nested guards", method: stream, guards: 2, wantErr: provider.ErrStreamUnsupported},
+		{name: "tools, one guard", method: callTools, guards: 1, wantErr: provider.ErrToolsUnsupported},
+		{name: "tools, nested guards", method: callTools, guards: 2, wantErr: provider.ErrToolsUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -787,12 +845,7 @@ func TestGuardRejectsUnsupported(t *testing.T) {
 			cancel()
 			msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
 
-			var got provider.CallResult
-			if tt.stream {
-				_, got = g.Stream(ctx, nil, msgs)
-			} else {
-				got = g.CallMessages(ctx, nil, msgs)
-			}
+			got := callGuard(ctx, g, tt.method, msgs)
 
 			want := provider.CallResult{Err: tt.wantErr, Outcome: provider.OutcomeTerminal}
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {

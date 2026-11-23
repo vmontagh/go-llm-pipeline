@@ -117,7 +117,7 @@ Share the built analyzer across workers so every call goes through the same guar
 #### Multi-turn conversations
 
 `AnalyzeMessages` sends a typed conversation instead of a single prompt. Each `provider.Message`
-has a role (system, user or assistant) and parts holding text or, in user messages, JPEG image bytes. The OpenAI,
+has a role (system, user, assistant, or tool; see [Tool calling](#tool-calling)) and parts holding text or, in user messages, JPEG image bytes. The OpenAI,
 Gemini and Ollama providers map the roles natively, and a `Guard` passes messages through:
 
 ```go
@@ -157,6 +157,42 @@ Stopping the loop early closes the connection. Ollama, OpenAI, and Gemini stream
 provider streams by implementing `provider.Streamer`, otherwise `StreamMessages` yields
 `provider.ErrStreamUnsupported`. Through a `Guard`, a stream keeps its concurrency slot until it
 ends.
+
+#### Tool calling
+
+`AnalyzeWithTools` lets the model call typed Go functions before it answers. `NewTool` derives
+the parameter schema from the argument struct, checks the model's arguments against it, and sends
+the result back as JSON. Tool names are 1–64 letters, digits, `_` or `-`, starting with a letter
+or `_`:
+
+```go
+type weatherArgs struct {
+	City string `json:"city" jsonschema:"description=City name"`
+}
+type weather struct {
+	TempC int `json:"temp_c"`
+}
+
+lookup, err := analyzer.NewTool("weather", "Current weather in a city",
+	func(ctx context.Context, a weatherArgs) (weather, error) { return forecast(ctx, a.City) })
+if err != nil {
+	return err
+}
+res, err := a.AnalyzeWithTools(ctx, msgs, analyzer.ToolLoop{Tools: []analyzer.Tool{lookup}}, "job-1", nil)
+```
+
+While the model asks for tools, the loop runs them in order and sends the results back; its first
+reply without tool calls is parsed and returned. Each model call is retried like `Analyze`. After
+`MaxSteps` replies (default 8) that still call tools, it returns `analyzer.ErrMaxToolSteps`.
+
+An unknown tool name returns `analyzer.ErrUnknownTool`, and arguments that fail the schema return
+`analyzer.ErrInvalidToolArguments`; a tool may return that error too, to reject arguments the
+schema cannot express. With `ReportInvalidCalls` set, both are sent back to the model as the tool
+result instead, so it can correct itself. A call with no name and any other tool error end the loop.
+
+The OpenAI provider supports tools; a custom provider does so by implementing
+`provider.ToolCaller`, otherwise `AnalyzeWithTools` returns `provider.ErrToolsUnsupported`. The
+same error is returned for messages with tool parts sent to `AnalyzeMessages` or `StreamMessages`.
 
 ### Doctor diagnostics
 
