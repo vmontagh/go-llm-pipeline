@@ -537,6 +537,19 @@ func TestBuildRequest(t *testing.T) {
 				{Role: "assistant", Content: []Content{{Type: "text", Text: "a"}}},
 			},
 		}, {
+			name: "signature-only turn sends empty text",
+			msgs: []provpkg.Message{{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{{Signature: "s"}}}},
+			want: []RequestMessage{{Role: "assistant", Content: []Content{{Type: "text"}}}},
+		}, {
+			name: "calls without text send no content",
+			msgs: []provpkg.Message{{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
+				{Signature: "s"},
+				{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "now"}},
+			}}},
+			want: []RequestMessage{{Role: "assistant", ToolCalls: []ToolCall{
+				{ID: "c1", Type: "function", Function: FunctionCall{Name: "now", Arguments: "{}"}},
+			}}},
+		}, {
 			name: "tool round-trip",
 			msgs: []provpkg.Message{
 				provpkg.TextMessage(provpkg.RoleUser, "u"),

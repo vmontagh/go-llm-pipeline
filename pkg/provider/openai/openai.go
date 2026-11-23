@@ -571,6 +571,10 @@ func requestMessages(msgs []provpkg.Message) []RequestMessage {
 				rm.Content = append(rm.Content, Content{Type: textContentType, Text: p.Text})
 			}
 		}
+		if len(rm.Content) == 0 && len(rm.ToolCalls) == 0 {
+			// A signature-only turn would otherwise have neither content nor calls.
+			rm.Content = []Content{{Type: textContentType}}
+		}
 		out = append(out, rm)
 	}
 	return out
