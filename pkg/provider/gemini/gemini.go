@@ -67,6 +67,9 @@ const (
 	imageMIMEType         = "image/jpeg"
 	userRole              = "user"
 	modelRole             = "model"
+	// finishMaxTokens is the finish reason of a reply cut off at the output
+	// token limit.
+	finishMaxTokens = "MAX_TOKENS"
 	// emptyArgs stands in for missing or unusable call arguments; Gemini
 	// takes an object.
 	emptyArgs = "{}"
@@ -486,16 +489,25 @@ func parseToolResponse(body []byte) provpkg.CallResult {
 	if !ok {
 		return failed
 	}
+	// A cut-off turn may hold half its calls, and running them has effects.
+	if cand.FinishReason == finishMaxTokens {
+		return terminal(fmt.Errorf("%w: reply cut off (finish reason %q)", provpkg.ErrInvalidResponsePart, cand.FinishReason))
+	}
 	res := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
 	var text strings.Builder
+	hasText := false
 	for _, p := range cand.Content.Parts {
 		switch {
 		case p.FunctionCall != nil:
 			c := p.FunctionCall
 			res.ToolCalls = append(res.ToolCalls, provpkg.ToolCall{ID: c.ID, Name: c.Name, Arguments: string(c.Args), Signature: p.ThoughtSignature})
 		case p.Text != nil && !p.Thought:
+			hasText = true
 			text.WriteString(*p.Text)
 		}
+	}
+	if !hasText && len(res.ToolCalls) == 0 {
+		return terminal(fmt.Errorf("%w: no function call or answer text", provpkg.ErrInvalidResponsePart))
 	}
 	res.Text = text.String()
 	return res

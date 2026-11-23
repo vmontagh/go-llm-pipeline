@@ -331,14 +331,34 @@ func TestCallTools_Response(t *testing.T) {
 			}},
 		},
 		{
+			name: "calls without text",
+			body: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"now"}}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, ToolCalls: []provpkg.ToolCall{{Name: "now"}}},
+		},
+		{
 			name: "final reply joins text parts",
 			body: `{"candidates":[{"content":{"parts":[{"text":"do"},{"text":"ne"}]}}]}`,
 			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "done"},
 		},
 		{
+			name: "empty answer text",
+			body: `{"candidates":[{"content":{"parts":[{"text":""}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+		},
+		{
 			name: "candidate without parts",
 			body: `{"candidates":[{"content":{"parts":[]},"finishReason":"MAX_TOKENS"}]}`,
 			want: provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: provpkg.ErrEmptyCandidate},
+		},
+		{
+			name: "call cut off at the token limit",
+			body: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"add"}}]},"finishReason":"MAX_TOKENS"}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: provpkg.ErrInvalidResponsePart},
+		},
+		{
+			name: "only thoughts",
+			body: `{"candidates":[{"content":{"parts":[{"text":"thinking","thought":true},{"inlineData":{"mimeType":"image/png","data":""}}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: provpkg.ErrInvalidResponsePart},
 		},
 	}
 	for _, tt := range tests {
