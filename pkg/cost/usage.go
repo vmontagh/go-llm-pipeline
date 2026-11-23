@@ -98,8 +98,13 @@ type usageBody struct {
 // example a non-LLM response, ErrInvalidUsage for negative counts, and
 // ErrOverflow when a sum does not fit in an int.
 func ParseUsage(body []byte) (string, Usage, error) {
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
 	if json.Valid(body) {
-		return parseUsageJSON(body)
+		m, u, err := parseUsageJSON(body)
+		if err != nil {
+			return "", Usage{}, err
+		}
+		return m, u, nil
 	}
 	if isSSE(body) {
 		return parseUsageSSE(body)
@@ -139,6 +144,9 @@ func ParseUsage(body []byte) (string, Usage, error) {
 	return model, total, nil
 }
 
+// utf8BOM is the byte order mark a body may start with.
+const utf8BOM = "\uFEFF"
+
 // sseDone is the data of OpenAI's last stream event.
 const sseDone = "[DONE]"
 
@@ -176,6 +184,8 @@ func parseUsageSSE(body []byte) (string, Usage, error) {
 			continue
 		}
 		m, u, err := parseUsageJSON(data)
+		// The model may come in an event without usage.
+		model = cmp.Or(model, m)
 		if errors.Is(err, ErrNoUsage) {
 			continue
 		}
@@ -183,7 +193,6 @@ func parseUsageSSE(body []byte) (string, Usage, error) {
 			return "", Usage{}, err
 		}
 		last, found = u, true
-		model = cmp.Or(model, m)
 	}
 	if !found {
 		return "", Usage{}, ErrNoUsage
@@ -223,7 +232,7 @@ func parseUsageJSON(doc []byte) (string, Usage, error) {
 		in = []int{derefOrZero(b.PromptEvalCount)}
 		out = []int{derefOrZero(b.EvalCount)}
 	default:
-		return "", Usage{}, ErrNoUsage
+		return cmp.Or(b.ModelVersion, b.Model), Usage{}, ErrNoUsage
 	}
 	inTotal, inErr := sumTokens(in)
 	outTotal, outErr := sumTokens(out)

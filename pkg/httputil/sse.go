@@ -17,9 +17,12 @@ func SSEData(r io.Reader) iter.Seq2[[]byte, error] {
 	return func(yield func([]byte, error) bool) {
 		lr := lineReader{br: bufio.NewReader(r)}
 		var data []byte
-		hasData := false
+		hasData, first := false, true
 		for {
 			line, err := lr.next()
+			if first {
+				line, first = bytes.TrimPrefix(line, []byte(utf8BOM)), false
+			}
 			if err != nil && !errors.Is(err, io.EOF) {
 				yield(nil, fmt.Errorf("reading event: %w", err))
 				return
@@ -47,6 +50,9 @@ func SSEData(r io.Reader) iter.Seq2[[]byte, error] {
 		}
 	}
 }
+
+// utf8BOM is the byte order mark a stream may start with.
+const utf8BOM = "\uFEFF"
 
 // lineReader reads lines ended by LF, CR, or CRLF, as SSE allows.
 type lineReader struct {

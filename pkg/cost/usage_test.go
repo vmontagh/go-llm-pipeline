@@ -72,6 +72,12 @@ func TestParseUsage(t *testing.T) {
 			wantModel: "gemini-2.5-flash", want: cost.Usage{Input: 9, Output: 4},
 		},
 		{name: "sse with event fields", body: "event: done\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
+		{
+			name:      "sse model only before usage",
+			body:      "data: {\"modelVersion\":\"gemini-2.5-flash\",\"candidates\":[]}\n\ndata: {\"usageMetadata\":{\"promptTokenCount\":3}}\n\n",
+			wantModel: "gemini-2.5-flash", want: cost.Usage{Input: 3},
+		},
+		{name: "sse with bom", body: "\uFEFFdata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse starting with id", body: "id: 1\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse starting with retry", body: "retry: 10\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse without usage", body: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", wantErr: cost.ErrNoUsage},

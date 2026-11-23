@@ -319,11 +319,13 @@ func parseEvent(data []byte) (c provpkg.Chunk, done bool, err error) {
 		return c, false, nil
 	}
 	cand := ev.Candidates[0]
+	var text strings.Builder
 	for _, p := range cand.Content.Parts {
 		if p.Text != nil {
-			c.Text += *p.Text
+			text.WriteString(*p.Text)
 		}
 	}
+	c.Text = text.String()
 	if cand.FinishReason == "" {
 		return c, false, nil
 	}

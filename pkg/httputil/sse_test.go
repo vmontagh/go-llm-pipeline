@@ -28,6 +28,7 @@ func TestSSEData(t *testing.T) {
 		{name: "crlf", in: "data: a\r\n\r\n", want: []string{"a"}},
 		{name: "crOnly", in: "data: a\rdata: b\r\rdata: c\r\r", want: []string{"a\nb", "c"}},
 		{name: "mixedEndings", in: "data: a\r\ndata: b\n\r\r\n", want: []string{"a\nb"}},
+		{name: "bom", in: "\uFEFFdata: a\n\n", want: []string{"a"}},
 		{name: "noSpaceAfterColon", in: "data:a\n\n", want: []string{"a"}},
 		{name: "otherFieldsSkipped", in: ": ping\nevent: x\nid: 1\ndata: a\n\n", want: []string{"a"}},
 		{name: "eventWithoutDataSkipped", in: "event: x\n\ndata: a\n\n", want: []string{"a"}},
