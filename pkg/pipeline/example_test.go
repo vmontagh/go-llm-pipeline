@@ -223,22 +223,26 @@ func Example_localAndRemote() {
 	g.Go(func() error {
 		calls, ctx := errgroup.WithContext(ctx)
 		calls.SetLimit(remoteWorkers)
-		for p := range resized {
-			if ctx.Err() != nil {
-				break // a call failed; returning cancels the local stage
-			}
-			calls.Go(func() error {
-				c, err := describe(ctx, p)
-				if err != nil {
-					return fmt.Errorf("describing %s: %w", p, err)
+		for {
+			select {
+			case p, ok := <-resized:
+				if !ok {
+					return calls.Wait()
 				}
-				mu.Lock()
-				defer mu.Unlock()
-				captions = append(captions, c)
-				return nil
-			})
+				calls.Go(func() error {
+					c, err := describe(ctx, p)
+					if err != nil {
+						return fmt.Errorf("describing %s: %w", p, err)
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					captions = append(captions, c)
+					return nil
+				})
+			case <-ctx.Done():
+				return calls.Wait() // a call failed; returning cancels the local stage
+			}
 		}
-		return calls.Wait()
 	})
 
 	if err := g.Wait(); err != nil {

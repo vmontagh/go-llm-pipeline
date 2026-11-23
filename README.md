@@ -152,13 +152,17 @@ g.Go(func() error { // local stage: one worker per core
 g.Go(func() error { // remote stage: capped by the rate limit
 	calls, ctx := errgroup.WithContext(ctx)
 	calls.SetLimit(remoteWorkers)
-	for p := range resized {
-		if ctx.Err() != nil {
-			break // a call failed; returning cancels the local stage
+	for {
+		select {
+		case p, ok := <-resized:
+			if !ok {
+				return calls.Wait()
+			}
+			calls.Go(func() error { return describe(ctx, a, p) })
+		case <-ctx.Done():
+			return calls.Wait() // a call failed; returning cancels the local stage
 		}
-		calls.Go(func() error { return describe(ctx, a, p) })
 	}
-	return calls.Wait()
 })
 return g.Wait()
 ```
