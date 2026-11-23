@@ -54,7 +54,8 @@ type Part struct {
 	ToolResult *ToolResult
 	// Signature is opaque provider state on a model's part that must go back
 	// with it, such as Gemini's thought signature. Keep it as received;
-	// providers without such state ignore it.
+	// providers without such state ignore it. An assistant part may hold a
+	// Signature alone: an empty text part kept for replay.
 	Signature string
 }
 
@@ -139,6 +140,8 @@ var (
 // validatePart checks that p holds one field that role allows.
 func validatePart(role Role, p Part) error {
 	switch {
+	case p.fields() == 0 && p.Signature != "" && role == RoleAssistant:
+		return nil
 	case p.fields() != 1:
 		return errPartFields
 	case p.Text != "" && role == RoleTool,

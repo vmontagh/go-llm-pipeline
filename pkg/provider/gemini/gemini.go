@@ -508,9 +508,8 @@ func parseToolResponse(body []byte) provpkg.CallResult {
 		case p.Text != nil && !p.Thought:
 			hasText = true
 			text.WriteString(*p.Text)
-			// An empty text part cannot be a Part; only its signature is
-			// lost, which Gemini does not check on text.
-			if *p.Text != "" {
+			// An empty text part is kept only for its signature.
+			if *p.Text != "" || p.ThoughtSignature != "" {
 				res.Parts = append(res.Parts, provpkg.Part{Text: *p.Text, Signature: p.ThoughtSignature})
 			}
 		}

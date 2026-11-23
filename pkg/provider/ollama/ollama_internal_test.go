@@ -377,6 +377,7 @@ func TestTransport_CallTools(t *testing.T) {
 				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
 					{Text: "checking"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}},
+					{Signature: "es"},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `{"A":1`}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `[1]`}},

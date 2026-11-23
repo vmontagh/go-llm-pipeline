@@ -567,7 +567,7 @@ func requestMessages(msgs []provpkg.Message) []RequestMessage {
 					Type:     "image_url",
 					ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
 				})
-			default:
+			case p.Text != "":
 				rm.Content = append(rm.Content, Content{Type: textContentType, Text: p.Text})
 			}
 		}

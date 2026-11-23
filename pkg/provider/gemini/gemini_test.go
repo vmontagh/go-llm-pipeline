@@ -189,6 +189,7 @@ func TestCall_Request(t *testing.T) {
 				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
 					{Text: "checking", Signature: "ts"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}, Signature: "sig"},
+					{Signature: "es"},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `{"A":1`}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `[1]`}},
@@ -207,6 +208,7 @@ func TestCall_Request(t *testing.T) {
 					map[string]any{"role": "model", "parts": []any{
 						map[string]any{"text": "checking", "thoughtSignature": "ts"},
 						map[string]any{"functionCall": map[string]any{"id": "c1", "name": "add", "args": map[string]any{"A": 1.0}}, "thoughtSignature": "sig"},
+						map[string]any{"text": "", "thoughtSignature": "es"},
 						map[string]any{"functionCall": map[string]any{"name": "now", "args": map[string]any{}}},
 						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
 						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
@@ -324,6 +326,8 @@ func TestCallTools_Response(t *testing.T) {
 				`{"text":"thinking","thought":true},` +
 				`{"text":"checking","thoughtSignature":"ts"},` +
 				`{"functionCall":{"id":"c1","name":"add","args":{"A":1}},"thoughtSignature":"sig"},` +
+				`{"text":"","thoughtSignature":"es"},` +
+				`{"text":""},` +
 				`{"text":" more"},` +
 				`{"functionCall":{"name":"now"}}]}}]}`,
 			want: provpkg.CallResult{
@@ -333,6 +337,7 @@ func TestCallTools_Response(t *testing.T) {
 				Parts: []provpkg.Part{
 					{Text: "checking", Signature: "ts"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}, Signature: "sig"},
+					{Signature: "es"},
 					{Text: " more"},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
 				},
@@ -351,7 +356,7 @@ func TestCallTools_Response(t *testing.T) {
 		{
 			name: "empty answer text",
 			body: `{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"ts"}]}}]}`,
-			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Parts: []provpkg.Part{{Signature: "ts"}}},
 		},
 		{
 			name: "candidate without parts",

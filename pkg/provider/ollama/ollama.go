@@ -376,7 +376,7 @@ func chatMessages(msgs []provpkg.Message) []chatMessage {
 			case p.ToolCall != nil:
 				c := p.ToolCall
 				cm.ToolCalls = append(cm.ToolCalls, ToolCall{ID: c.ID, Function: FunctionCall{Name: c.Name, Arguments: argsObject(c.Arguments)}})
-			default:
+			case p.Text != "":
 				texts = append(texts, p.Text)
 			}
 		}

@@ -543,6 +543,7 @@ func TestBuildRequest(t *testing.T) {
 				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
 					{Text: "checking"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}},
+					{Signature: "es"},
 					{ToolCall: &provpkg.ToolCall{ID: "c2", Name: "now"}},
 				}},
 				{Role: provpkg.RoleTool, Parts: []provpkg.Part{

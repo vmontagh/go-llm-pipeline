@@ -213,7 +213,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	stop := toolCall("c1", "stop", `{}`)
 	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
 	// A reply whose provider keeps its parts in order, with signatures.
-	signedParts := []provider.Part{{Text: "a", Signature: "s1"}, {ToolCall: &add, Signature: "s2"}, {Text: "b"}, {ToolCall: &add2}}
+	signedParts := []provider.Part{{Text: "a", Signature: "s1"}, {ToolCall: &add, Signature: "s2"}, {Signature: "s3"}, {Text: "b"}, {ToolCall: &add2}}
 	signedReply := callsReply("ab", add, add2)
 	signedReply.Parts = signedParts
 	signedResults := exchange("", []provider.ToolCall{add, add2}, `{"Sum":3}`, `{"Sum":7}`)[1]
