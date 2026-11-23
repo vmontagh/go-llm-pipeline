@@ -2,8 +2,11 @@ package analyzer
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"log/slog"
+
+	"github.com/cenkalti/backoff/v4"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
@@ -71,8 +74,9 @@ func (m *messageProvider) CallMessages(_ context.Context, _ *provider.Lease[stri
 	return m.callResult
 }
 
-// streamProvider is a mockProvider that streams chunks, then err if set.
-// Each attempt to open the stream takes the next of opens.
+// streamProvider is a mockProvider that streams two chunks, then err if set.
+// Each attempt to open the stream takes the next of opens; an extra attempt
+// fails with errExtraOpen.
 type streamProvider struct {
 	*mockProvider
 	opens  []provider.CallResult
@@ -82,9 +86,24 @@ type streamProvider struct {
 	opened int
 }
 
+var errExtraOpen = errors.New("stream opened more often than scripted")
+
+// newStreamProvider returns a streamProvider with two keys, so a failed open
+// that cools one key is retried on the other without waiting.
+func newStreamProvider(opens []provider.CallResult, err error) *streamProvider {
+	mock := newMockProvider(&provider.CallResult{})
+	mock.keys = provider.NewKeyPool([]string{"k1", "k2"})
+	mock.classifyTier = provider.TierShortTransient
+	chunks := []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
+	return &streamProvider{mockProvider: mock, opens: opens, chunks: chunks, err: err}
+}
+
 func (s *streamProvider) Stream(_ context.Context, _ *provider.Lease[string], msgs []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
 	s.got = msgs
 	s.opened++
+	if len(s.opens) == 0 {
+		return nil, provider.CallResult{Outcome: provider.OutcomeTerminal, Err: backoff.Permanent(errExtraOpen)}
+	}
 	res := s.opens[0]
 	s.opens = s.opens[1:]
 	if res.Outcome != provider.OutcomeSuccess {

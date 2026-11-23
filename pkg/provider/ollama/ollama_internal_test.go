@@ -393,13 +393,13 @@ func TestTransport_Stream(t *testing.T) {
 		lo   = `{"message":{"content":"lo"}}` + "\n"
 		done = `{"message":{"content":""},"done":true,"prompt_eval_count":3,"eval_count":2}` + "\n"
 	)
+	opened := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
 	tests := []struct {
 		name       string
 		status     int
-		body       string
-		readErr    error // returned after body; nil means io.EOF
+		body       io.Reader
 		numPredict int
-		take       int // chunks read before stopping; 0 reads all
+		onFirst    readAction // what the caller does after the first chunk
 		want       []provpkg.Chunk
 		wantRes    provpkg.CallResult
 		wantErr    error
@@ -407,88 +407,91 @@ func TestTransport_Stream(t *testing.T) {
 		{
 			name:    "streams chunks and usage",
 			status:  http.StatusOK,
-			body:    hel + lo + done,
+			body:    strings.NewReader(hel + lo + done),
 			want:    []provpkg.Chunk{{Text: "Hel"}, {Text: "lo"}, {Usage: &provpkg.Usage{Input: 3, Output: 2}}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
 		},
 		{
 			name:    "caller stops early",
 			status:  http.StatusOK,
-			body:    hel + lo + done,
-			take:    1,
+			body:    strings.NewReader(hel + lo + done),
+			onFirst: stopReading,
 			want:    []provpkg.Chunk{{Text: "Hel"}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
+		},
+		{
+			// The second line is already buffered when the caller cancels.
+			name:    "caller cancels",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + lo + done),
+			onFirst: cancelContext,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: context.Canceled,
 		},
 		{
 			name:    "ends before done",
 			status:  http.StatusOK,
-			body:    hel,
+			body:    strings.NewReader(hel),
 			want:    []provpkg.Chunk{{Text: "Hel"}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
 			name:    "ends mid-line",
 			status:  http.StatusOK,
-			body:    hel + `{"message":{"con`,
+			body:    strings.NewReader(hel + `{"message":{"con`),
 			want:    []provpkg.Chunk{{Text: "Hel"}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
 			name:    "connection drops",
 			status:  http.StatusOK,
-			body:    hel,
-			readErr: errTest,
+			body:    io.MultiReader(strings.NewReader(hel), iotest.ErrReader(errTest)),
 			want:    []provpkg.Chunk{{Text: "Hel"}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
-			name:    "fails mid-stream",
+			name:    "model fails mid-stream",
 			status:  http.StatusOK,
-			body:    hel + `{"error":"model crashed"}` + "\n",
+			body:    strings.NewReader(hel + `{"error":"model crashed"}` + "\n"),
 			want:    []provpkg.Chunk{{Text: "Hel"}},
-			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes: opened,
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
 			name:       "stops at the output limit",
 			status:     http.StatusOK,
-			body:       hel + `{"done":true,"done_reason":"length","eval_count":2}` + "\n",
+			body:       strings.NewReader(hel + `{"done":true,"done_reason":"length","eval_count":2}` + "\n"),
 			numPredict: 2,
 			want:       []provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{Output: 2}}},
-			wantRes:    provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantRes:    opened,
 			wantErr:    ErrOutputLimitExhausted,
 		},
 		{
 			name:    "fails to open",
 			status:  http.StatusServiceUnavailable,
-			body:    "busy",
+			body:    strings.NewReader("busy"),
 			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: provpkg.ErrUnexpectedStatus, StatusCode: http.StatusServiceUnavailable, Body: []byte("busy")},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var gotPath string
-			var gotBody map[string]any
-			var r io.Reader = strings.NewReader(tt.body)
-			if tt.readErr != nil {
-				r = io.MultiReader(r, iotest.ErrReader(tt.readErr))
-			}
-			body := &closeTracker{Reader: r}
-			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				gotPath = r.URL.Path
-				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
-					t.Errorf("decoding request body: %v", err)
-				}
-				return &http.Response{StatusCode: tt.status, Body: body, Header: make(http.Header)}, nil
-			})}
-			tr := &transport{host: "http://example.test", model: "m", numPredict: tt.numPredict, client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+			tr, body := newStreamTransport(t, tt.status, tt.body)
+			tr.numPredict = tt.numPredict
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
 
-			seq, res := tr.Stream(t.Context(), nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
-			got, err := collectStream(seq, tt.take)
+			seq, res := tr.Stream(ctx, nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+			got, err := readStream(seq, func() bool {
+				if tt.onFirst == cancelContext {
+					cancel()
+				}
+				return tt.onFirst == stopReading
+			})
 
 			if diff := cmp.Diff(tt.wantRes, res, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
@@ -498,12 +501,6 @@ func TestTransport_Stream(t *testing.T) {
 			}
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
-			}
-			if diff := cmp.Diff(chatPath, gotPath); diff != "" {
-				t.Errorf("path mismatch (-want +got):\n%s", diff)
-			}
-			if diff := cmp.Diff(true, gotBody["stream"]); diff != "" {
-				t.Errorf("stream flag mismatch (-want +got):\n%s", diff)
 			}
 			if !body.closed {
 				t.Error("response body not closed")
@@ -517,7 +514,8 @@ func TestTransport_StreamDeliversIncrementally(t *testing.T) {
 	pr, pw := io.Pipe()
 	restSent := make(chan struct{})
 	go func() {
-		// Each Write blocks until read, and EOF only comes after restSent closes.
+		// Each Write blocks until read, so restSent closes only after the
+		// reader has taken the last line.
 		for _, line := range []string{`{"message":{"content":"Hel"}}`, `{"message":{"content":""},"done":true}`} {
 			if _, err := pw.Write([]byte(line + "\n")); err != nil {
 				t.Errorf("writing body: %v", err)
@@ -526,59 +524,79 @@ func TestTransport_StreamDeliversIncrementally(t *testing.T) {
 		close(restSent)
 		pw.Close() // A pipe writer's Close always returns nil.
 	}()
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: pr, Header: make(http.Header)}, nil
-	})}
-	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+	tr, _ := newStreamTransport(t, http.StatusOK, pr)
+
 	seq, _ := tr.Stream(t.Context(), nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+	var restSentBeforeFirst bool
+	got, err := readStream(seq, func() bool {
+		select {
+		case <-restSent:
+			restSentBeforeFirst = true
+		default:
+		}
+		return false
+	})
 
-	var firstBeforeRest bool
-	for c, err := range seq {
-		if err != nil {
-			t.Fatalf("ranging over stream: %v", err)
-		}
-		if c.Text == "Hel" {
-			select {
-			case <-restSent:
-			default:
-				firstBeforeRest = true
-			}
-		}
+	if err != nil {
+		t.Fatalf("ranging over stream: %v", err)
 	}
-
-	if !firstBeforeRest {
-		t.Error("first chunk arrived after the whole body was sent, want it as soon as its line arrives")
+	if diff := cmp.Diff([]provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{}}}, got); diff != "" {
+		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+	}
+	if restSentBeforeFirst {
+		t.Error("first chunk came after the whole body was read, want it as soon as its line arrives")
 	}
 }
 
-func TestTransport_StreamCanceled(t *testing.T) {
-	t.Parallel()
-	body := `{"message":{"content":"Hel"}}` + "\n" + `{"message":{"content":"lo"}}` + "\n"
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+// readAction is what a test caller does after the first chunk.
+type readAction int
+
+const (
+	keepReading readAction = iota
+	stopReading
+	cancelContext
+)
+
+// newStreamTransport returns a transport whose server answers a streaming
+// chat request with status and body, and the body so a test can check that it
+// was closed. Any other request fails the test.
+func newStreamTransport(t *testing.T, status int, body io.Reader) (*transport, *closeTracker) {
+	t.Helper()
+	tracked := &closeTracker{Reader: body}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decoding request body: %v", err)
+		}
+		if r.URL.Path != chatPath || !req.Stream {
+			t.Errorf("request = %s stream=%t, want %s stream=true", r.URL.Path, req.Stream, chatPath)
+		}
+		return &http.Response{StatusCode: status, Body: tracked, Header: make(http.Header)}, nil
 	})}
 	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	seq, _ := tr.Stream(ctx, nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+	return tr, tracked
+}
 
+// readStream returns the chunks of seq up to its first error, and that error.
+// It calls afterFirst after the first chunk and stops if it returns true. A
+// nil seq has no chunks.
+func readStream(seq iter.Seq2[provpkg.Chunk, error], afterFirst func() (stop bool)) ([]provpkg.Chunk, error) {
+	if seq == nil {
+		return nil, nil
+	}
 	var got []provpkg.Chunk
-	var gotErr error
 	for c, err := range seq {
 		if err != nil {
-			gotErr = err
-			break
+			return got, err
 		}
 		got = append(got, c)
-		cancel() // The second line is already buffered.
+		if len(got) == 1 && afterFirst() {
+			break
+		}
 	}
-
-	if diff := cmp.Diff([]provpkg.Chunk{{Text: "Hel"}}, got); diff != "" {
-		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(context.Canceled, gotErr, cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
-	}
+	return got, nil
 }
 
 // closeTracker records whether the response body was closed.
@@ -590,26 +608,6 @@ type closeTracker struct {
 func (c *closeTracker) Close() error {
 	c.closed = true
 	return nil
-}
-
-// collectStream returns the chunks of seq up to its first error, and that
-// error. It stops after take chunks when take is positive. A nil seq has no
-// chunks.
-func collectStream(seq iter.Seq2[provpkg.Chunk, error], take int) ([]provpkg.Chunk, error) {
-	var got []provpkg.Chunk
-	if seq == nil {
-		return nil, nil
-	}
-	for c, err := range seq {
-		if err != nil {
-			return got, err
-		}
-		got = append(got, c)
-		if len(got) == take {
-			break
-		}
-	}
-	return got, nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

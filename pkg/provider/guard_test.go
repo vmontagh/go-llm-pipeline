@@ -29,6 +29,7 @@ var (
 	overloadedResult = provider.CallResult{Err: errTestSentinel, Outcome: provider.OutcomeProviderError, StatusCode: statusOverloaded}
 	badRequestResult = provider.CallResult{Err: errTestSentinel, Outcome: provider.OutcomeProviderError, StatusCode: http.StatusBadRequest}
 	terminalResult   = provider.CallResult{Err: backoff.Permanent(errTestSentinel), Outcome: provider.OutcomeTerminal}
+	streamChunks     = []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
 )
 
 // fakeGuardClock fires After channels when advance passes their deadline.
@@ -82,6 +83,8 @@ type step struct {
 	latency time.Duration // clock advance inside the call
 	gate    chan struct{} // if set, the call signals entered and blocks until closed
 	cancel  bool          // the caller's context is canceled during the call
+	stream  bool          // the call opens a stream and reads it to the end
+	reply   time.Duration // clock advance per streamed chunk
 	res     provider.CallResult
 }
 
@@ -141,19 +144,16 @@ func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease
 	return m.Call(ctx, lease, "", nil)
 }
 
-// streamGuarded is a fakeGuarded that also streams chunks. Opening the
-// stream is a Call; replyTime passes on the clock while the chunks arrive.
+// streamGuarded is a fakeGuarded that also streams streamChunks. Opening the
+// stream is a Call.
 type streamGuarded struct {
 	*fakeGuarded
-	chunks    []provider.Chunk
-	replyTime time.Duration
 }
 
 func (s *streamGuarded) Stream(ctx context.Context, lease *provider.Lease[string], _ []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
 	res := s.Call(ctx, lease, "", nil)
 	return func(yield func(provider.Chunk, error) bool) {
-		s.clock.advance(s.replyTime)
-		for _, c := range s.chunks {
+		for _, c := range streamChunks {
 			if !yield(c, nil) {
 				return
 			}
@@ -203,7 +203,7 @@ func newGuardFixture(t *testing.T, steps []step, opts ...provider.GuardOption) *
 	fake := &fakeGuarded{clock: clock, steps: steps, entered: make(chan struct{}, 1)}
 	metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, len(steps))}
 	opts = append(opts, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
-	g, err := provider.NewGuard[string](fake, opts...)
+	g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake}, opts...)
 	if err != nil {
 		t.Fatalf("NewGuard() error = %v", err)
 	}
@@ -224,6 +224,11 @@ func (f *guardFixture) runSteps(t *testing.T, n int) {
 			<-f.fake.entered
 			continue
 		}
+		if s.stream {
+			seq, _ := f.guard.Stream(t.Context(), nil, nil)
+			rangeStream(t, seq, func() { f.clock.advance(s.reply) })
+			continue
+		}
 		ctx, cancel := context.WithCancel(t.Context())
 		f.fake.mu.Lock()
 		f.fake.cancel = cancel
@@ -242,6 +247,41 @@ func (f *guardFixture) goCall(ctx context.Context) <-chan provider.CallResult {
 	out := make(chan provider.CallResult, 1)
 	go func() { out <- f.guard.Call(ctx, nil, "", nil) }()
 	return out
+}
+
+// callRunsNow reports whether a Call gets a slot without waiting. A call
+// that has to wait is canceled, so it uses no step.
+func (f *guardFixture) callRunsNow(t *testing.T) bool {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := f.goCall(ctx)
+	select {
+	case <-done:
+		return true
+	case <-f.metrics.waited:
+		cancel()
+		<-done
+		return false
+	}
+}
+
+// rangeStream reads seq, which is nil when opening failed, calls each after
+// every chunk, and returns the chunks.
+func rangeStream(t *testing.T, seq iter.Seq2[provider.Chunk, error], each func()) []provider.Chunk {
+	t.Helper()
+	if seq == nil {
+		return nil
+	}
+	var got []provider.Chunk
+	for c, err := range seq {
+		if err != nil {
+			t.Fatalf("ranging over stream: %v", err)
+		}
+		got = append(got, c)
+		each()
+	}
+	return got
 }
 
 func repeat(n int, res *provider.CallResult) []step {
@@ -341,6 +381,19 @@ func TestGuardAdapts(t *testing.T) {
 			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
 			steps: append(toFour, step{res: okResult, latency: 2 * time.Second}),
 			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			name:  "slowStreamOpenShrinks",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, latency: 2 * time.Second}),
+			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			// Only the open counts, so a long reply is not mistaken for overload.
+			name:  "longStreamReplyKeepsLimit",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, reply: time.Minute}),
+			want:  outcome{Limit: 4, State: provider.BreakerClosed},
 		},
 		{
 			name:  "canceledFailureIgnored",
@@ -656,14 +709,18 @@ func TestGuardCallMessages(t *testing.T) {
 	}
 }
 
-func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
+func TestGuardRejectsUnsupported(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		guards int
+		name    string
+		stream  bool // Stream instead of CallMessages
+		guards  int
+		wantErr error
 	}{
-		{name: "one guard", guards: 1},
-		{name: "nested guards", guards: 2},
+		{name: "messages, one guard", guards: 1, wantErr: provider.ErrMessagesUnsupported},
+		{name: "messages, nested guards", guards: 2, wantErr: provider.ErrMessagesUnsupported},
+		{name: "stream, one guard", stream: true, guards: 1, wantErr: provider.ErrStreamUnsupported},
+		{name: "stream, nested guards", stream: true, guards: 2, wantErr: provider.ErrStreamUnsupported},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -673,15 +730,58 @@ func TestGuardCallMessagesRejectsUnsupported(t *testing.T) {
 			// A canceled context proves the rejection does not wait.
 			ctx, cancel := context.WithCancel(t.Context())
 			cancel()
+			msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "hi")}
 
-			got := g.CallMessages(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+			var got provider.CallResult
+			if tt.stream {
+				_, got = g.Stream(ctx, nil, msgs)
+			} else {
+				got = g.CallMessages(ctx, nil, msgs)
+			}
 
-			want := provider.CallResult{Err: provider.ErrMessagesUnsupported, Outcome: provider.OutcomeTerminal}
+			want := provider.CallResult{Err: tt.wantErr, Outcome: provider.OutcomeTerminal}
 			if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("CallMessages() mismatch (-want +got):\n%s", diff)
+				t.Errorf("call mismatch (-want +got):\n%s", diff)
 			}
 			if got := fake.callCount(); got != 0 {
 				t.Errorf("calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestGuardStream(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		open       provider.CallResult
+		wantChunks []provider.Chunk
+	}{
+		{name: "streams chunks", open: okResult, wantChunks: streamChunks},
+		{name: "provider error on open", open: transientResult},
+		{name: "terminal error on open", open: terminalResult},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := newGuardFixture(t, []step{{res: tt.open}, {res: okResult}})
+
+			seq, res := f.guard.Stream(t.Context(), nil, nil)
+			heldWhileReading := true
+			got := rangeStream(t, seq, func() { heldWhileReading = heldWhileReading && !f.callRunsNow(t) })
+			freedAfter := f.callRunsNow(t)
+
+			if diff := cmp.Diff(tt.open, res, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantChunks, got); diff != "" {
+				t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if !heldWhileReading {
+				t.Error("a call ran while the stream held the only slot")
+			}
+			if !freedAfter {
+				t.Error("a call waited after the stream ended, want the slot freed")
 			}
 		})
 	}
@@ -700,162 +800,6 @@ func wrapInGuards(t *testing.T, p provider.Provider[string], clk provider.GuardC
 		p = g
 	}
 	return g
-}
-
-func TestGuardStream(t *testing.T) {
-	t.Parallel()
-	gate := make(chan struct{})
-	clock := newFakeGuardClock()
-	fake := &fakeGuarded{clock: clock, steps: []step{{res: okResult}, {gate: gate, res: okResult}}, entered: make(chan struct{}, 1)}
-	chunks := []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
-	metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, 1)}
-	g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake, chunks: chunks}, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
-	if err != nil {
-		t.Fatalf("NewGuard() error = %v", err)
-	}
-
-	seq, res := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
-	second := make(chan provider.CallResult, 1)
-	var got []provider.Chunk
-	for c, err := range seq {
-		if err != nil {
-			t.Fatalf("ranging over stream: %v", err)
-		}
-		got = append(got, c)
-		go func() { second <- g.Call(t.Context(), nil, "", nil) }()
-		select {
-		case <-metrics.waited:
-		case <-fake.entered:
-			t.Fatal("Call() ran while the stream held the only slot")
-		}
-		break // Stopping early frees the slot.
-	}
-	<-fake.entered
-	close(gate)
-
-	if diff := cmp.Diff(okResult, res, cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(chunks[:1], got); diff != "" {
-		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
-	}
-	if diff := cmp.Diff(okResult, <-second, cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("Call() after the stream mismatch (-want +got):\n%s", diff)
-	}
-}
-
-func TestGuardStreamLatency(t *testing.T) {
-	t.Parallel()
-	const target = time.Second
-	tests := []struct {
-		name      string
-		openTime  time.Duration
-		replyTime time.Duration
-		wantLimit int
-	}{
-		{name: "slow open shrinks the limit", openTime: 2 * target, wantLimit: 3},
-		// A long reply is not a sign of overload, so only the open counts.
-		{name: "slow reply keeps the limit", replyTime: time.Minute, wantLimit: 4},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			clock := newFakeGuardClock()
-			// Seven successes from limit 1 reach about 4.1.
-			steps := append(repeat(7, &okResult), step{res: okResult, latency: tt.openTime})
-			fake := &fakeGuarded{clock: clock, steps: steps}
-			g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake, replyTime: tt.replyTime}, provider.WithGuardClock(clock), provider.WithLatencyTarget(target))
-			if err != nil {
-				t.Fatalf("NewGuard() error = %v", err)
-			}
-			for range 7 {
-				g.Call(t.Context(), nil, "", nil)
-			}
-
-			seq, _ := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
-			if _, err := collectChunks(seq); err != nil {
-				t.Fatalf("ranging over stream: %v", err)
-			}
-
-			if diff := cmp.Diff(tt.wantLimit, g.Limit()); diff != "" {
-				t.Errorf("Limit() mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-// collectChunks ranges over seq and returns its chunks and first error.
-func collectChunks(seq iter.Seq2[provider.Chunk, error]) ([]provider.Chunk, error) {
-	var got []provider.Chunk
-	for c, err := range seq {
-		if err != nil {
-			return got, err
-		}
-		got = append(got, c)
-	}
-	return got, nil
-}
-
-func TestGuardStreamFreesSlotOnFailedOpen(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name string
-		open provider.CallResult
-	}{
-		{name: "provider error", open: transientResult},
-		{name: "terminal", open: terminalResult},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			clock := newFakeGuardClock()
-			fake := &fakeGuarded{clock: clock, steps: []step{{res: tt.open}, {res: okResult}}}
-			metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, 1)}
-			g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake}, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
-			if err != nil {
-				t.Fatalf("NewGuard() error = %v", err)
-			}
-
-			seq, res := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
-			next := make(chan provider.CallResult, 1)
-			go func() { next <- g.Call(t.Context(), nil, "", nil) }()
-			var got provider.CallResult
-			select {
-			case got = <-next:
-			case <-metrics.waited:
-				t.Fatal("Call() waited: the failed open kept the only slot")
-			}
-
-			if diff := cmp.Diff(tt.open, res, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
-			}
-			if seq != nil {
-				t.Error("Stream() iterator is not nil, want nil")
-			}
-			if diff := cmp.Diff(okResult, got, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("Call() after the failed open mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-func TestGuardStreamRejectsUnsupported(t *testing.T) {
-	t.Parallel()
-	fake := &fakeGuarded{clock: newFakeGuardClock()}
-	g := wrapInGuards(t, fake, fake.clock, 2)
-	// A canceled context proves the rejection does not wait.
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-
-	seq, got := g.Stream(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
-
-	want := provider.CallResult{Err: provider.ErrStreamUnsupported, Outcome: provider.OutcomeTerminal}
-	if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
-		t.Errorf("Stream() mismatch (-want +got):\n%s", diff)
-	}
-	if seq != nil {
-		t.Error("Stream() iterator is not nil, want nil")
-	}
 }
 
 func TestGuardCallMessagesDropsUnusedLease(t *testing.T) {
