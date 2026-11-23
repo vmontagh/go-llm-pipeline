@@ -5,7 +5,6 @@
 package ollama
 
 import (
-	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -46,8 +45,8 @@ const doneReasonLength = "length"
 const (
 	// functionType is the only Ollama tool type.
 	functionType = "function"
-	// emptyArguments stands in for a call without arguments; Ollama takes an
-	// object.
+	// emptyArguments stands in for missing or unusable call arguments;
+	// Ollama takes an object.
 	emptyArguments = "{}"
 )
 
@@ -344,6 +343,17 @@ func (t *transport) chatRequest(msgs []provpkg.Message, stream bool) *chatReques
 	}
 }
 
+// argsObject returns args as a JSON object. Malformed or non-object arguments,
+// which the model may send and the analyzer reports back, become an empty
+// object, since the API takes only an object.
+func argsObject(args string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil || obj == nil {
+		return json.RawMessage(emptyArguments)
+	}
+	return json.RawMessage(args)
+}
+
 // chatMessages joins each message's text parts with newlines, since an
 // Ollama chat message holds one content string. Each tool result is its own
 // message.
@@ -365,7 +375,7 @@ func chatMessages(msgs []provpkg.Message) []chatMessage {
 				cm.Images = append(cm.Images, base64.StdEncoding.EncodeToString(p.Image))
 			case p.ToolCall != nil:
 				c := p.ToolCall
-				cm.ToolCalls = append(cm.ToolCalls, ToolCall{ID: c.ID, Function: FunctionCall{Name: c.Name, Arguments: json.RawMessage(cmp.Or(c.Arguments, emptyArguments))}})
+				cm.ToolCalls = append(cm.ToolCalls, ToolCall{ID: c.ID, Function: FunctionCall{Name: c.Name, Arguments: argsObject(c.Arguments)}})
 			default:
 				texts = append(texts, p.Text)
 			}

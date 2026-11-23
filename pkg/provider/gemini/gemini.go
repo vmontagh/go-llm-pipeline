@@ -67,7 +67,8 @@ const (
 	imageMIMEType         = "image/jpeg"
 	userRole              = "user"
 	modelRole             = "model"
-	// emptyArgs stands in for a call without arguments; Gemini takes an object.
+	// emptyArgs stands in for missing or unusable call arguments; Gemini
+	// takes an object.
 	emptyArgs = "{}"
 	// resultKey holds a tool result in the function response object.
 	resultKey = "result"
@@ -572,7 +573,7 @@ func requestPart(p provpkg.Part) part {
 	case p.ToolCall != nil:
 		c := p.ToolCall
 		return part{
-			FunctionCall:     &functionCall{ID: c.ID, Name: c.Name, Args: json.RawMessage(cmp.Or(c.Arguments, emptyArgs))},
+			FunctionCall:     &functionCall{ID: c.ID, Name: c.Name, Args: argsObject(c.Arguments)},
 			ThoughtSignature: c.Signature,
 		}
 	case p.ToolResult != nil:
@@ -585,6 +586,17 @@ func requestPart(p provpkg.Part) part {
 
 // toolResponse wraps a tool result in the object Gemini requires. JSON
 // content is sent as a value, anything else, such as an error, as a string.
+// argsObject returns args as a JSON object. Malformed or non-object arguments,
+// which the model may send and the analyzer reports back, become an empty
+// object, since the API takes only an object.
+func argsObject(args string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil || obj == nil {
+		return json.RawMessage(emptyArgs)
+	}
+	return json.RawMessage(args)
+}
+
 func toolResponse(result string) map[string]any {
 	if json.Valid([]byte(result)) {
 		return map[string]any{resultKey: json.RawMessage(result)}

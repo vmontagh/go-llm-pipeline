@@ -190,6 +190,9 @@ func TestCall_Request(t *testing.T) {
 					{Text: "checking"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`, Signature: "sig"}},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `{"A":1`}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `[1]`}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `null`}},
 				}},
 				{Role: provpkg.RoleTool, Parts: []provpkg.Part{
 					{ToolResult: &provpkg.ToolResult{CallID: "c1", Name: "add", Content: `{"Sum":1}`}},
@@ -205,6 +208,9 @@ func TestCall_Request(t *testing.T) {
 						map[string]any{"text": "checking"},
 						map[string]any{"functionCall": map[string]any{"id": "c1", "name": "add", "args": map[string]any{"A": 1.0}}, "thoughtSignature": "sig"},
 						map[string]any{"functionCall": map[string]any{"name": "now", "args": map[string]any{}}},
+						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
+						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
+						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
 					}},
 					map[string]any{"role": "user", "parts": []any{
 						map[string]any{"functionResponse": map[string]any{"id": "c1", "name": "add", "response": map[string]any{"result": map[string]any{"Sum": 1.0}}}},

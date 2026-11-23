@@ -378,6 +378,9 @@ func TestTransport_CallTools(t *testing.T) {
 					{Text: "checking"},
 					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `{"A":1`}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `[1]`}},
+					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `null`}},
 				}},
 				{Role: provpkg.RoleTool, Parts: []provpkg.Part{
 					{ToolResult: &provpkg.ToolResult{CallID: "c1", Name: "add", Content: `{"Sum":1}`}},
@@ -397,6 +400,9 @@ func TestTransport_CallTools(t *testing.T) {
 				map[string]any{"role": "assistant", "content": "checking", "tool_calls": []any{
 					map[string]any{"id": "c1", "function": map[string]any{"name": "add", "arguments": map[string]any{"A": 1.0}}},
 					map[string]any{"function": map[string]any{"name": "now", "arguments": map[string]any{}}},
+					map[string]any{"function": map[string]any{"name": "add", "arguments": map[string]any{}}},
+					map[string]any{"function": map[string]any{"name": "add", "arguments": map[string]any{}}},
+					map[string]any{"function": map[string]any{"name": "add", "arguments": map[string]any{}}},
 				}},
 				map[string]any{"role": "tool", "content": `{"Sum":1}`, "tool_name": "add", "tool_call_id": "c1"},
 				map[string]any{"role": "tool", "content": "clock broken", "tool_name": "now"},
