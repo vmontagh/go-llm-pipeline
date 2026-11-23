@@ -201,6 +201,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	unknown := toolCall("c1", "nope", `{}`)
 	divByZero := toolCall("c1", "div", `{"A":1,"B":0}`)
 	badArgs := toolCall("c1", "add", `{"A":"one"}`)
+	malformed := toolCall("c1", "add", `{"A":1`)
 	fail := toolCall("c1", "fail", `{}`)
 	nested := toolCall("c1", "nested", `{}`)
 	stop := toolCall("c1", "stop", `{}`)
@@ -273,6 +274,13 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			replies:  []provider.CallResult{callsReply("", badArgs)},
 			wantErr:  ErrInvalidToolArguments,
 			wantSent: []provider.Message{user},
+		},
+		{
+			name:     "malformed args reported",
+			replies:  []provider.CallResult{callsReply("", malformed), textReply("retry")},
+			report:   true,
+			want:     "retry",
+			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{malformed}, `decoding arguments: analyzer: invalid tool arguments: (root): json: invalid JSON: unexpected EOF`)...),
 		},
 		{
 			name:     "args rejected by the tool reported",
