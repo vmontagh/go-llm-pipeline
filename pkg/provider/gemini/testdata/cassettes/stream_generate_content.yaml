@@ -1,0 +1,54 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 129
+        transfer_encoding: []
+        trailer: {}
+        host: 127.0.0.1:62484
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "contents": [
+                {
+                  "role": "user",
+                  "parts": [
+                    {
+                      "text": "prompt"
+                    }
+                  ]
+                }
+              ]
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+            X-Goog-Api-Key:
+                - REDACTED
+        url: http://127.0.0.1:62484/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 352
+        uncompressed: false
+        body: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5},\"modelVersion\":\"gemini-3.5-flash\"}\r\n\r\ndata: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"lo\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":2},\"modelVersion\":\"gemini-3.5-flash\"}\r\n\r\n"
+        headers:
+            Content-Length:
+                - "352"
+            Content-Type:
+                - text/event-stream
+            Date:
+                - Mon, 23 Nov 2026 01:54:23 GMT
+        status: 200 OK
+        code: 200
+        duration: 738.958µs

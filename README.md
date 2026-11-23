@@ -153,8 +153,8 @@ for chunk, err := range a.StreamMessages(ctx, msgs, "job-1", nil) {
 
 Opening the stream is retried like `Analyze`. An error after that ends the stream, since the
 chunks are already delivered; a stream cut off early yields `provider.ErrIncompleteStream`.
-Stopping the loop early closes the connection. Ollama streams today; a custom provider streams
-by implementing `provider.Streamer`, otherwise `StreamMessages` yields
+Stopping the loop early closes the connection. Ollama, OpenAI, and Gemini stream; a custom
+provider streams by implementing `provider.Streamer`, otherwise `StreamMessages` yields
 `provider.ErrStreamUnsupported`. Through a `Guard`, a stream keeps its concurrency slot until it
 ends.
 
@@ -219,7 +219,7 @@ borderline conditions surface without blocking automation.
 | `pkg/vectorstore` | Optional, dependency-free local vector store: in-memory nearest-neighbor search, deduplication, and threshold clustering over caller-supplied embeddings. |
 | `pkg/promptregistry` | Versioned, offline-rendered prompt templates loaded from an `fs.FS`, with versioned rule overlays (`WithOverlay`, `VersionID`), byte budgets and golden-file tests. |
 | `pkg/cost` | Token usage and exact cost estimates: parses provider-reported usage, prices it with a caller-supplied `PriceTable`, aggregates per asset and model in a `Tracker` (optionally exporting metrics), and compares reports against a baseline. |
-| `pkg/cost/costtest` | Test helper that prices the calls recorded in cassettes and fails the test on unpriced models or a cost regression over a saved baseline, offline (`costtest.Check`). Responses without provider-reported usage (for example Gemini streams or SSE) are skipped and not counted. |
+| `pkg/cost/costtest` | Test helper that prices the calls recorded in cassettes and fails the test on unpriced models or a cost regression over a saved baseline, offline (`costtest.Check`). Responses without provider-reported usage are skipped and not counted. |
 | `contrib/tiktoken` | Optional separate module: an exact OpenAI `cost.Counter` built on tiktoken-go with embedded encodings. The core module does not depend on it. |
 | `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 

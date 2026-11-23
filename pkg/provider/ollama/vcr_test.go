@@ -1,8 +1,6 @@
 package ollama_test
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -21,7 +19,7 @@ func TestVCRReplay(t *testing.T) {
 
 	t.Run("embed", func(t *testing.T) {
 		t.Parallel()
-		host := replayHost(t, "application/json", `{"embeddings":[[0.1,0.2,0.3]]}`)
+		host := vcrtest.StubURL(t, "application/json", `{"embeddings":[[0.1,0.2,0.3]]}`)
 		emb := ollama.NewEmbedder(host, "nomic-embed-text", ollama.WithHTTPClient(vcrtest.Client(t, "embed_single")))
 
 		got, err := emb.Embed(t.Context(), "the quick brown fox")
@@ -36,7 +34,7 @@ func TestVCRReplay(t *testing.T) {
 
 	t.Run("stream", func(t *testing.T) {
 		t.Parallel()
-		host := replayHost(t, "application/x-ndjson", `{"message":{"role":"assistant","content":"Hel"},"done":false}
+		host := vcrtest.StubURL(t, "application/x-ndjson", `{"message":{"role":"assistant","content":"Hel"},"done":false}
 {"message":{"role":"assistant","content":"lo"},"done":false}
 {"message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":5,"eval_count":2}
 `)
@@ -60,22 +58,4 @@ func TestVCRReplay(t *testing.T) {
 			t.Errorf("Stream() mismatch (-want +got):\n%s", diff)
 		}
 	})
-}
-
-// replayHost returns an unreachable host for replay, where the cassette
-// matches on method and path. While recording, it returns a stub server that
-// answers every request with body.
-func replayHost(t *testing.T, contentType, body string) string {
-	t.Helper()
-	if !vcrtest.Recording() {
-		return "http://ollama.invalid"
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", contentType)
-		if _, err := w.Write([]byte(body)); err != nil {
-			t.Errorf("w.Write() = %v", err)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv.URL
 }

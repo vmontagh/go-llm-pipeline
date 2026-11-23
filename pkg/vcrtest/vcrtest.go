@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,29 @@ const cassetteExt = ".yaml"
 // backend; on replay that setup is skipped and the cassette is used instead.
 func Recording() bool {
 	return os.Getenv(EnvVCRMode) == recordValue
+}
+
+// replayURL is the unreachable base URL StubURL returns on replay; the
+// default matcher ignores the host.
+const replayURL = "http://replay.invalid"
+
+// StubURL returns the base URL a provider under test should call. On replay
+// it is an unreachable placeholder. While recording, it is a stub server that
+// answers every request with contentType and body, so a cassette can be
+// recorded without a real backend.
+func StubURL(t *testing.T, contentType, body string) string {
+	t.Helper()
+	if !Recording() {
+		return replayURL
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("writing stub reply: %v", err)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 // modeFromEnv maps the VCR_MODE environment variable to an llmvcr.Mode. Record

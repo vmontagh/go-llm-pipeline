@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -59,6 +60,7 @@ const callRegionName = "Call_Gemini"
 const (
 	modelResourcePrefix   = "models/"
 	generateContentMethod = ":generateContent"
+	streamContentMethod   = ":streamGenerateContent?alt=sse"
 	authHeaderName        = "X-Goog-Api-Key"
 	jsonMIMEType          = "application/json"
 	imageMIMEType         = "image/jpeg"
@@ -231,49 +233,156 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 // system instruction and assistant turns use the "model" role.
 func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	rc, failed := t.send(ctx, lease, msgs, generateContentMethod)
+	if rc == nil {
+		return failed
+	}
+	defer t.closeBody(rc)
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return readFailure(http.StatusOK, nil, err)
+	}
+	return parseResponse(body)
+}
+
+// Stream implements provpkg.Streamer. Each event repeats the running
+// usage, so only the last chunk carries it.
+func (t *transport) Stream(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) (iter.Seq2[provpkg.Chunk, error], provpkg.CallResult) {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	body, failed := t.send(ctx, lease, msgs, streamContentMethod)
+	if body == nil {
+		return nil, failed
+	}
+	return t.chunks(ctx, body), provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+}
+
+// streamEvent is one event of a streamed reply. Error is set when the
+// request fails mid-stream.
+type streamEvent struct {
+	generateContentResponse
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+	} `json:"usageMetadata"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// chunks yields the text of each event. The event with a finish reason ends
+// the reply and carries the usage.
+func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[provpkg.Chunk, error] {
+	return func(yield func(provpkg.Chunk, error) bool) {
+		defer t.closeBody(body)
+		for data, err := range httputil.SSEData(body) {
+			// The reader may hold buffered events that a canceled read would not stop.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", ctxErr))
+				return
+			}
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: %w", provpkg.ErrIncompleteStream, err))
+				return
+			}
+			c, done, err := parseEvent(data)
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			if done {
+				yield(c, nil)
+				return
+			}
+			if c.Text != "" && !yield(c, nil) {
+				return
+			}
+		}
+		yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", provpkg.ErrIncompleteStream))
+	}
+}
+
+// parseEvent turns one event into a chunk, and reports whether it ends the
+// reply.
+func parseEvent(data []byte) (c provpkg.Chunk, done bool, err error) {
+	var ev streamEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return c, false, fmt.Errorf("%w: unmarshaling stream event: %w", provpkg.ErrInvalidResponsePart, err)
+	}
+	if ev.Error != nil {
+		return c, false, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, ev.Error.Message)
+	}
+	if len(ev.Candidates) == 0 {
+		if ev.PromptFeedback != nil && ev.PromptFeedback.BlockReason != "" {
+			return c, false, fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, ev.PromptFeedback.BlockReason)
+		}
+		return c, false, nil
+	}
+	cand := ev.Candidates[0]
+	for _, p := range cand.Content.Parts {
+		if p.Text != nil {
+			c.Text += *p.Text
+		}
+	}
+	if cand.FinishReason == "" {
+		return c, false, nil
+	}
+	if u := ev.UsageMetadata; u != nil {
+		c.Usage = &provpkg.Usage{Input: u.PromptTokenCount, Output: u.CandidatesTokenCount + u.ThoughtsTokenCount}
+	}
+	return c, true, nil
+}
+
+// send posts msgs to method. It returns the open body on 200 OK, and
+// otherwise a nil body and the failed result.
+func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message, method string) (io.ReadCloser, provpkg.CallResult) {
 	reqB, err := json.Marshal(t.buildRequest(msgs))
 	if err != nil {
-		return terminal(fmt.Errorf("marshaling gemini request: %w", err))
+		return nil, terminal(fmt.Errorf("marshaling gemini request: %w", err))
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint(), bytes.NewReader(reqB))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint(method), bytes.NewReader(reqB))
 	if err != nil {
-		return terminal(fmt.Errorf("building gemini request: %w", err))
+		return nil, terminal(fmt.Errorf("building gemini request: %w", err))
 	}
 	httpReq.Header.Set(authHeaderName, lease.Value)
 	httpReq.Header.Set("Content-Type", jsonMIMEType)
 
 	resp, err := t.client.Do(httpReq)
 	if err != nil {
-		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: fmt.Errorf("calling gemini: %w", err)}
+		return nil, provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: fmt.Errorf("calling gemini: %w", err)}
 	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warn("close error", "err", cerr)
-		}
-	}()
-
-	// Parsed before reading the body so a failed read on a 429/503 still
-	// honors the server's cooldown.
-	retryAfter := httputil.ParseRetryAfter(resp.Header.Get("Retry-After"))
+	if resp.StatusCode == http.StatusOK {
+		return resp.Body, provpkg.CallResult{}
+	}
+	defer t.closeBody(resp.Body)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("reading gemini response: %w", err),
-			StatusCode: resp.StatusCode,
-			RetryAfter: retryAfter,
-		}
+		return nil, readFailure(resp.StatusCode, resp.Header, err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        newAPIError(resp.StatusCode, body),
-			StatusCode: resp.StatusCode,
-			Body:       body,
-			RetryAfter: retryAfter,
-		}
+	return nil, provpkg.CallResult{
+		Outcome:    provpkg.OutcomeProviderError,
+		Err:        newAPIError(resp.StatusCode, body),
+		StatusCode: resp.StatusCode,
+		Body:       body,
+		RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
-	return parseResponse(body)
+}
+
+// readFailure is the result of a reply whose body could not be read. It
+// still honors the server's cooldown on a 429 or 503.
+func readFailure(status int, header http.Header, err error) provpkg.CallResult {
+	return provpkg.CallResult{
+		Outcome:    provpkg.OutcomeProviderError,
+		Err:        fmt.Errorf("reading gemini response: %w", err),
+		StatusCode: status,
+		RetryAfter: httputil.ParseRetryAfter(header.Get("Retry-After")),
+	}
+}
+
+func (t *transport) closeBody(body io.Closer) {
+	if err := body.Close(); err != nil {
+		t.logger.Warn("close error", "err", err)
+	}
 }
 
 // parseResponse extracts the first text part of the first candidate.
@@ -304,14 +413,14 @@ func terminal(err error) provpkg.CallResult {
 	return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
 }
 
-// endpoint returns the generateContent URL. Like the Google SDKs, a model
-// name without a resource prefix (e.g. "tunedModels/x") is a base model.
-func (t *transport) endpoint() string {
+// endpoint returns the URL of method. Like the Google SDKs, a model name
+// without a resource prefix (e.g. "tunedModels/x") is a base model.
+func (t *transport) endpoint(method string) string {
 	name := t.model
 	if !strings.Contains(name, "/") {
 		name = modelResourcePrefix + name
 	}
-	return t.baseURL + "/" + name + generateContentMethod
+	return t.baseURL + "/" + name + method
 }
 
 func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest {

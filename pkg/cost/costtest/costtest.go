@@ -69,8 +69,8 @@
 //
 //	go test ./myapp -run TestPromptCost -update-cost
 //
-// Responses without provider-reported usage (for example server-sent-event
-// streams) are skipped and add nothing to the total, so compare the CALLS
+// Responses without provider-reported usage (for example a stream the
+// caller stopped reading early) are skipped and add nothing to the total, so compare the CALLS
 // column with the number of recorded calls if a model looks under-counted.
 //
 // From then on, the test fails when re-recorded cassettes cost more than
