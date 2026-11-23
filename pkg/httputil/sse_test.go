@@ -66,35 +66,54 @@ func TestSSEData(t *testing.T) {
 
 func TestSSEDataDeliversIncrementally(t *testing.T) {
 	t.Parallel()
-	pr, pw := io.Pipe()
-	restSent := make(chan struct{})
+	// The event ends in CR, so SSEData must not wait for a possible LF.
+	r := newStallReader("data: a\r\r")
+	next, stop := iter.Pull2(SSEData(r))
+	defer stop()
+	type result struct {
+		data []byte
+		err  error
+	}
+	got := make(chan result, 1)
 	go func() {
-		// Each Write blocks until read, so restSent closes only after the
-		// reader has taken the last event. The first event ends in CR, so
-		// SSEData must not wait for a possible LF after it.
-		for _, event := range []string{"data: a\r\r", "data: b\n\n"} {
-			if _, err := pw.Write([]byte(event)); err != nil {
-				t.Errorf("writing event: %v", err)
-			}
-		}
-		close(restSent)
-		pw.Close() // A pipe writer's Close always returns nil.
+		data, err, _ := next()
+		got <- result{data, err}
 	}()
 
-	next, stop := iter.Pull2(SSEData(pr))
-	defer stop()
-	data, err, _ := next()
-
-	if err != nil {
-		t.Fatalf("SSEData() error = %v", err)
-	}
 	select {
-	case <-restSent:
-		t.Errorf("event %q came after the whole stream was sent, want it as soon as it arrives", data)
-	default:
-	}
-	// Drain so the writer can finish.
-	if _, err := io.Copy(io.Discard, pr); err != nil {
-		t.Errorf("draining stream: %v", err)
+	case res := <-got:
+		if diff := cmp.Diff(result{data: []byte("a")}, res, cmp.AllowUnexported(result{}), cmpopts.EquateErrors()); diff != "" {
+			t.Errorf("SSEData() first event (-want +got):\n%s", diff)
+		}
+	case <-r.stalled:
+		t.Error("SSEData() read past the first event before yielding it")
+		r.release()
+		<-got
 	}
 }
+
+// stallReader returns its data, then blocks until released. stalled is
+// closed when a read waits for more.
+type stallReader struct {
+	data     []byte
+	stalled  chan struct{}
+	released chan struct{}
+}
+
+func newStallReader(data string) *stallReader {
+	return &stallReader{data: []byte(data), stalled: make(chan struct{}), released: make(chan struct{})}
+}
+
+func (r *stallReader) Read(p []byte) (int, error) {
+	if len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	close(r.stalled)
+	<-r.released
+	return 0, io.EOF
+}
+
+// release ends the stalled read with io.EOF.
+func (r *stallReader) release() { close(r.released) }
