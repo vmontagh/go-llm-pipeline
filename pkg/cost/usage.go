@@ -143,7 +143,7 @@ func ParseUsage(body []byte) (string, Usage, error) {
 const sseDone = "[DONE]"
 
 // sseStarts are the line starts that mark a server-sent-event stream.
-var sseStarts = [][]byte{[]byte("data:"), []byte("event:"), []byte(":")}
+var sseStarts = [][]byte{[]byte("data:"), []byte("event:"), []byte("id:"), []byte("retry:"), []byte(":")}
 
 // isSSE reports whether the first non-blank line of body starts a
 // server-sent event.

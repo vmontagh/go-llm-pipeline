@@ -72,6 +72,8 @@ func TestParseUsage(t *testing.T) {
 			wantModel: "gemini-2.5-flash", want: cost.Usage{Input: 9, Output: 4},
 		},
 		{name: "sse with event fields", body: "event: done\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
+		{name: "sse starting with id", body: "id: 1\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
+		{name: "sse starting with retry", body: "retry: 10\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse without usage", body: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", wantErr: cost.ErrNoUsage},
 		{name: "sse cut off", body: "data: {\"usage\":{\"prompt_tokens\":1}}\n\ndata: {\"usage\":", wantErr: cost.ErrInvalidUsage},
 		{name: "sse malformed event", body: "data: {\"usage\":{\"prompt_tokens\":1}}\n\ndata: oops\n\n", wantErr: cost.ErrInvalidUsage},

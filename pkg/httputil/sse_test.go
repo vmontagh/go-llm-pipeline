@@ -26,6 +26,8 @@ func TestSSEData(t *testing.T) {
 		{name: "events", in: "data: a\n\ndata: b\n\n", want: []string{"a", "b"}},
 		{name: "multiLineData", in: "data: a\ndata: b\n\n", want: []string{"a\nb"}},
 		{name: "crlf", in: "data: a\r\n\r\n", want: []string{"a"}},
+		{name: "crOnly", in: "data: a\rdata: b\r\rdata: c\r\r", want: []string{"a\nb", "c"}},
+		{name: "mixedEndings", in: "data: a\r\ndata: b\n\r\r\n", want: []string{"a\nb"}},
 		{name: "noSpaceAfterColon", in: "data:a\n\n", want: []string{"a"}},
 		{name: "otherFieldsSkipped", in: ": ping\nevent: x\nid: 1\ndata: a\n\n", want: []string{"a"}},
 		{name: "eventWithoutDataSkipped", in: "event: x\n\ndata: a\n\n", want: []string{"a"}},
@@ -67,8 +69,9 @@ func TestSSEDataDeliversIncrementally(t *testing.T) {
 	restSent := make(chan struct{})
 	go func() {
 		// Each Write blocks until read, so restSent closes only after the
-		// reader has taken the last event.
-		for _, event := range []string{"data: a\n\n", "data: b\n\n"} {
+		// reader has taken the last event. The first event ends in CR, so
+		// SSEData must not wait for a possible LF after it.
+		for _, event := range []string{"data: a\r\r", "data: b\n\n"} {
 			if _, err := pw.Write([]byte(event)); err != nil {
 				t.Errorf("writing event: %v", err)
 			}
