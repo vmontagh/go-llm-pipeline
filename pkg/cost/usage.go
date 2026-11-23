@@ -150,20 +150,15 @@ const utf8BOM = "\uFEFF"
 // sseDone is the data of OpenAI's last stream event.
 const sseDone = "[DONE]"
 
-// sseStarts are the line starts that mark a server-sent-event stream.
-var sseStarts = [][]byte{[]byte("data:"), []byte("event:"), []byte("id:"), []byte("retry:"), []byte(":")}
+// sseDataField starts an SSE data line.
+const sseDataField = "data:"
 
-// isSSE reports whether the first non-blank line of body starts a
-// server-sent event.
+// isSSE reports whether body has an SSE data line. Other fields may come
+// first, and an SSE body without data has no usage anyway. NDJSON lines
+// are JSON objects, so they never match.
 func isSSE(body []byte) bool {
-	for line := range bytes.SplitSeq(body, []byte("\n")) {
-		line = bytes.TrimSpace(line)
-		if len(line) == 0 {
-			continue
-		}
-		return slices.ContainsFunc(sseStarts, func(p []byte) bool { return bytes.HasPrefix(line, p) })
-	}
-	return false
+	lines := bytes.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' })
+	return slices.ContainsFunc(lines, func(l []byte) bool { return bytes.HasPrefix(l, []byte(sseDataField)) })
 }
 
 // parseUsageSSE returns the usage of the last event that reports it.

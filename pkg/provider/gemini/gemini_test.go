@@ -578,6 +578,15 @@ func TestStream(t *testing.T) {
 			wantErr: context.Canceled,
 		},
 		{
+			name:    "caller cancels at end of stream",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel),
+			onFirst: cancelContext,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: context.Canceled,
+		},
+		{
 			name:    "ends without finish reason",
 			status:  http.StatusOK,
 			body:    strings.NewReader(hel),

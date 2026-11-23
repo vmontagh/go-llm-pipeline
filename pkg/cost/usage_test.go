@@ -79,6 +79,7 @@ func TestParseUsage(t *testing.T) {
 		},
 		{name: "sse with bom", body: "\uFEFFdata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse starting with id", body: "id: 1\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
+		{name: "sse starting with other fields", body: "event\nextension: x\rdata: {\"usage\":{\"input_tokens\":2}}\r\r", want: cost.Usage{Input: 2}},
 		{name: "sse starting with retry", body: "retry: 10\ndata: {\"usage\":{\"input_tokens\":2}}\n\n", want: cost.Usage{Input: 2}},
 		{name: "sse without usage", body: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n", wantErr: cost.ErrNoUsage},
 		{name: "sse cut off", body: "data: {\"usage\":{\"prompt_tokens\":1}}\n\ndata: {\"usage\":", wantErr: cost.ErrInvalidUsage},

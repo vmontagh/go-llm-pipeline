@@ -4,6 +4,7 @@ package openai
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -335,7 +336,8 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 				return
 			}
 		}
-		yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", provpkg.ErrIncompleteStream))
+		// A cancel that comes just before EOF is still the cause.
+		yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", cmp.Or(ctx.Err(), provpkg.ErrIncompleteStream)))
 	}
 }
 
