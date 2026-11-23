@@ -161,6 +161,8 @@ deps:
       - provider
       - policy
       - analyzer
+      - ollama # examples only: replayed from cassettes
+      - llmvcr # examples only
 
   strategy:
     anyProjectDeps: false

@@ -1,0 +1,109 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 537
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "qwen3",
+              "prompt": "Who wrote the first published computer program?\n\nRespond with ONLY a single JSON object conforming to this JSON Schema:\n{\"additionalProperties\":false,\"properties\":{\"born\":{\"maximum\":9223372036854775807,\"minimum\":-9223372036854775808,\"type\":\"integer\"},\"name\":{\"type\":\"string\"}},\"required\":[\"name\",\"born\"],\"type\":\"object\"}",
+              "images": null,
+              "stream": false,
+              "format": "json",
+              "options": {
+                "num_ctx": 8192,
+                "num_predict": 1024,
+                "temperature": 0.3
+              }
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/generate
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 154
+        uncompressed: false
+        body: |-
+            {
+              "model": "qwen3",
+              "response": "{\"name\":\"Ada Lovelace\"}",
+              "done": true,
+              "done_reason": "stop",
+              "prompt_eval_count": 60,
+              "eval_count": 9
+            }
+        headers:
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 5.708µs
+    - id: 1
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 742
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "qwen3",
+              "prompt": "Who wrote the first published computer program?\n\nRespond with ONLY a single JSON object conforming to this JSON Schema:\n{\"additionalProperties\":false,\"properties\":{\"born\":{\"maximum\":9223372036854775807,\"minimum\":-9223372036854775808,\"type\":\"integer\"},\"name\":{\"type\":\"string\"}},\"required\":[\"name\",\"born\"],\"type\":\"object\"}\n\nYour previous response was invalid and must be corrected.\nFix the following field errors:\n- born: required: missing required property\nReturn only the corrected JSON object, with no surrounding text.",
+              "images": null,
+              "stream": false,
+              "format": "json",
+              "options": {
+                "num_ctx": 8192,
+                "num_predict": 1024,
+                "temperature": 0.3
+              }
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/generate
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 170
+        uncompressed: false
+        body: |-
+            {
+              "model": "qwen3",
+              "response": "{\"name\":\"Ada Lovelace\",\"born\":1815}",
+              "done": true,
+              "done_reason": "stop",
+              "prompt_eval_count": 140,
+              "eval_count": 14
+            }
+        headers:
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 1.75µs

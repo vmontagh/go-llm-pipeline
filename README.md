@@ -114,6 +114,59 @@ a, err := analyzer.NewBuilder(p, parse).
 Share the built analyzer across workers so every call goes through the same guard. To read
 `Limit()` and `State()`, call `provider.NewGuard` yourself and pass the guard to `NewBuilder`.
 
+#### Concurrency patterns
+
+Size each worker pool by what limits it, and give local and remote work separate pools, so slow API
+calls do not hold up local work and local work does not starve the API workers:
+
+- **Local, compute-bound work** (resizing images, local embeddings, a local Ollama model) is limited
+  by the machine. Use about `runtime.NumCPU()` workers for CPU work. For Ollama, match the number of
+  requests the server runs at once (its `OLLAMA_NUM_PARALLEL` setting); extra requests only queue.
+- **Remote, API-bound calls** are limited by the provider's rate limit, not by the machine, so they
+  can use more workers than there are cores. Set the cap from the rate limit, and wrap the provider
+  in a `Guard` (see above) to adapt to 429s at run time. Use one analyzer per provider, shared by
+  all its workers.
+- **Connect the stages with an unbuffered channel.** A stage that falls behind then slows the one
+  before it, instead of piling up work in memory.
+
+Pick the error handling by what one failure means:
+
+- When items fail independently, use `Consume` or `ConsumeAll` and handle each failure in the
+  process function, for example with `Checkpointed` and a `DeadLetterQueue`. The run continues.
+- When one failure should stop the run (an invalid API key, for example), use
+  `golang.org/x/sync/errgroup`: `errgroup.WithContext` cancels the other workers when one returns
+  an error, `SetLimit` caps the calls in flight, and `Wait` returns the first error.
+
+```go
+g, ctx := errgroup.WithContext(ctx)
+resized := make(chan Photo)
+g.Go(func() error { // local stage: one worker per core
+	defer close(resized)
+	return pipeline.ConsumeAll(ctx, photos, runtime.NumCPU(), func(ctx context.Context, p Photo) {
+		select {
+		case resized <- resize(p):
+		case <-ctx.Done():
+		}
+	})
+})
+g.Go(func() error { // remote stage: capped by the rate limit
+	calls, ctx := errgroup.WithContext(ctx)
+	calls.SetLimit(remoteWorkers)
+	for p := range resized {
+		if ctx.Err() != nil {
+			break // a call failed; returning cancels the local stage
+		}
+		calls.Go(func() error { return describe(ctx, a, p) })
+	}
+	return calls.Wait()
+})
+return g.Wait()
+```
+
+The runnable version is `Example_localAndRemote` in `pkg/pipeline`. Runnable examples for the
+analyzer (`NewTemplate`, `Extract`, `AnalyzeWithTools`, `SchemaOf`) and for `llmvcr` replay
+recorded cassettes, so they run offline in `go test` and appear in the package documentation.
+
 #### Multi-turn conversations
 
 `AnalyzeMessages` sends a typed conversation instead of a single prompt. Each `provider.Message`
