@@ -496,14 +496,23 @@ func parseToolResponse(body []byte) provpkg.CallResult {
 	res := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
 	var text strings.Builder
 	hasText := false
+	// Parts keeps the reply in order with its signatures, which Gemini wants
+	// back intact.
 	for _, p := range cand.Content.Parts {
 		switch {
 		case p.FunctionCall != nil:
 			c := p.FunctionCall
-			res.ToolCalls = append(res.ToolCalls, provpkg.ToolCall{ID: c.ID, Name: c.Name, Arguments: string(c.Args), Signature: p.ThoughtSignature})
+			call := provpkg.ToolCall{ID: c.ID, Name: c.Name, Arguments: string(c.Args)}
+			res.ToolCalls = append(res.ToolCalls, call)
+			res.Parts = append(res.Parts, provpkg.Part{ToolCall: &call, Signature: p.ThoughtSignature})
 		case p.Text != nil && !p.Thought:
 			hasText = true
 			text.WriteString(*p.Text)
+			// An empty text part cannot be a Part; only its signature is
+			// lost, which Gemini does not check on text.
+			if *p.Text != "" {
+				res.Parts = append(res.Parts, provpkg.Part{Text: *p.Text, Signature: p.ThoughtSignature})
+			}
 		}
 	}
 	if !hasText && len(res.ToolCalls) == 0 {
@@ -586,13 +595,13 @@ func requestPart(p provpkg.Part) part {
 		c := p.ToolCall
 		return part{
 			FunctionCall:     &functionCall{ID: c.ID, Name: c.Name, Args: argsObject(c.Arguments)},
-			ThoughtSignature: c.Signature,
+			ThoughtSignature: p.Signature,
 		}
 	case p.ToolResult != nil:
 		r := p.ToolResult
 		return part{FunctionResponse: &functionResponse{ID: r.CallID, Name: r.Name, Response: toolResponse(r.Content)}}
 	default:
-		return part{Text: &p.Text}
+		return part{Text: &p.Text, ThoughtSignature: p.Signature}
 	}
 }
 

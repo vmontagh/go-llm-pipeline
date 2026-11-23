@@ -212,6 +212,11 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	nested := toolCall("c1", "nested", `{}`)
 	stop := toolCall("c1", "stop", `{}`)
 	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	// A reply whose provider keeps its parts in order, with signatures.
+	signedParts := []provider.Part{{Text: "a", Signature: "s1"}, {ToolCall: &add, Signature: "s2"}, {Text: "b"}, {ToolCall: &add2}}
+	signedReply := callsReply("ab", add, add2)
+	signedReply.Parts = signedParts
+	signedResults := exchange("", []provider.ToolCall{add, add2}, `{"Sum":3}`, `{"Sum":7}`)[1]
 	// Every default step calls add; the last request holds all earlier rounds.
 	defaultSteps := make([]provider.CallResult, 0, DefaultMaxToolSteps)
 	defaultRan := make([]string, 0, DefaultMaxToolSteps)
@@ -252,6 +257,13 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			want:     "3, 7",
 			wantRan:  []string{"add", "add"},
 			wantSent: append([]provider.Message{user}, exchange("adding", []provider.ToolCall{add, add2}, `{"Sum":3}`, `{"Sum":7}`)...),
+		},
+		{
+			name:     "ordered signed parts are replayed intact",
+			replies:  []provider.CallResult{signedReply, textReply("3, 7")},
+			want:     "3, 7",
+			wantRan:  []string{"add", "add"},
+			wantSent: []provider.Message{user, {Role: provider.RoleAssistant, Parts: signedParts}, signedResults},
 		},
 		{
 			name:     "rounds accumulate",

@@ -40,6 +40,11 @@ type CallResult struct {
 	RetryAfter time.Duration
 	// ToolCalls are the tools the model asks to run; see ToolCaller.
 	ToolCalls []ToolCall
+	// Parts is the reply's text and calls in their original order, with
+	// their Signatures, for a ToolCaller whose provider needs the reply sent
+	// back intact. The tool loop then replays it instead of Text followed by
+	// ToolCalls.
+	Parts []Part
 }
 
 // Provider is the per-backend hook surface the analyzer Template

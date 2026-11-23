@@ -187,8 +187,8 @@ func TestCall_Request(t *testing.T) {
 			msgs: []provpkg.Message{
 				provpkg.TextMessage(provpkg.RoleUser, "u"),
 				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
-					{Text: "checking"},
-					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`, Signature: "sig"}},
+					{Text: "checking", Signature: "ts"},
+					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}, Signature: "sig"},
 					{ToolCall: &provpkg.ToolCall{Name: "now"}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `{"A":1`}},
 					{ToolCall: &provpkg.ToolCall{Name: "add", Arguments: `[1]`}},
@@ -205,7 +205,7 @@ func TestCall_Request(t *testing.T) {
 				"contents": []any{
 					map[string]any{"role": "user", "parts": []any{map[string]any{"text": "u"}}},
 					map[string]any{"role": "model", "parts": []any{
-						map[string]any{"text": "checking"},
+						map[string]any{"text": "checking", "thoughtSignature": "ts"},
 						map[string]any{"functionCall": map[string]any{"id": "c1", "name": "add", "args": map[string]any{"A": 1.0}}, "thoughtSignature": "sig"},
 						map[string]any{"functionCall": map[string]any{"name": "now", "args": map[string]any{}}},
 						map[string]any{"functionCall": map[string]any{"name": "add", "args": map[string]any{}}},
@@ -319,30 +319,38 @@ func TestCallTools_Response(t *testing.T) {
 		want provpkg.CallResult
 	}{
 		{
-			name: "calls in order with text, without thoughts",
+			name: "calls and text in order with signatures, without thoughts",
 			body: `{"candidates":[{"content":{"parts":[` +
 				`{"text":"thinking","thought":true},` +
-				`{"text":"checking"},` +
+				`{"text":"checking","thoughtSignature":"ts"},` +
 				`{"functionCall":{"id":"c1","name":"add","args":{"A":1}},"thoughtSignature":"sig"},` +
+				`{"text":" more"},` +
 				`{"functionCall":{"name":"now"}}]}}]}`,
-			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "checking", ToolCalls: []provpkg.ToolCall{
-				{ID: "c1", Name: "add", Arguments: `{"A":1}`, Signature: "sig"},
-				{Name: "now"},
-			}},
+			want: provpkg.CallResult{
+				Outcome:   provpkg.OutcomeSuccess,
+				Text:      "checking more",
+				ToolCalls: []provpkg.ToolCall{{ID: "c1", Name: "add", Arguments: `{"A":1}`}, {Name: "now"}},
+				Parts: []provpkg.Part{
+					{Text: "checking", Signature: "ts"},
+					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}, Signature: "sig"},
+					{Text: " more"},
+					{ToolCall: &provpkg.ToolCall{Name: "now"}},
+				},
+			},
 		},
 		{
 			name: "calls without text",
 			body: `{"candidates":[{"content":{"parts":[{"functionCall":{"name":"now"}}]}}]}`,
-			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, ToolCalls: []provpkg.ToolCall{{Name: "now"}}},
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, ToolCalls: []provpkg.ToolCall{{Name: "now"}}, Parts: []provpkg.Part{{ToolCall: &provpkg.ToolCall{Name: "now"}}}},
 		},
 		{
 			name: "final reply joins text parts",
 			body: `{"candidates":[{"content":{"parts":[{"text":"do"},{"text":"ne"}]}}]}`,
-			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "done"},
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "done", Parts: []provpkg.Part{{Text: "do"}, {Text: "ne"}}},
 		},
 		{
 			name: "empty answer text",
-			body: `{"candidates":[{"content":{"parts":[{"text":""}]}}]}`,
+			body: `{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"ts"}]}}]}`,
 			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
 		},
 		{
