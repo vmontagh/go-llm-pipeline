@@ -121,6 +121,7 @@ deps:
       - trace
       - httputil
       - provider
+      - vcrtest
 
   openai:
     anyProjectDeps: false
@@ -130,6 +131,7 @@ deps:
       - trace
       - httputil
       - provider
+      - vcrtest
 
   ollama:
     anyProjectDeps: false
@@ -242,6 +244,7 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - cost
+      - httputil
       - observ # example only: *observ.Metrics is a cost.Adder
 
   costtest:

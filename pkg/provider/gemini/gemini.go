@@ -22,11 +22,13 @@ package gemini
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -59,6 +61,7 @@ const callRegionName = "Call_Gemini"
 const (
 	modelResourcePrefix   = "models/"
 	generateContentMethod = ":generateContent"
+	streamContentMethod   = ":streamGenerateContent?alt=sse"
 	authHeaderName        = "X-Goog-Api-Key"
 	jsonMIMEType          = "application/json"
 	imageMIMEType         = "image/jpeg"
@@ -231,49 +234,177 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 // system instruction and assistant turns use the "model" role.
 func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	rc, failed := t.send(ctx, lease, msgs, generateContentMethod)
+	if rc == nil {
+		return failed
+	}
+	defer t.closeBody(rc)
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return readFailure(http.StatusOK, nil, err)
+	}
+	return parseResponse(body)
+}
+
+// Stream implements provpkg.Streamer. Each event repeats the running
+// usage, so only the last chunk carries it.
+func (t *transport) Stream(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) (iter.Seq2[provpkg.Chunk, error], provpkg.CallResult) {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	body, failed := t.send(ctx, lease, msgs, streamContentMethod)
+	if body == nil {
+		return nil, failed
+	}
+	return t.chunks(ctx, body), provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+}
+
+// streamEvent is one event of a streamed reply. Error is set when the
+// request fails mid-stream.
+type streamEvent struct {
+	generateContentResponse
+	UsageMetadata *struct {
+		PromptTokenCount     int `json:"promptTokenCount"`
+		CandidatesTokenCount int `json:"candidatesTokenCount"`
+		ThoughtsTokenCount   int `json:"thoughtsTokenCount"`
+	} `json:"usageMetadata"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// chunks yields the text of each event. The event with a finish reason ends
+// the reply and carries the usage. Like Call, a reply without text fails.
+func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[provpkg.Chunk, error] {
+	return func(yield func(provpkg.Chunk, error) bool) {
+		defer t.closeBody(body)
+		gotText := false
+		for data, err := range httputil.SSEData(body) {
+			// The reader may hold buffered events that a canceled read would not stop.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", ctxErr))
+				return
+			}
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: %w", provpkg.ErrIncompleteStream, err))
+				return
+			}
+			ev, err := parseEvent(data)
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			gotText = gotText || ev.hasText
+			if ev.done && !gotText {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: no text", provpkg.ErrEmptyCandidate))
+				return
+			}
+			if ev.done {
+				yield(ev.chunk, nil)
+				return
+			}
+			if ev.chunk.Text != "" && !yield(ev.chunk, nil) {
+				return
+			}
+		}
+		// A cancel that comes just before EOF is still the cause.
+		yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", cmp.Or(ctx.Err(), provpkg.ErrIncompleteStream)))
+	}
+}
+
+// parsedEvent is one stream event turned into a chunk.
+type parsedEvent struct {
+	chunk provpkg.Chunk
+	// hasText is set when the event has a text part, even an empty one.
+	hasText bool
+	// done is set when the event ends the reply.
+	done bool
+}
+
+// parseEvent turns one event into a chunk.
+func parseEvent(data []byte) (parsedEvent, error) {
+	var p parsedEvent
+	var ev streamEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return p, fmt.Errorf("%w: unmarshaling stream event: %w", provpkg.ErrInvalidResponsePart, err)
+	}
+	if ev.Error != nil {
+		return p, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, ev.Error.Message)
+	}
+	if len(ev.Candidates) == 0 {
+		if ev.PromptFeedback != nil && ev.PromptFeedback.BlockReason != "" {
+			return p, fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, ev.PromptFeedback.BlockReason)
+		}
+		return p, nil
+	}
+	cand := ev.Candidates[0]
+	var text strings.Builder
+	for _, part := range cand.Content.Parts {
+		if part.Text == nil {
+			return p, fmt.Errorf("%w: part is not text", provpkg.ErrInvalidResponsePart)
+		}
+		text.WriteString(*part.Text)
+	}
+	p.chunk.Text = text.String()
+	p.hasText = len(cand.Content.Parts) > 0
+	if cand.FinishReason == "" {
+		return p, nil
+	}
+	if u := ev.UsageMetadata; u != nil {
+		p.chunk.Usage = &provpkg.Usage{Input: u.PromptTokenCount, Output: u.CandidatesTokenCount + u.ThoughtsTokenCount}
+	}
+	p.done = true
+	return p, nil
+}
+
+// send posts msgs to method. It returns the open body on 200 OK, and
+// otherwise a nil body and the failed result.
+func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message, method string) (io.ReadCloser, provpkg.CallResult) {
 	reqB, err := json.Marshal(t.buildRequest(msgs))
 	if err != nil {
-		return terminal(fmt.Errorf("marshaling gemini request: %w", err))
+		return nil, terminal(fmt.Errorf("marshaling gemini request: %w", err))
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint(), bytes.NewReader(reqB))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.endpoint(method), bytes.NewReader(reqB))
 	if err != nil {
-		return terminal(fmt.Errorf("building gemini request: %w", err))
+		return nil, terminal(fmt.Errorf("building gemini request: %w", err))
 	}
 	httpReq.Header.Set(authHeaderName, lease.Value)
 	httpReq.Header.Set("Content-Type", jsonMIMEType)
 
 	resp, err := t.client.Do(httpReq)
 	if err != nil {
-		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: fmt.Errorf("calling gemini: %w", err)}
+		return nil, provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: fmt.Errorf("calling gemini: %w", err)}
 	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warn("close error", "err", cerr)
-		}
-	}()
-
-	// Parsed before reading the body so a failed read on a 429/503 still
-	// honors the server's cooldown.
-	retryAfter := httputil.ParseRetryAfter(resp.Header.Get("Retry-After"))
+	if resp.StatusCode == http.StatusOK {
+		return resp.Body, provpkg.CallResult{}
+	}
+	defer t.closeBody(resp.Body)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("reading gemini response: %w", err),
-			StatusCode: resp.StatusCode,
-			RetryAfter: retryAfter,
-		}
+		return nil, readFailure(resp.StatusCode, resp.Header, err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        newAPIError(resp.StatusCode, body),
-			StatusCode: resp.StatusCode,
-			Body:       body,
-			RetryAfter: retryAfter,
-		}
+	return nil, provpkg.CallResult{
+		Outcome:    provpkg.OutcomeProviderError,
+		Err:        newAPIError(resp.StatusCode, body),
+		StatusCode: resp.StatusCode,
+		Body:       body,
+		RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
 	}
-	return parseResponse(body)
+}
+
+// readFailure is the result of a reply whose body could not be read. It
+// still honors the server's cooldown on a 429 or 503.
+func readFailure(status int, header http.Header, err error) provpkg.CallResult {
+	return provpkg.CallResult{
+		Outcome:    provpkg.OutcomeProviderError,
+		Err:        fmt.Errorf("reading gemini response: %w", err),
+		StatusCode: status,
+		RetryAfter: httputil.ParseRetryAfter(header.Get("Retry-After")),
+	}
+}
+
+func (t *transport) closeBody(body io.Closer) {
+	if err := body.Close(); err != nil {
+		t.logger.Warn("close error", "err", err)
+	}
 }
 
 // parseResponse extracts the first text part of the first candidate.
@@ -304,14 +435,14 @@ func terminal(err error) provpkg.CallResult {
 	return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
 }
 
-// endpoint returns the generateContent URL. Like the Google SDKs, a model
-// name without a resource prefix (e.g. "tunedModels/x") is a base model.
-func (t *transport) endpoint() string {
+// endpoint returns the URL of method. Like the Google SDKs, a model name
+// without a resource prefix (e.g. "tunedModels/x") is a base model.
+func (t *transport) endpoint(method string) string {
 	name := t.model
 	if !strings.Contains(name, "/") {
 		name = modelResourcePrefix + name
 	}
-	return t.baseURL + "/" + name + generateContentMethod
+	return t.baseURL + "/" + name + method
 }
 
 func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest {

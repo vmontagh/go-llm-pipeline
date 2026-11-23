@@ -1,14 +1,18 @@
 package gemini_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"iter"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
@@ -530,6 +534,225 @@ func TestCall_RedirectLoopStops(t *testing.T) {
 	if got := hits.Load(); got != wantHits {
 		t.Errorf("server hits = %d, want %d", got, wantHits)
 	}
+}
+
+func TestStream(t *testing.T) {
+	t.Parallel()
+	const (
+		hel   = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"Hel\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3}}\n\n"
+		usage = "data: {\"usageMetadata\":{\"promptTokenCount\":3}}\n\n"
+		done  = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"l\"},{\"text\":\"o\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":4}}\n\n"
+	)
+	opened := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+	tests := []struct {
+		name    string
+		status  int
+		body    io.Reader
+		onFirst readAction // what the caller does after the first chunk
+		want    []provpkg.Chunk
+		wantRes provpkg.CallResult
+		wantErr error
+	}{
+		{
+			name:    "streams chunks and final usage",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + usage + done),
+			want:    []provpkg.Chunk{{Text: "Hel"}, {Text: "lo", Usage: &provpkg.Usage{Input: 3, Output: 6}}},
+			wantRes: opened,
+		},
+		{
+			name:    "caller stops early",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + done),
+			onFirst: stopReading,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+		},
+		{
+			name:    "caller cancels",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + done),
+			onFirst: cancelContext,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: context.Canceled,
+		},
+		{
+			name:    "caller cancels at end of stream",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel),
+			onFirst: cancelContext,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: context.Canceled,
+		},
+		{
+			name:    "ends without finish reason",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "connection drops",
+			status:  http.StatusOK,
+			body:    io.MultiReader(strings.NewReader(hel), iotest.ErrReader(errTest)),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "fails mid-stream",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + "data: {\"error\":{\"message\":\"overloaded\"}}\n\n" + done),
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: opened,
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "prompt blocked",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrEmptyCandidate,
+		},
+		{
+			name:    "final event without text",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n"),
+			want:    []provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{Input: 3, Output: 1}}},
+			wantRes: opened,
+		},
+		{
+			name:    "empty text part",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3}}\n\n"),
+			want:    []provpkg.Chunk{{Usage: &provpkg.Usage{Input: 3}}},
+			wantRes: opened,
+		},
+		{
+			name:    "finishes without text",
+			status:  http.StatusOK,
+			body:    strings.NewReader(usage + "data: {\"candidates\":[{\"finishReason\":\"MAX_TOKENS\"}]}\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrEmptyCandidate,
+		},
+		{
+			name:    "non-text part",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{}}]}}]}\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrInvalidResponsePart,
+		},
+		{
+			name:    "bad event",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: nope\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrInvalidResponsePart,
+		},
+		{
+			name:   "fails to open",
+			status: http.StatusServiceUnavailable,
+			body:   strings.NewReader("busy"),
+			wantRes: provpkg.CallResult{
+				Outcome:    provpkg.OutcomeProviderError,
+				Err:        &gemini.APIError{StatusCode: http.StatusServiceUnavailable, Message: "Service Unavailable"},
+				StatusCode: http.StatusServiceUnavailable,
+				Body:       []byte("busy"),
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, body := newStreamProvider(t, tt.status, tt.body)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+
+			seq, res := s.Stream(ctx, &provpkg.Lease[string]{Value: testAPIKey}, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, testPrompt)})
+			got, err := readStream(seq, func() bool {
+				if tt.onFirst == cancelContext {
+					cancel()
+				}
+				return tt.onFirst == stopReading
+			})
+
+			if diff := cmp.Diff(tt.wantRes, res); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
+			}
+			if !body.closed {
+				t.Error("response body not closed")
+			}
+		})
+	}
+}
+
+// readAction is what a test caller does after the first chunk.
+type readAction int
+
+const (
+	keepReading readAction = iota
+	stopReading
+	cancelContext
+)
+
+// newStreamProvider returns a provider that answers a streaming request with
+// status and body, and the body so a test can check that it was closed. Any
+// other request fails the test.
+func newStreamProvider(t *testing.T, status int, body io.Reader) (provpkg.Streamer[string], *closeTracker) {
+	t.Helper()
+	tracked := &closeTracker{Reader: body}
+	client := &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		const wantPath = apiVersionPath + "/models/" + gemini.DefaultModel + ":streamGenerateContent"
+		if r.URL.Path != wantPath || r.URL.Query().Get("alt") != "sse" {
+			t.Errorf("request URL = %s, want %s?alt=sse", r.URL, wantPath)
+		}
+		return &http.Response{StatusCode: status, Body: tracked, Header: make(http.Header)}, nil
+	})}
+	s, ok := provpkg.AsStreamer(gemini.NewProvider([]string{testAPIKey}, gemini.WithBaseURL("http://example.test"+apiVersionPath), gemini.WithHTTPClient(client)))
+	if !ok {
+		t.Fatal("AsStreamer() = false, want true")
+	}
+	return s, tracked
+}
+
+// readStream returns the chunks of seq up to its first error, and that error.
+// It calls afterFirst after the first chunk and stops if it returns true. A
+// nil seq has no chunks.
+func readStream(seq iter.Seq2[provpkg.Chunk, error], afterFirst func() (stop bool)) ([]provpkg.Chunk, error) {
+	if seq == nil {
+		return nil, nil
+	}
+	var got []provpkg.Chunk
+	for c, err := range seq {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, c)
+		if len(got) == 1 && afterFirst() {
+			break
+		}
+	}
+	return got, nil
+}
+
+// closeTracker records whether the response body was closed.
+type closeTracker struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error {
+	c.closed = true
+	return nil
 }
 
 func TestClassifyError(t *testing.T) {

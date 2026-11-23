@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 )
 
 // Usage is the token usage of one or more calls.
@@ -89,14 +91,23 @@ type usageBody struct {
 
 // ParseUsage extracts the model and provider-reported usage from an OpenAI,
 // Gemini, or Ollama response body. Newline-delimited JSON, as Ollama streams,
-// is summed line by line; a stream with usage and a malformed line is
-// ErrInvalidUsage. It returns ErrNoUsage when the body reports no
-// usage, for example a non-LLM response or an unsupported server-sent-event
-// stream, ErrInvalidUsage for negative counts, and ErrOverflow when a sum
-// does not fit in an int.
+// is summed line by line. In a server-sent-event stream, as OpenAI and Gemini
+// stream, the last event that reports usage wins, since Gemini repeats
+// running totals. A stream with usage and a malformed or cut-off part is
+// ErrInvalidUsage. It returns ErrNoUsage when the body reports no usage, for
+// example a non-LLM response, ErrInvalidUsage for negative counts, and
+// ErrOverflow when a sum does not fit in an int.
 func ParseUsage(body []byte) (string, Usage, error) {
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
 	if json.Valid(body) {
-		return parseUsageJSON(body)
+		m, u, err := parseUsageJSON(body)
+		if err != nil {
+			return "", Usage{}, err
+		}
+		return m, u, nil
+	}
+	if isSSE(body) {
+		return parseUsageSSE(body)
 	}
 	var model string
 	var total Usage
@@ -133,6 +144,61 @@ func ParseUsage(body []byte) (string, Usage, error) {
 	return model, total, nil
 }
 
+// utf8BOM is the byte order mark a body may start with.
+const utf8BOM = "\uFEFF"
+
+// sseDone is the data of OpenAI's last stream event.
+const sseDone = "[DONE]"
+
+// sseDataField starts an SSE data line.
+const sseDataField = "data:"
+
+// isSSE reports whether body has an SSE data line. Other fields may come
+// first, and an SSE body without data has no usage anyway. NDJSON lines
+// are JSON objects, so they never match.
+func isSSE(body []byte) bool {
+	lines := bytes.FieldsFunc(body, func(r rune) bool { return r == '\n' || r == '\r' })
+	return slices.ContainsFunc(lines, func(l []byte) bool { return bytes.HasPrefix(l, []byte(sseDataField)) })
+}
+
+// parseUsageSSE returns the usage of the last event that reports it.
+func parseUsageSSE(body []byte) (string, Usage, error) {
+	var model string
+	var last Usage
+	found, malformed := false, false
+	for data, err := range httputil.SSEData(bytes.NewReader(body)) {
+		if err != nil {
+			malformed = true
+			continue
+		}
+		if string(data) == sseDone {
+			continue
+		}
+		if !json.Valid(data) {
+			malformed = true
+			continue
+		}
+		m, u, err := parseUsageJSON(data)
+		// The model may come in an event without usage.
+		model = cmp.Or(model, m)
+		if errors.Is(err, ErrNoUsage) {
+			continue
+		}
+		if err != nil {
+			return "", Usage{}, err
+		}
+		last, found = u, true
+	}
+	if !found {
+		return "", Usage{}, ErrNoUsage
+	}
+	// A broken event may have carried a later total.
+	if malformed {
+		return "", Usage{}, fmt.Errorf("%w: malformed stream event", ErrInvalidUsage)
+	}
+	return model, last, nil
+}
+
 func parseUsageJSON(doc []byte) (string, Usage, error) {
 	var b usageBody
 	if err := json.Unmarshal(doc, &b); err != nil {
@@ -161,7 +227,7 @@ func parseUsageJSON(doc []byte) (string, Usage, error) {
 		in = []int{derefOrZero(b.PromptEvalCount)}
 		out = []int{derefOrZero(b.EvalCount)}
 	default:
-		return "", Usage{}, ErrNoUsage
+		return cmp.Or(b.ModelVersion, b.Model), Usage{}, ErrNoUsage
 	}
 	inTotal, inErr := sumTokens(in)
 	outTotal, outErr := sumTokens(out)

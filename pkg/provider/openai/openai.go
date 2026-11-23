@@ -4,11 +4,13 @@ package openai
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"time"
@@ -60,6 +62,14 @@ type ChatGPTRequest struct {
 	Messages       []RequestMessage   `json:"messages"`
 	MaxTokens      int                `json:"max_tokens"`
 	ResponseFormat *ResponseFormatDef `json:"response_format,omitempty"`
+	Stream         bool               `json:"stream,omitempty"`
+	StreamOptions  *StreamOptions     `json:"stream_options,omitempty"`
+}
+
+// StreamOptions configures a streamed reply.
+type StreamOptions struct {
+	// IncludeUsage asks for the token usage in an event after the text.
+	IncludeUsage bool `json:"include_usage"`
 }
 
 // ResponseFormatDef declares the OpenAI `response_format` parameter
@@ -239,62 +249,15 @@ func promptMessage(prompt string, imageData []byte) provpkg.Message {
 // CallMessages implements provpkg.MessageCaller with native chat roles.
 func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	req := buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema)
-	reqB, err := json.Marshal(req)
+	body, failed := t.send(ctx, lease, buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema))
+	if body == nil {
+		return failed
+	}
+	defer t.closeBody(body)
+
+	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("marshaling vision request: %w", err)),
-		}
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+chatCompletionsPath, bytes.NewReader(reqB))
-	if err != nil {
-		return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
-	}
-
-	httpReq.Header.Add("Authorization", authorizationHeaderValue+lease.Value)
-	httpReq.Header.Add("Content-Type", "application/json")
-	if t.organization != "" {
-		httpReq.Header.Add("OpenAI-Organization", t.organization)
-	}
-
-	resp, err := t.client.Do(httpReq)
-	if err != nil {
-		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err}
-	}
-	defer func() {
-		if cerr := resp.Body.Close(); cerr != nil {
-			t.logger.Warn("close error", "err", cerr)
-		}
-	}()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("reading response: %w", err),
-			StatusCode: resp.StatusCode,
-		}
-	}
-
-	retryAfter := httputil.ParseRetryAfter(resp.Header.Get("Retry-After"))
-
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
-		return provpkg.CallResult{
-			Outcome:    provpkg.OutcomeProviderError,
-			Err:        fmt.Errorf("%w: HTTP %d", provpkg.ErrUnexpectedStatus, resp.StatusCode),
-			StatusCode: resp.StatusCode,
-			Body:       bodyBytes,
-			RetryAfter: retryAfter,
-		}
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return provpkg.CallResult{
-			Outcome: provpkg.OutcomeTerminal,
-			Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, string(bodyBytes))),
-		}
+		return readFailure(http.StatusOK, err)
 	}
 
 	var response ChatGPTResponse
@@ -314,6 +277,154 @@ func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[strin
 	}
 
 	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: response.Choices[0].Message.Content}
+}
+
+// Stream implements provpkg.Streamer. It asks for the usage, which OpenAI
+// sends in its own event after the text.
+func (t *transport) Stream(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) (iter.Seq2[provpkg.Chunk, error], provpkg.CallResult) {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	req := buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema)
+	req.Stream = true
+	req.StreamOptions = &StreamOptions{IncludeUsage: true}
+	body, failed := t.send(ctx, lease, req)
+	if body == nil {
+		return nil, failed
+	}
+	return t.chunks(ctx, body), provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+}
+
+// streamEvent is one event of a streamed reply. Error is set when the
+// request fails mid-stream.
+type streamEvent struct {
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+	} `json:"choices"`
+	Usage *Usage `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+// streamDone is the data of the event that ends a stream.
+const streamDone = "[DONE]"
+
+// chunks yields the text of each event, and the usage in its own chunk.
+func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[provpkg.Chunk, error] {
+	return func(yield func(provpkg.Chunk, error) bool) {
+		defer t.closeBody(body)
+		for data, err := range httputil.SSEData(body) {
+			// The reader may hold buffered events that a canceled read would not stop.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", ctxErr))
+				return
+			}
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: %w", provpkg.ErrIncompleteStream, err))
+				return
+			}
+			if string(data) == streamDone {
+				return
+			}
+			c, err := parseEvent(data)
+			if err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			if (c.Text != "" || c.Usage != nil) && !yield(c, nil) {
+				return
+			}
+		}
+		// A cancel that comes just before EOF is still the cause.
+		yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", cmp.Or(ctx.Err(), provpkg.ErrIncompleteStream)))
+	}
+}
+
+// parseEvent turns one event into a chunk.
+func parseEvent(data []byte) (provpkg.Chunk, error) {
+	var ev streamEvent
+	if err := json.Unmarshal(data, &ev); err != nil {
+		return provpkg.Chunk{}, fmt.Errorf("%w: unmarshaling stream event: %w", provpkg.ErrInvalidResponsePart, err)
+	}
+	if ev.Error != nil {
+		return provpkg.Chunk{}, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, ev.Error.Message)
+	}
+	var c provpkg.Chunk
+	if len(ev.Choices) > 0 {
+		c.Text = ev.Choices[0].Delta.Content
+	}
+	if ev.Usage != nil {
+		c.Usage = &provpkg.Usage{Input: ev.Usage.PromptTokens, Output: ev.Usage.CompletionTokens}
+	}
+	return c, nil
+}
+
+// send posts req. It returns the open body on 200 OK, and otherwise a nil
+// body and the failed result.
+func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req *ChatGPTRequest) (io.ReadCloser, provpkg.CallResult) {
+	reqB, err := json.Marshal(req)
+	if err != nil {
+		return nil, provpkg.CallResult{
+			Outcome: provpkg.OutcomeTerminal,
+			Err:     backoff.Permanent(fmt.Errorf("marshaling vision request: %w", err)),
+		}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, t.baseURL+chatCompletionsPath, bytes.NewReader(reqB))
+	if err != nil {
+		return nil, provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}
+	}
+
+	httpReq.Header.Add("Authorization", authorizationHeaderValue+lease.Value)
+	httpReq.Header.Add("Content-Type", "application/json")
+	if t.organization != "" {
+		httpReq.Header.Add("OpenAI-Organization", t.organization)
+	}
+
+	resp, err := t.client.Do(httpReq)
+	if err != nil {
+		return nil, provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err}
+	}
+	if resp.StatusCode == http.StatusOK {
+		return resp.Body, provpkg.CallResult{}
+	}
+	defer t.closeBody(resp.Body)
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, readFailure(resp.StatusCode, err)
+	}
+
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+		return nil, provpkg.CallResult{
+			Outcome:    provpkg.OutcomeProviderError,
+			Err:        fmt.Errorf("%w: HTTP %d", provpkg.ErrUnexpectedStatus, resp.StatusCode),
+			StatusCode: resp.StatusCode,
+			Body:       bodyBytes,
+			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+		}
+	}
+
+	return nil, provpkg.CallResult{
+		Outcome: provpkg.OutcomeTerminal,
+		Err:     backoff.Permanent(fmt.Errorf("%w: %d %s", provpkg.ErrUnexpectedStatus, resp.StatusCode, string(bodyBytes))),
+	}
+}
+
+// readFailure is the result of a reply whose body could not be read.
+func readFailure(status int, err error) provpkg.CallResult {
+	return provpkg.CallResult{
+		Outcome:    provpkg.OutcomeProviderError,
+		Err:        fmt.Errorf("reading response: %w", err),
+		StatusCode: status,
+	}
+}
+
+func (t *transport) closeBody(body io.Closer) {
+	if err := body.Close(); err != nil {
+		t.logger.Warn("close error", "err", err)
+	}
 }
 
 // buildRequest constructs the chat-completions payload sent to OpenAI.
