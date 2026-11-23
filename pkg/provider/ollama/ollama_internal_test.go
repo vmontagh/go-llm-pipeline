@@ -512,6 +512,45 @@ func TestTransport_Stream(t *testing.T) {
 	}
 }
 
+func TestTransport_StreamDeliversIncrementally(t *testing.T) {
+	t.Parallel()
+	pr, pw := io.Pipe()
+	restSent := make(chan struct{})
+	go func() {
+		// Each Write blocks until read, and EOF only comes after restSent closes.
+		for _, line := range []string{`{"message":{"content":"Hel"}}`, `{"message":{"content":""},"done":true}`} {
+			if _, err := pw.Write([]byte(line + "\n")); err != nil {
+				t.Errorf("writing body: %v", err)
+			}
+		}
+		close(restSent)
+		pw.Close() // A pipe writer's Close always returns nil.
+	}()
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: pr, Header: make(http.Header)}, nil
+	})}
+	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+	seq, _ := tr.Stream(t.Context(), nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+
+	var firstBeforeRest bool
+	for c, err := range seq {
+		if err != nil {
+			t.Fatalf("ranging over stream: %v", err)
+		}
+		if c.Text == "Hel" {
+			select {
+			case <-restSent:
+			default:
+				firstBeforeRest = true
+			}
+		}
+	}
+
+	if !firstBeforeRest {
+		t.Error("first chunk arrived after the whole body was sent, want it as soon as its line arrives")
+	}
+}
+
 func TestTransport_StreamCanceled(t *testing.T) {
 	t.Parallel()
 	body := `{"message":{"content":"Hel"}}` + "\n" + `{"message":{"content":"lo"}}` + "\n"

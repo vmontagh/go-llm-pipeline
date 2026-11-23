@@ -207,8 +207,8 @@ func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Mes
 
 // Stream is Call for a streamed reply. It holds its slot until ranging the
 // iterator stops, though only opening the stream feeds the limit and the
-// breaker. It returns ErrStreamUnsupported when the wrapped provider is not a
-// Streamer.
+// breaker, so a long reply is not mistaken for overload. It returns
+// ErrStreamUnsupported when the wrapped provider is not a Streamer.
 func (g *Guard[T]) Stream(ctx context.Context, lease *Lease[T], msgs []Message) (iter.Seq2[Chunk, error], CallResult) {
 	s, ok := AsStreamer(g.Provider)
 	if !ok {

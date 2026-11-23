@@ -142,15 +142,17 @@ func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease
 }
 
 // streamGuarded is a fakeGuarded that also streams chunks. Opening the
-// stream is a Call.
+// stream is a Call; replyTime passes on the clock while the chunks arrive.
 type streamGuarded struct {
 	*fakeGuarded
-	chunks []provider.Chunk
+	chunks    []provider.Chunk
+	replyTime time.Duration
 }
 
 func (s *streamGuarded) Stream(ctx context.Context, lease *provider.Lease[string], _ []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
 	res := s.Call(ctx, lease, "", nil)
 	return func(yield func(provider.Chunk, error) bool) {
+		s.clock.advance(s.replyTime)
 		for _, c := range s.chunks {
 			if !yield(c, nil) {
 				return
@@ -740,6 +742,58 @@ func TestGuardStream(t *testing.T) {
 	if diff := cmp.Diff(okResult, <-second, cmpopts.EquateErrors()); diff != "" {
 		t.Errorf("Call() after the stream mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func TestGuardStreamLatency(t *testing.T) {
+	t.Parallel()
+	const target = time.Second
+	tests := []struct {
+		name      string
+		openTime  time.Duration
+		replyTime time.Duration
+		wantLimit int
+	}{
+		{name: "slow open shrinks the limit", openTime: 2 * target, wantLimit: 3},
+		// A long reply is not a sign of overload, so only the open counts.
+		{name: "slow reply keeps the limit", replyTime: time.Minute, wantLimit: 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			clock := newFakeGuardClock()
+			// Seven successes from limit 1 reach about 4.1.
+			steps := append(repeat(7, &okResult), step{res: okResult, latency: tt.openTime})
+			fake := &fakeGuarded{clock: clock, steps: steps}
+			g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake, replyTime: tt.replyTime}, provider.WithGuardClock(clock), provider.WithLatencyTarget(target))
+			if err != nil {
+				t.Fatalf("NewGuard() error = %v", err)
+			}
+			for range 7 {
+				g.Call(t.Context(), nil, "", nil)
+			}
+
+			seq, _ := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+			if _, err := collectChunks(seq); err != nil {
+				t.Fatalf("ranging over stream: %v", err)
+			}
+
+			if diff := cmp.Diff(tt.wantLimit, g.Limit()); diff != "" {
+				t.Errorf("Limit() mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
+// collectChunks ranges over seq and returns its chunks and first error.
+func collectChunks(seq iter.Seq2[provider.Chunk, error]) ([]provider.Chunk, error) {
+	var got []provider.Chunk
+	for c, err := range seq {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, c)
+	}
+	return got, nil
 }
 
 func TestGuardStreamFreesSlotOnFailedOpen(t *testing.T) {
