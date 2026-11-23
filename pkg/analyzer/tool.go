@@ -93,8 +93,8 @@ type ToolLoop struct {
 	MaxSteps int
 	// ReportInvalidCalls sends an unknown tool name or invalid arguments back
 	// to the model as the tool result, so it can correct itself. Otherwise
-	// they end the loop with ErrUnknownTool or ErrInvalidToolArguments. Other
-	// tool errors always end the loop.
+	// they end the loop with ErrUnknownTool or ErrInvalidToolArguments. A call
+	// without a name and other tool errors always end the loop.
 	ReportInvalidCalls bool
 }
 
@@ -154,10 +154,12 @@ func (ts toolSet) run(ctx context.Context, calls []provider.ToolCall, report boo
 // call runs one tool call. Errors carry no tool name; run adds it. invalid
 // reports whether an error is the model's mistake: a name not in ts, or
 // invalid arguments. An ErrUnknownTool from a handler is the tool's error.
+// An unnamed call is never invalid: history rejects it, so it cannot be
+// reported back.
 func (ts toolSet) call(ctx context.Context, call provider.ToolCall) (content string, invalid bool, err error) {
 	tool, ok := ts[call.Name]
 	if !ok {
-		return "", true, fmt.Errorf("%w: %q", ErrUnknownTool, call.Name)
+		return "", call.Name != "", fmt.Errorf("%w: %q", ErrUnknownTool, call.Name)
 	}
 	content, err = tool.run(ctx, call.Arguments)
 	return content, errors.Is(err, ErrInvalidToolArguments), err

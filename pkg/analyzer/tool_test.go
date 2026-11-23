@@ -270,6 +270,13 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{unknown}, `analyzer: unknown tool: "nope"`)...),
 		},
 		{
+			name:     "unnamed tool fails even when reporting",
+			replies:  []provider.CallResult{callsReply("", toolCall("c1", "", "{}"))},
+			report:   true,
+			wantErr:  ErrUnknownTool,
+			wantSent: []provider.Message{user},
+		},
+		{
 			name:     "invalid args fail",
 			replies:  []provider.CallResult{callsReply("", badArgs)},
 			wantErr:  ErrInvalidToolArguments,

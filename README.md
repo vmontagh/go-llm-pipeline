@@ -187,7 +187,7 @@ reply without tool calls is parsed and returned. Each model call is retried like
 An unknown tool name returns `analyzer.ErrUnknownTool`, and arguments that fail the schema return
 `analyzer.ErrInvalidToolArguments`; a tool may return that error too, to reject arguments the
 schema cannot express. With `ReportInvalidCalls` set, both are sent back to the model as the tool
-result instead, so it can correct itself. Any other tool error ends the loop.
+result instead, so it can correct itself. A call with no name and any other tool error end the loop.
 
 The OpenAI provider supports tools; a custom provider does so by implementing
 `provider.ToolCaller`, otherwise `AnalyzeWithTools` returns `provider.ErrToolsUnsupported`. The
