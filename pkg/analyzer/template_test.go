@@ -241,6 +241,66 @@ func TestTemplate_AnalyzeMessagesRejects(t *testing.T) {
 	}
 }
 
+func TestTemplate_StreamMessages(t *testing.T) {
+	t.Parallel()
+	msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "u")}
+	chunks := []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
+	mock := newMockProvider(&provider.CallResult{})
+	mock.keys = provider.NewKeyPool([]string{"k1", "k2"})
+	mock.classifyTier = provider.TierShortTransient
+	sp := &streamProvider{
+		mockProvider: mock,
+		// The first open fails and cools its key, so the retry uses the other key.
+		opens:  []provider.CallResult{{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}, {Outcome: provider.OutcomeSuccess}},
+		chunks: chunks,
+	}
+	tmpl := newEchoTemplate(t, sp, WithTemplateBackOff(&backoff.ZeroBackOff{}))
+
+	var got []provider.Chunk
+	for c, err := range tmpl.StreamMessages(t.Context(), msgs, "job", nil) {
+		if err != nil {
+			t.Fatalf("StreamMessages() error = %v", err)
+		}
+		got = append(got, c)
+	}
+
+	if diff := cmp.Diff(chunks, got); diff != "" {
+		t.Errorf("StreamMessages() mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(msgs, sp.got); diff != "" {
+		t.Errorf("sent messages mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestTemplate_StreamMessagesRejects(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		msgs    []provider.Message
+		wantErr error
+	}{
+		{name: "invalid messages", wantErr: provider.ErrInvalidMessages},
+		{name: "provider without streaming", msgs: []provider.Message{provider.TextMessage(provider.RoleUser, "u")}, wantErr: provider.ErrStreamUnsupported},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock := newMockProvider(&provider.CallResult{Outcome: provider.OutcomeSuccess})
+			// Guarded, so the check must look past the Guard's own Stream.
+			tmpl := newEchoTemplate(t, wrapInGuards(t, mock, 1))
+
+			var errs []error
+			for _, err := range tmpl.StreamMessages(t.Context(), tt.msgs, "job", nil) {
+				errs = append(errs, err)
+			}
+
+			if diff := cmp.Diff([]error{tt.wantErr}, errs, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("StreamMessages() errors mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 // newEchoTemplate returns a Template whose parser keeps the raw response.
 func newEchoTemplate(t *testing.T, p provider.Provider[string], opts ...TemplateConfigurator) *Template[string, parsedResult] {
 	t.Helper()

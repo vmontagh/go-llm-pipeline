@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"net/http"
 	"sync"
 	"testing"
@@ -138,6 +139,24 @@ type messageGuarded struct {
 func (m *messageGuarded) CallMessages(ctx context.Context, lease *provider.Lease[string], msgs []provider.Message) provider.CallResult {
 	m.got = msgs
 	return m.Call(ctx, lease, "", nil)
+}
+
+// streamGuarded is a fakeGuarded that also streams chunks. Opening the
+// stream is a Call.
+type streamGuarded struct {
+	*fakeGuarded
+	chunks []provider.Chunk
+}
+
+func (s *streamGuarded) Stream(ctx context.Context, lease *provider.Lease[string], _ []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
+	res := s.Call(ctx, lease, "", nil)
+	return func(yield func(provider.Chunk, error) bool) {
+		for _, c := range s.chunks {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}, res
 }
 
 func (f *fakeGuarded) callCount() int {
@@ -679,6 +698,67 @@ func wrapInGuards(t *testing.T, p provider.Provider[string], clk provider.GuardC
 		p = g
 	}
 	return g
+}
+
+func TestGuardStream(t *testing.T) {
+	t.Parallel()
+	gate := make(chan struct{})
+	clock := newFakeGuardClock()
+	fake := &fakeGuarded{clock: clock, steps: []step{{res: okResult}, {gate: gate, res: okResult}}, entered: make(chan struct{}, 1)}
+	chunks := []provider.Chunk{{Text: "a"}, {Text: "b", Usage: &provider.Usage{Input: 1, Output: 2}}}
+	metrics := &fakeAdder{counts: map[string]int64{}, waited: make(chan struct{}, 1)}
+	g, err := provider.NewGuard[string](&streamGuarded{fakeGuarded: fake, chunks: chunks}, provider.WithGuardClock(clock), provider.WithGuardMetrics(metrics))
+	if err != nil {
+		t.Fatalf("NewGuard() error = %v", err)
+	}
+
+	seq, res := g.Stream(t.Context(), nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+	second := make(chan provider.CallResult, 1)
+	var got []provider.Chunk
+	for c, err := range seq {
+		if err != nil {
+			t.Fatalf("ranging over stream: %v", err)
+		}
+		got = append(got, c)
+		go func() { second <- g.Call(t.Context(), nil, "", nil) }()
+		select {
+		case <-metrics.waited:
+		case <-fake.entered:
+			t.Fatal("Call() ran while the stream held the only slot")
+		}
+		break // Stopping early frees the slot.
+	}
+	<-fake.entered
+	close(gate)
+
+	if diff := cmp.Diff(okResult, res, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(chunks[:1], got); diff != "" {
+		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(okResult, <-second, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Call() after the stream mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestGuardStreamRejectsUnsupported(t *testing.T) {
+	t.Parallel()
+	fake := &fakeGuarded{clock: newFakeGuardClock()}
+	g := wrapInGuards(t, fake, fake.clock, 2)
+	// A canceled context proves the rejection does not wait.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	seq, got := g.Stream(ctx, nil, []provider.Message{provider.TextMessage(provider.RoleUser, "hi")})
+
+	want := provider.CallResult{Err: provider.ErrStreamUnsupported, Outcome: provider.OutcomeTerminal}
+	if diff := cmp.Diff(want, got, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Stream() mismatch (-want +got):\n%s", diff)
+	}
+	if seq != nil {
+		t.Error("Stream() iterator is not nil, want nil")
+	}
 }
 
 func TestGuardCallMessagesDropsUnusedLease(t *testing.T) {

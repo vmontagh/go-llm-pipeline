@@ -100,15 +100,7 @@ func ValidateMessages(msgs []Message) error {
 // Guards count only if the provider they wrap does, though a Guard always
 // has CallMessages.
 func AsMessageCaller[T any](p Provider[T]) (MessageCaller[T], bool) {
-	inner := p
-	for g, ok := inner.(*Guard[T]); ok; g, ok = inner.(*Guard[T]) {
-		inner = g.Provider
-	}
-	if _, ok := inner.(MessageCaller[T]); !ok {
-		return nil, false
-	}
-	mc, ok := p.(MessageCaller[T])
-	return mc, ok
+	return as[MessageCaller[T]](p)
 }
 
 // MessageCaller is implemented by providers that accept typed multi-turn

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"math"
 	"net/http"
 	"sync"
@@ -199,37 +200,77 @@ func (g *Guard[T]) Call(ctx context.Context, lease *Lease[T], prompt string, ima
 func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Message) CallResult {
 	mc, ok := AsMessageCaller(g.Provider)
 	if !ok {
-		// Drop the unused lease so the caller's Release cannot clear another call's cooldown.
-		lease.drop()
-		return CallResult{Err: backoff.Permanent(fmt.Errorf("%w: %s", ErrMessagesUnsupported, g.ProviderLabel())), Outcome: OutcomeTerminal}
+		return g.unsupported(lease, ErrMessagesUnsupported)
 	}
 	return g.do(ctx, lease, func() CallResult { return mc.CallMessages(ctx, lease, msgs) })
 }
 
+// Stream is Call for a streamed reply. It holds its slot until ranging the
+// iterator stops, though only opening the stream feeds the limit and the
+// breaker. It returns ErrStreamUnsupported when the wrapped provider is not a
+// Streamer.
+func (g *Guard[T]) Stream(ctx context.Context, lease *Lease[T], msgs []Message) (iter.Seq2[Chunk, error], CallResult) {
+	s, ok := AsStreamer(g.Provider)
+	if !ok {
+		return nil, g.unsupported(lease, ErrStreamUnsupported)
+	}
+	var seq iter.Seq2[Chunk, error]
+	res, done := g.start(ctx, lease, func() CallResult {
+		var r CallResult
+		seq, r = s.Stream(ctx, lease, msgs)
+		return r
+	})
+	if res.Outcome != OutcomeSuccess {
+		done(&res)
+		return nil, res
+	}
+	return func(yield func(Chunk, error) bool) {
+		defer done(&res)
+		seq(yield)
+	}, res
+}
+
+// unsupported rejects a call the wrapped provider cannot make. It drops the
+// unused lease so the caller's Release cannot clear another call's cooldown.
+func (g *Guard[T]) unsupported(lease *Lease[T], err error) CallResult {
+	lease.drop()
+	return CallResult{Err: backoff.Permanent(fmt.Errorf("%w: %s", err, g.ProviderLabel())), Outcome: OutcomeTerminal}
+}
+
 func (g *Guard[T]) do(ctx context.Context, lease *Lease[T], call func() CallResult) CallResult {
+	res, done := g.start(ctx, lease, call)
+	done(&res)
+	return res
+}
+
+// start waits until the call may run, then runs it. The slot stays held
+// until done is called once; done feeds a non-nil res to the limit and the
+// breaker.
+func (g *Guard[T]) start(ctx context.Context, lease *Lease[T], call func() CallResult) (res CallResult, done func(*CallResult)) {
 	for {
 		probe, err := g.acquire(ctx)
 		if err != nil {
-			return canceledResult(lease, err)
+			return canceledResult(lease, err), func(*CallResult) {}
 		}
 		keyWait, keyReleased, ready := lease.ensureReady()
 		if ready {
 			start := g.cfg.clock.Now()
-			res := call()
-			if ctx.Err() != nil {
-				// A canceled call says nothing about the provider's health.
-				g.release(probe, nil, 0)
-				return res
+			r := call()
+			latency := g.cfg.clock.Now().Sub(start)
+			return r, func(fb *CallResult) {
+				if ctx.Err() != nil {
+					// A canceled call says nothing about the provider's health.
+					fb = nil
+				}
+				g.release(probe, fb, latency)
 			}
-			g.release(probe, &res, g.cfg.clock.Now().Sub(start))
-			return res
 		}
 		g.release(probe, nil, 0)
 		timer := g.cfg.clock.After(keyWait)
 		g.add(MetricGuardWaits)
 		select {
 		case <-ctx.Done():
-			return canceledResult(lease, ctx.Err())
+			return canceledResult(lease, ctx.Err()), func(*CallResult) {}
 		case <-timer:
 		case <-keyReleased:
 		}

@@ -2,6 +2,7 @@ package analyzer
 
 import (
 	"context"
+	"iter"
 	"log/slog"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
@@ -68,4 +69,29 @@ type messageProvider struct {
 func (m *messageProvider) CallMessages(_ context.Context, _ *provider.Lease[string], msgs []provider.Message) provider.CallResult {
 	m.got = msgs
 	return m.callResult
+}
+
+// streamProvider is a mockProvider that streams chunks. Each attempt to open
+// the stream takes the next of opens.
+type streamProvider struct {
+	*mockProvider
+	opens  []provider.CallResult
+	chunks []provider.Chunk
+	got    []provider.Message
+}
+
+func (s *streamProvider) Stream(_ context.Context, _ *provider.Lease[string], msgs []provider.Message) (iter.Seq2[provider.Chunk, error], provider.CallResult) {
+	s.got = msgs
+	res := s.opens[0]
+	s.opens = s.opens[1:]
+	if res.Outcome != provider.OutcomeSuccess {
+		return nil, res
+	}
+	return func(yield func(provider.Chunk, error) bool) {
+		for _, c := range s.chunks {
+			if !yield(c, nil) {
+				return
+			}
+		}
+	}, res
 }

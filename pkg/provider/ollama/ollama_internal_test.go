@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"iter"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -382,6 +383,141 @@ func TestTransport_CallMessages(t *testing.T) {
 	if diff := cmp.Diff("m", gotBody["model"]); diff != "" {
 		t.Errorf("model mismatch (-want +got):\n%s", diff)
 	}
+}
+
+func TestTransport_Stream(t *testing.T) {
+	t.Parallel()
+	const (
+		hel  = `{"message":{"content":"Hel"}}` + "\n"
+		lo   = `{"message":{"content":"lo"}}` + "\n"
+		done = `{"message":{"content":""},"done":true,"prompt_eval_count":3,"eval_count":2}` + "\n"
+	)
+	tests := []struct {
+		name       string
+		status     int
+		body       string
+		numPredict int
+		take       int // chunks read before stopping; 0 reads all
+		want       []provpkg.Chunk
+		wantRes    provpkg.CallResult
+		wantErr    error
+	}{
+		{
+			name:    "streams chunks and usage",
+			status:  http.StatusOK,
+			body:    hel + lo + done,
+			want:    []provpkg.Chunk{{Text: "Hel"}, {Text: "lo"}, {Usage: &provpkg.Usage{Input: 3, Output: 2}}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+		},
+		{
+			name:    "caller stops early",
+			status:  http.StatusOK,
+			body:    hel + lo + done,
+			take:    1,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+		},
+		{
+			name:    "ends before done",
+			status:  http.StatusOK,
+			body:    hel,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:    "fails mid-stream",
+			status:  http.StatusOK,
+			body:    hel + `{"error":"model crashed"}` + "\n",
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
+			name:       "stops at the output limit",
+			status:     http.StatusOK,
+			body:       hel + `{"done":true,"done_reason":"length","eval_count":2}` + "\n",
+			numPredict: 2,
+			want:       []provpkg.Chunk{{Text: "Hel"}},
+			wantRes:    provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantErr:    ErrOutputLimitExhausted,
+		},
+		{
+			name:    "fails to open",
+			status:  http.StatusServiceUnavailable,
+			body:    "busy",
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: provpkg.ErrUnexpectedStatus, StatusCode: http.StatusServiceUnavailable, Body: []byte("busy")},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var gotPath string
+			var gotBody map[string]any
+			body := &closeTracker{Reader: strings.NewReader(tt.body)}
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				gotPath = r.URL.Path
+				if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+					t.Errorf("decoding request body: %v", err)
+				}
+				return &http.Response{StatusCode: tt.status, Body: body, Header: make(http.Header)}, nil
+			})}
+			tr := &transport{host: "http://example.test", model: "m", numPredict: tt.numPredict, client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+
+			seq, res := tr.Stream(t.Context(), nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+			got, err := collectStream(seq, tt.take)
+
+			if diff := cmp.Diff(tt.wantRes, res, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() result mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.want, got); diff != "" {
+				t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(chatPath, gotPath); diff != "" {
+				t.Errorf("path mismatch (-want +got):\n%s", diff)
+			}
+			if diff := cmp.Diff(true, gotBody["stream"]); diff != "" {
+				t.Errorf("stream flag mismatch (-want +got):\n%s", diff)
+			}
+			if !body.closed {
+				t.Error("response body not closed")
+			}
+		})
+	}
+}
+
+// closeTracker records whether the response body was closed.
+type closeTracker struct {
+	io.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error {
+	c.closed = true
+	return nil
+}
+
+// collectStream returns the chunks of seq up to its first error, and that
+// error. It stops after take chunks when take is positive. A nil seq has no
+// chunks.
+func collectStream(seq iter.Seq2[provpkg.Chunk, error], take int) ([]provpkg.Chunk, error) {
+	var got []provpkg.Chunk
+	if seq == nil {
+		return nil, nil
+	}
+	for c, err := range seq {
+		if err != nil {
+			return got, err
+		}
+		got = append(got, c)
+		if len(got) == take {
+			break
+		}
+	}
+	return got, nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

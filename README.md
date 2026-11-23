@@ -134,6 +134,30 @@ implementing `provider.MessageCaller`; otherwise `AnalyzeMessages` returns
 `provider.ErrMessagesUnsupported`. Keeping the history within the model's context window is up to
 the caller.
 
+#### Streaming
+
+`StreamMessages` yields the reply in chunks as they arrive, without the parser. The last chunk
+carries the token usage when the provider reports it, so callers can budget the conversation:
+
+```go
+for chunk, err := range a.StreamMessages(ctx, msgs, "job-1", nil) {
+	if err != nil {
+		return err
+	}
+	fmt.Print(chunk.Text)
+	if chunk.Usage != nil {
+		log.Printf("tokens in=%d out=%d", chunk.Usage.Input, chunk.Usage.Output)
+	}
+}
+```
+
+Opening the stream is retried like `Analyze`. An error after that ends the stream, since the
+chunks are already delivered; a stream cut off early yields `provider.ErrIncompleteStream`.
+Stopping the loop early closes the connection. Ollama streams today; a custom provider streams
+by implementing `provider.Streamer`, otherwise `StreamMessages` yields
+`provider.ErrStreamUnsupported`. Through a `Guard`, a stream keeps its concurrency slot until it
+ends.
+
 ### Doctor diagnostics
 
 `pkg/doctor` checks local environment readiness before batch jobs. It is exposed
