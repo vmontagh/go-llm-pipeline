@@ -52,11 +52,11 @@ func NewTool[A, R any](name, description string, fn func(context.Context, A) (R,
 	run := func(ctx context.Context, args string) (string, error) {
 		a, err := decodeToolArgs[A](schema, args)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("decoding arguments: %w", err)
 		}
 		r, err := fn(ctx, a)
 		if err != nil {
-			return "", err
+			return "", fmt.Errorf("calling handler: %w", err)
 		}
 		out, err := json.Marshal(r)
 		if err != nil {
@@ -133,12 +133,12 @@ func (ts toolSet) run(ctx context.Context, calls []provider.ToolCall, report boo
 	parts := make([]provider.Part, 0, len(calls))
 	for _, call := range calls {
 		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("running tools: %w", err)
+			return nil, fmt.Errorf("running tool %q: %w", call.Name, err)
 		}
 		content, err := ts.call(ctx, call)
 		if err != nil {
 			if !report || !isInvalidCall(err) {
-				return nil, err
+				return nil, fmt.Errorf("running tool %q: %w", call.Name, err)
 			}
 			content = err.Error()
 		}
@@ -147,17 +147,13 @@ func (ts toolSet) run(ctx context.Context, calls []provider.ToolCall, report boo
 	return parts, nil
 }
 
-// call runs one tool call.
+// call runs one tool call. Errors carry no tool name; run adds it.
 func (ts toolSet) call(ctx context.Context, call provider.ToolCall) (string, error) {
 	tool, ok := ts[call.Name]
 	if !ok {
 		return "", fmt.Errorf("%w: %q", ErrUnknownTool, call.Name)
 	}
-	out, err := tool.run(ctx, call.Arguments)
-	if err != nil {
-		return "", fmt.Errorf("calling tool %q: %w", call.Name, err)
-	}
-	return out, nil
+	return tool.run(ctx, call.Arguments)
 }
 
 // isInvalidCall reports whether err is the model's mistake rather than the
@@ -179,13 +175,7 @@ type toolStep[R any] struct {
 // without tool calls is parsed and returned. Each model call is retried like
 // Analyze. The provider must implement provider.ToolCaller; otherwise it
 // returns provider.ErrToolsUnsupported.
-func (t *Template[T, R]) AnalyzeWithTools(
-	ctx context.Context,
-	msgs []provider.Message,
-	loop ToolLoop,
-	jobID string,
-	publish func(eventType, itemID, message string, isError bool),
-) (R, error) {
+func (t *Template[T, R]) AnalyzeWithTools(ctx context.Context, msgs []provider.Message, loop ToolLoop, jobID string, publish PublishFn) (R, error) {
 	var zero R
 	tools, err := loop.index()
 	if err != nil {
@@ -198,55 +188,61 @@ func (t *Template[T, R]) AnalyzeWithTools(
 	if !ok {
 		return zero, fmt.Errorf("%w: %s", provider.ErrToolsUnsupported, t.provider.ProviderLabel())
 	}
-	specs := loop.specs()
-	ask := func(lease *provider.Lease[T], msgs []provider.Message) provider.CallResult {
-		return tc.CallTools(ctx, lease, msgs, specs)
-	}
-	history := slices.Clip(msgs)
+	req := &toolRequest[T]{caller: tc, msgs: slices.Clip(msgs), specs: loop.specs(), jobID: jobID, publish: publish}
 	maxSteps := cmp.Or(loop.MaxSteps, DefaultMaxToolSteps)
 	for range maxSteps {
-		step, err := t.nextToolStep(ctx, ask, history, jobID, publish)
+		step, err := t.nextToolStep(ctx, req)
 		if err != nil {
-			return zero, err
+			return zero, fmt.Errorf("analyzing with tools: %w", err)
 		}
 		if len(step.calls) == 0 {
 			return step.reply, nil
 		}
 		results, err := tools.run(ctx, step.calls, loop.ReportInvalidCalls)
 		if err != nil {
-			return zero, err
+			return zero, fmt.Errorf("analyzing with tools: %w", err)
 		}
-		history = append(history, assistantToolMessage(step.text, step.calls), provider.Message{Role: provider.RoleTool, Parts: results})
+		req.msgs = append(req.msgs, assistantToolMessage(step.text, step.calls), provider.Message{Role: provider.RoleTool, Parts: results})
 	}
 	return zero, fmt.Errorf("%w: %d", ErrMaxToolSteps, maxSteps)
 }
 
-// nextToolStep asks the model for its next step with ask, retrying like
-// Analyze. Only a final reply goes through the parser.
-func (t *Template[T, R]) nextToolStep(
-	ctx context.Context,
-	ask func(*provider.Lease[T], []provider.Message) provider.CallResult,
-	msgs []provider.Message,
-	jobID string,
-	publish func(eventType, itemID, message string, isError bool),
-) (toolStep[R], error) {
+// toolRequest is what a tool loop sends the model at each step.
+type toolRequest[T any] struct {
+	caller  provider.ToolCaller[T]
+	msgs    []provider.Message // the history so far
+	specs   []provider.ToolSpec
+	jobID   string
+	publish PublishFn
+}
+
+// nextToolStep asks the model for its next step, retrying like Analyze. Only
+// a final reply goes through the parser.
+func (t *Template[T, R]) nextToolStep(ctx context.Context, req *toolRequest[T]) (toolStep[R], error) {
 	var calls []provider.ToolCall
-	return retry(ctx, t, &callOnceParams[T]{
+	step, err := retry(ctx, t, &callOnceParams[T]{
 		call: func(lease *provider.Lease[T]) provider.CallResult {
-			res := ask(lease, msgs)
+			res := req.caller.CallTools(ctx, lease, req.msgs, req.specs)
 			calls = res.ToolCalls
 			return res
 		},
-		logText: messagesText(msgs),
-		jobID:   jobID,
-		publish: publish,
+		logText: messagesText(req.msgs),
+		jobID:   req.jobID,
+		publish: req.publish,
 	}, func(text string) (toolStep[R], error) {
 		if len(calls) > 0 {
 			return toolStep[R]{text: text, calls: calls}, nil
 		}
 		reply, err := t.parser(text)
-		return toolStep[R]{reply: reply}, err
+		if err != nil {
+			return toolStep[R]{}, fmt.Errorf("parsing final reply: %w", err)
+		}
+		return toolStep[R]{reply: reply}, nil
 	})
+	if err != nil {
+		return toolStep[R]{}, fmt.Errorf("asking for the next step: %w", err)
+	}
+	return step, nil
 }
 
 // assistantToolMessage records a reply that called tools: its text, if any,

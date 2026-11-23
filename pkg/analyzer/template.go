@@ -170,7 +170,7 @@ func (t *Template[T, R]) AnalyzeMessages(
 		return zero, fmt.Errorf("analyzing messages: %w", err)
 	}
 	if err := t.checkToolParts(msgs); err != nil {
-		return zero, err
+		return zero, fmt.Errorf("analyzing messages: %w", err)
 	}
 	mc, ok := provider.AsMessageCaller(t.provider)
 	if !ok {
@@ -218,7 +218,7 @@ func (t *Template[T, R]) openStream(
 		return nil, fmt.Errorf("streaming messages: %w", err)
 	}
 	if err := t.checkToolParts(msgs); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("streaming messages: %w", err)
 	}
 	s, ok := provider.AsStreamer(t.provider)
 	if !ok {

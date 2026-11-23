@@ -57,6 +57,19 @@ func testTools(t *testing.T, ran *[]string, cancel context.CancelFunc) []Tool {
 	return []Tool{mustTool(t, "add", add), mustTool(t, "div", div), mustTool(t, "fail", fail), mustTool(t, "stop", stop)}
 }
 
+// unparsable is a reply parseUnlessUnparsable rejects.
+const unparsable = "unparsable"
+
+var errUnparsable = errors.New("unparsable reply")
+
+// parseUnlessUnparsable keeps the raw reply, but rejects unparsable.
+func parseUnlessUnparsable(raw string) (parsedResult, error) {
+	if raw == unparsable {
+		return parsedResult{}, errUnparsable
+	}
+	return parsedResult{Value: raw}, nil
+}
+
 // toolCall returns a call of the named tool with args.
 func toolCall(id, name, args string) provider.ToolCall {
 	return provider.ToolCall{ID: id, Name: name, Arguments: args}
@@ -224,6 +237,12 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{add}, `{"Sum":3}`)...),
 		},
 		{
+			name:     "retries a reply the parser rejects",
+			replies:  []provider.CallResult{textReply(unparsable), textReply("done")},
+			want:     "done",
+			wantSent: []provider.Message{user},
+		},
+		{
 			name:     "unknown tool fails",
 			replies:  []provider.CallResult{callsReply("", unknown)},
 			wantErr:  ErrUnknownTool,
@@ -248,7 +267,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			report:   true,
 			want:     "cannot",
 			wantRan:  []string{"div"},
-			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{divByZero}, `calling tool "div": analyzer: invalid tool arguments`)...),
+			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{divByZero}, `calling handler: analyzer: invalid tool arguments`)...),
 		},
 		{
 			name:     "tool error fails even when reporting",
@@ -282,7 +301,10 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			var ran []string
 			tp := newToolProvider(tt.replies)
 			// Guarded, so the loop must look past the Guard's own CallTools.
-			tmpl := newEchoTemplate(t, wrapInGuards(t, tp, 1), WithTemplateBackOff(&backoff.ZeroBackOff{}))
+			tmpl, err := NewTemplate[string, parsedResult](wrapInGuards(t, tp, 1), parseUnlessUnparsable, WithTemplateBackOff(&backoff.ZeroBackOff{}))
+			if err != nil {
+				t.Fatalf("NewTemplate() error = %v", err)
+			}
 			loop := ToolLoop{Tools: testTools(t, &ran, cancel), MaxSteps: tt.maxSteps, ReportInvalidCalls: tt.report}
 
 			got, err := tmpl.AnalyzeWithTools(ctx, []provider.Message{user}, loop, "job", nil)
