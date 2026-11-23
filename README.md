@@ -190,9 +190,14 @@ An unknown tool name returns `analyzer.ErrUnknownTool`, and arguments that fail 
 schema cannot express. With `ReportInvalidCalls` set, both are sent back to the model as the tool
 result instead, so it can correct itself. A call with no name and any other tool error end the loop.
 
-The OpenAI provider supports tools; a custom provider does so by implementing
-`provider.ToolCaller`, otherwise `AnalyzeWithTools` returns `provider.ErrToolsUnsupported`. The
-same error is returned for messages with tool parts sent to `AnalyzeMessages` or `StreamMessages`.
+The OpenAI, Gemini and Ollama providers support tools. Ollama sends no JSON format or response
+schema with tools, since a constrained reply cannot hold tool calls; the parser still checks the
+final reply. Gemini replies are sent back intact: in their original order, with their thought
+signatures in `Part.Signature`. A signed thought is sent back as its signature, without its text.
+A custom provider supports tools by implementing
+`provider.ToolCaller` (and may set `CallResult.Parts` to have its reply replayed as-is), otherwise
+`AnalyzeWithTools` returns `provider.ErrToolsUnsupported`. The same error is returned for messages
+with tool parts sent to `AnalyzeMessages` or `StreamMessages`.
 
 ### Doctor diagnostics
 

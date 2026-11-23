@@ -52,9 +52,14 @@ type Part struct {
 	ToolCall *ToolCall
 	// ToolResult is a tool outcome, the only part a tool message may hold.
 	ToolResult *ToolResult
+	// Signature is opaque provider state on a model's part that must go back
+	// with it, such as Gemini's thought signature. Keep it as received;
+	// providers without such state ignore it. An assistant part may hold a
+	// Signature alone: an empty text part kept for replay.
+	Signature string
 }
 
-// fields returns how many of p's fields are set.
+// fields returns how many of p's content fields are set.
 func (p Part) fields() int {
 	n := 0
 	for _, set := range []bool{p.Text != "", len(p.Image) > 0, p.ToolCall != nil, p.ToolResult != nil} {
@@ -135,6 +140,8 @@ var (
 // validatePart checks that p holds one field that role allows.
 func validatePart(role Role, p Part) error {
 	switch {
+	case p.fields() == 0 && p.Signature != "" && role == RoleAssistant:
+		return nil
 	case p.fields() != 1:
 		return errPartFields
 	case p.Text != "" && role == RoleTool,

@@ -178,6 +178,7 @@ func (ts toolSet) call(ctx context.Context, call provider.ToolCall) (content str
 type toolStep[R any] struct {
 	text  string
 	calls []provider.ToolCall
+	parts []provider.Part // the reply in order, if the provider keeps it
 	reply R
 }
 
@@ -213,7 +214,7 @@ func (t *Template[T, R]) AnalyzeWithTools(ctx context.Context, msgs []provider.M
 		if err != nil {
 			return zero, fmt.Errorf("analyzing with tools: %w", err)
 		}
-		req.msgs = append(req.msgs, assistantToolMessage(step.text, step.calls), provider.Message{Role: provider.RoleTool, Parts: results})
+		req.msgs = append(req.msgs, assistantToolMessage(step), provider.Message{Role: provider.RoleTool, Parts: results})
 	}
 	return zero, fmt.Errorf("%w: %d", ErrMaxToolSteps, maxSteps)
 }
@@ -231,10 +232,11 @@ type toolRequest[T any] struct {
 // a final reply goes through the parser.
 func (t *Template[T, R]) nextToolStep(ctx context.Context, req *toolRequest[T]) (toolStep[R], error) {
 	var calls []provider.ToolCall
+	var parts []provider.Part
 	step, err := retry(ctx, t, &callOnceParams[T]{
 		call: func(lease *provider.Lease[T]) provider.CallResult {
 			res := req.caller.CallTools(ctx, lease, req.msgs, req.specs)
-			calls = res.ToolCalls
+			calls, parts = res.ToolCalls, res.Parts
 			return res
 		},
 		logText: messagesText(req.msgs),
@@ -242,7 +244,7 @@ func (t *Template[T, R]) nextToolStep(ctx context.Context, req *toolRequest[T]) 
 		publish: req.publish,
 	}, func(text string) (toolStep[R], error) {
 		if len(calls) > 0 {
-			return toolStep[R]{text: text, calls: calls}, nil
+			return toolStep[R]{text: text, calls: calls, parts: parts}, nil
 		}
 		reply, err := t.parser(text)
 		if err != nil {
@@ -256,14 +258,17 @@ func (t *Template[T, R]) nextToolStep(ctx context.Context, req *toolRequest[T]) 
 	return step, nil
 }
 
-// assistantToolMessage records a reply that called tools: its text, if any,
-// then the calls.
-func assistantToolMessage(text string, calls []provider.ToolCall) provider.Message {
-	parts := make([]provider.Part, 0, len(calls)+1)
-	if text != "" {
-		parts = append(parts, provider.Part{Text: text})
+// assistantToolMessage records a reply that called tools: its ordered parts
+// when the provider kept them, else its text, if any, then the calls.
+func assistantToolMessage[R any](step toolStep[R]) provider.Message {
+	if len(step.parts) > 0 {
+		return provider.Message{Role: provider.RoleAssistant, Parts: step.parts}
 	}
-	for _, call := range calls {
+	parts := make([]provider.Part, 0, len(step.calls)+1)
+	if step.text != "" {
+		parts = append(parts, provider.Part{Text: step.text})
+	}
+	for _, call := range step.calls {
 		parts = append(parts, provider.Part{ToolCall: &call})
 	}
 	return provider.Message{Role: provider.RoleAssistant, Parts: parts}

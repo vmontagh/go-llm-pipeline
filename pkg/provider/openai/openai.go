@@ -567,9 +567,13 @@ func requestMessages(msgs []provpkg.Message) []RequestMessage {
 					Type:     "image_url",
 					ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
 				})
-			default:
+			case p.Text != "":
 				rm.Content = append(rm.Content, Content{Type: textContentType, Text: p.Text})
 			}
+		}
+		if len(rm.Content) == 0 && len(rm.ToolCalls) == 0 {
+			// A signature-only turn would otherwise have neither content nor calls.
+			rm.Content = []Content{{Type: textContentType}}
 		}
 		out = append(out, rm)
 	}

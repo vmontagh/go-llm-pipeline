@@ -49,6 +49,8 @@ func TestValidateMessages(t *testing.T) {
 			name: "valid tool round-trip",
 			msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{Text: "checking"}, call), msg(provider.RoleTool, result)},
 		},
+		{name: "signed empty assistant part", msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{Signature: "s"})}},
+		{name: "signed empty user part", msgs: []provider.Message{msg(provider.RoleUser, provider.Part{Signature: "s"})}, wantErr: provider.ErrInvalidMessages},
 		{name: "tool call and text in one part", msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{Text: "a", ToolCall: call.ToolCall})}, wantErr: provider.ErrInvalidMessages},
 		{name: "user tool call", msgs: []provider.Message{msg(provider.RoleUser, call)}, wantErr: provider.ErrInvalidMessages},
 		{name: "assistant tool result", msgs: []provider.Message{user, msg(provider.RoleAssistant, result)}, wantErr: provider.ErrInvalidMessages},

@@ -67,6 +67,14 @@ const (
 	imageMIMEType         = "image/jpeg"
 	userRole              = "user"
 	modelRole             = "model"
+	// finishMaxTokens is the finish reason of a reply cut off at the output
+	// token limit.
+	finishMaxTokens = "MAX_TOKENS"
+	// emptyArgs stands in for missing or unusable call arguments; Gemini
+	// takes an object.
+	emptyArgs = "{}"
+	// resultKey holds a tool result in the function response object.
+	resultKey = "result"
 )
 
 // maxRedirects mirrors net/http's default redirect limit, which no longer
@@ -126,7 +134,20 @@ func newAPIError(statusCode int, body []byte) *APIError {
 type generateContentRequest struct {
 	SystemInstruction *content          `json:"systemInstruction,omitempty"`
 	Contents          []content         `json:"contents"`
+	Tools             []tool            `json:"tools,omitempty"`
 	GenerationConfig  *generationConfig `json:"generationConfig,omitempty"`
+}
+
+// tool groups the functions the model may call.
+type tool struct {
+	FunctionDeclarations []functionDeclaration `json:"functionDeclarations"`
+}
+
+// functionDeclaration declares one function. Its JSON Schema is sent as is.
+type functionDeclaration struct {
+	Name                 string         `json:"name"`
+	Description          string         `json:"description,omitempty"`
+	ParametersJSONSchema map[string]any `json:"parametersJsonSchema,omitempty"`
 }
 
 type content struct {
@@ -137,8 +158,27 @@ type content struct {
 // part is one piece of content. Text is a pointer so that an empty text part
 // can be told apart from a non-text part (e.g. inline data).
 type part struct {
-	Text       *string `json:"text,omitempty"`
-	InlineData *blob   `json:"inlineData,omitempty"`
+	Text             *string           `json:"text,omitempty"`
+	InlineData       *blob             `json:"inlineData,omitempty"`
+	FunctionCall     *functionCall     `json:"functionCall,omitempty"`
+	FunctionResponse *functionResponse `json:"functionResponse,omitempty"`
+	// Thought marks the model's reasoning, which is not part of the reply.
+	Thought          bool   `json:"thought,omitempty"`
+	ThoughtSignature string `json:"thoughtSignature,omitempty"`
+}
+
+// functionCall is the model's request to call a function.
+type functionCall struct {
+	ID   string          `json:"id,omitempty"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args,omitempty"`
+}
+
+// functionResponse is a function's result. Response must be an object.
+type functionResponse struct {
+	ID       string         `json:"id,omitempty"`
+	Name     string         `json:"name"`
+	Response map[string]any `json:"response"`
 }
 
 // blob is inline binary data; encoding/json base64-encodes Data, which is
@@ -234,23 +274,45 @@ func (t *transport) Call(ctx context.Context, lease *provpkg.Lease[string], prom
 // system instruction and assistant turns use the "model" role.
 func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	rc, failed := t.send(ctx, lease, msgs, generateContentMethod)
-	if rc == nil {
+	body, failed, ok := t.generate(ctx, lease, t.buildRequest(msgs))
+	if !ok {
 		return failed
+	}
+	return parseResponse(body)
+}
+
+// CallTools implements provpkg.ToolCaller with Gemini function calling.
+func (t *transport) CallTools(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message, tools []provpkg.ToolSpec) provpkg.CallResult {
+	defer t.tracer.StartRegion(ctx, callRegionName).End()
+	req := t.buildRequest(msgs)
+	req.Tools = requestTools(tools)
+	body, failed, ok := t.generate(ctx, lease, req)
+	if !ok {
+		return failed
+	}
+	return parseToolResponse(body)
+}
+
+// generate posts req to generateContent and reads the reply. ok is false
+// when the call failed, as failed describes.
+func (t *transport) generate(ctx context.Context, lease *provpkg.Lease[string], req generateContentRequest) (body []byte, failed provpkg.CallResult, ok bool) {
+	rc, failed := t.send(ctx, lease, req, generateContentMethod)
+	if rc == nil {
+		return nil, failed, false
 	}
 	defer t.closeBody(rc)
 	body, err := io.ReadAll(rc)
 	if err != nil {
-		return readFailure(http.StatusOK, nil, err)
+		return nil, readFailure(http.StatusOK, nil, err), false
 	}
-	return parseResponse(body)
+	return body, provpkg.CallResult{}, true
 }
 
 // Stream implements provpkg.Streamer. Each event repeats the running
 // usage, so only the last chunk carries it.
 func (t *transport) Stream(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) (iter.Seq2[provpkg.Chunk, error], provpkg.CallResult) {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	body, failed := t.send(ctx, lease, msgs, streamContentMethod)
+	body, failed := t.send(ctx, lease, t.buildRequest(msgs), streamContentMethod)
 	if body == nil {
 		return nil, failed
 	}
@@ -355,10 +417,10 @@ func parseEvent(data []byte) (parsedEvent, error) {
 	return p, nil
 }
 
-// send posts msgs to method. It returns the open body on 200 OK, and
+// send posts req to method. It returns the open body on 200 OK, and
 // otherwise a nil body and the failed result.
-func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message, method string) (io.ReadCloser, provpkg.CallResult) {
-	reqB, err := json.Marshal(t.buildRequest(msgs))
+func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req generateContentRequest, method string) (io.ReadCloser, provpkg.CallResult) {
+	reqB, err := json.Marshal(req)
 	if err != nil {
 		return nil, terminal(fmt.Errorf("marshaling gemini request: %w", err))
 	}
@@ -409,26 +471,78 @@ func (t *transport) closeBody(body io.Closer) {
 
 // parseResponse extracts the first text part of the first candidate.
 func parseResponse(body []byte) provpkg.CallResult {
-	var resp generateContentResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return terminal(fmt.Errorf("%w: unmarshaling gemini response: %w", provpkg.ErrInvalidResponsePart, err))
-	}
-	if len(resp.Candidates) == 0 {
-		var blockReason string
-		if resp.PromptFeedback != nil {
-			blockReason = resp.PromptFeedback.BlockReason
-		}
-		return terminal(fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, blockReason))
-	}
-	cand := resp.Candidates[0]
-	if len(cand.Content.Parts) == 0 {
-		return terminal(fmt.Errorf("%w: no parts (finish reason %q)", provpkg.ErrEmptyCandidate, cand.FinishReason))
+	cand, failed, ok := firstCandidate(body)
+	if !ok {
+		return failed
 	}
 	text := cand.Content.Parts[0].Text
 	if text == nil {
 		return terminal(fmt.Errorf("%w: first part is not text", provpkg.ErrInvalidResponsePart))
 	}
 	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: *text}
+}
+
+// parseToolResponse returns the function calls of the first candidate, in
+// order, and its text without the model's thoughts. Parts also keeps the
+// signatures of other parts, such as thoughts, so they can be sent back.
+func parseToolResponse(body []byte) provpkg.CallResult {
+	cand, failed, ok := firstCandidate(body)
+	if !ok {
+		return failed
+	}
+	// A cut-off turn may hold half its calls, and running them has effects.
+	if cand.FinishReason == finishMaxTokens {
+		return terminal(fmt.Errorf("%w: reply cut off (finish reason %q)", provpkg.ErrInvalidResponsePart, cand.FinishReason))
+	}
+	res := provpkg.CallResult{Outcome: provpkg.OutcomeSuccess}
+	var text strings.Builder
+	hasText := false
+	// Parts keeps the reply in order with its signatures, which Gemini wants
+	// back intact.
+	for _, p := range cand.Content.Parts {
+		switch {
+		case p.FunctionCall != nil:
+			c := p.FunctionCall
+			call := provpkg.ToolCall{ID: c.ID, Name: c.Name, Arguments: string(c.Args)}
+			res.ToolCalls = append(res.ToolCalls, call)
+			res.Parts = append(res.Parts, provpkg.Part{ToolCall: &call, Signature: p.ThoughtSignature})
+		case p.Text != nil && !p.Thought:
+			hasText = true
+			text.WriteString(*p.Text)
+			// An empty text part is kept only for its signature.
+			if *p.Text != "" || p.ThoughtSignature != "" {
+				res.Parts = append(res.Parts, provpkg.Part{Text: *p.Text, Signature: p.ThoughtSignature})
+			}
+		case p.ThoughtSignature != "":
+			res.Parts = append(res.Parts, provpkg.Part{Signature: p.ThoughtSignature})
+		}
+	}
+	if !hasText && len(res.ToolCalls) == 0 {
+		return terminal(fmt.Errorf("%w: no function call or answer text", provpkg.ErrInvalidResponsePart))
+	}
+	res.Text = text.String()
+	return res
+}
+
+// firstCandidate decodes body and returns its first candidate, which has
+// parts. ok is false when there is none, as failed describes.
+func firstCandidate(body []byte) (cand candidate, failed provpkg.CallResult, ok bool) {
+	var resp generateContentResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return cand, terminal(fmt.Errorf("%w: unmarshaling gemini response: %w", provpkg.ErrInvalidResponsePart, err)), false
+	}
+	if len(resp.Candidates) == 0 {
+		var blockReason string
+		if resp.PromptFeedback != nil {
+			blockReason = resp.PromptFeedback.BlockReason
+		}
+		return cand, terminal(fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, blockReason)), false
+	}
+	cand = resp.Candidates[0]
+	if len(cand.Content.Parts) == 0 {
+		return cand, terminal(fmt.Errorf("%w: no parts (finish reason %q)", provpkg.ErrEmptyCandidate, cand.FinishReason)), false
+	}
+	return cand, provpkg.CallResult{}, true
 }
 
 func terminal(err error) provpkg.CallResult {
@@ -450,11 +564,7 @@ func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest 
 	for _, m := range msgs {
 		parts := make([]part, 0, len(m.Parts))
 		for _, p := range m.Parts {
-			if len(p.Image) > 0 {
-				parts = append(parts, part{InlineData: &blob{MIMEType: imageMIMEType, Data: p.Image}})
-				continue
-			}
-			parts = append(parts, part{Text: &p.Text})
+			parts = append(parts, requestPart(p))
 		}
 		switch m.Role {
 		case provpkg.RoleSystem:
@@ -465,6 +575,7 @@ func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest 
 		case provpkg.RoleAssistant:
 			req.Contents = append(req.Contents, content{Role: modelRole, Parts: parts})
 		default:
+			// Gemini takes tool results in user turns.
 			req.Contents = append(req.Contents, content{Role: userRole, Parts: parts})
 		}
 	}
@@ -475,6 +586,57 @@ func (t *transport) buildRequest(msgs []provpkg.Message) generateContentRequest 
 		}
 	}
 	return req
+}
+
+// requestPart converts one message part.
+func requestPart(p provpkg.Part) part {
+	switch {
+	case len(p.Image) > 0:
+		return part{InlineData: &blob{MIMEType: imageMIMEType, Data: p.Image}}
+	case p.ToolCall != nil:
+		c := p.ToolCall
+		return part{
+			FunctionCall:     &functionCall{ID: c.ID, Name: c.Name, Args: argsObject(c.Arguments)},
+			ThoughtSignature: p.Signature,
+		}
+	case p.ToolResult != nil:
+		r := p.ToolResult
+		return part{FunctionResponse: &functionResponse{ID: r.CallID, Name: r.Name, Response: toolResponse(r.Content)}}
+	default:
+		return part{Text: &p.Text, ThoughtSignature: p.Signature}
+	}
+}
+
+// toolResponse wraps a tool result in the object Gemini requires. JSON
+// content is sent as a value, anything else, such as an error, as a string.
+// argsObject returns args as a JSON object. Malformed or non-object arguments,
+// which the model may send and the analyzer reports back, become an empty
+// object, since the API takes only an object.
+func argsObject(args string) json.RawMessage {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(args), &obj); err != nil || obj == nil {
+		return json.RawMessage(emptyArgs)
+	}
+	return json.RawMessage(args)
+}
+
+func toolResponse(result string) map[string]any {
+	if json.Valid([]byte(result)) {
+		return map[string]any{resultKey: json.RawMessage(result)}
+	}
+	return map[string]any{resultKey: result}
+}
+
+// requestTools declares tools as Gemini functions.
+func requestTools(tools []provpkg.ToolSpec) []tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	decls := make([]functionDeclaration, 0, len(tools))
+	for _, spec := range tools {
+		decls = append(decls, functionDeclaration{Name: spec.Name, Description: spec.Description, ParametersJSONSchema: spec.Parameters})
+	}
+	return []tool{{FunctionDeclarations: decls}}
 }
 
 // ProviderOption configures a Gemini provider at construction time.
