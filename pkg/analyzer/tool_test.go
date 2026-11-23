@@ -3,6 +3,7 @@ package analyzer
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,6 +149,11 @@ func TestNewTool(t *testing.T) {
 			wantErr: ErrInvalidTool,
 		},
 		{name: "empty name", tool: func() (Tool, error) { return NewTool("", "", add) }, wantErr: ErrInvalidTool},
+		{name: "longest name", tool: func() (Tool, error) { return NewTool("_"+strings.Repeat("a-1", 21), "", add) }, args: `{"A":1,"B":2}`, want: `{"Sum":3}`},
+		{name: "name too long", tool: func() (Tool, error) { return NewTool("_"+strings.Repeat("a-1", 21)+"x", "", add) }, wantErr: ErrInvalidTool},
+		{name: "name with a dot", tool: func() (Tool, error) { return NewTool("weather.lookup", "", add) }, wantErr: ErrInvalidTool},
+		{name: "name with a space", tool: func() (Tool, error) { return NewTool("get weather", "", add) }, wantErr: ErrInvalidTool},
+		{name: "name starting with a digit", tool: func() (Tool, error) { return NewTool("1add", "", add) }, wantErr: ErrInvalidTool},
 		{name: "nil function", tool: func() (Tool, error) { return NewTool[addArgs, sum]("add", "", nil) }, wantErr: ErrInvalidTool},
 		{
 			name: "args not a struct",

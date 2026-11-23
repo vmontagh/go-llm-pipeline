@@ -162,7 +162,8 @@ ends.
 
 `AnalyzeWithTools` lets the model call typed Go functions before it answers. `NewTool` derives
 the parameter schema from the argument struct, checks the model's arguments against it, and sends
-the result back as JSON:
+the result back as JSON. Tool names are 1–64 letters, digits, `_` or `-`, starting with a letter
+or `_`:
 
 ```go
 type weatherArgs struct {

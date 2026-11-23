@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
@@ -13,6 +14,11 @@ import (
 
 // DefaultMaxToolSteps is the ToolLoop.MaxSteps used when it is zero.
 const DefaultMaxToolSteps = 8
+
+// toolName is the tool name form every provider accepts: OpenAI allows 1–64
+// letters, digits, underscores or hyphens, and Gemini needs a leading letter
+// or underscore.
+var toolName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`)
 
 var (
 	// ErrInvalidTool is returned for a malformed Tool or ToolLoop.
@@ -37,10 +43,12 @@ type Tool struct {
 // NewTool returns a Tool that decodes the model's arguments into A, calls fn,
 // and sends R back to the model as JSON. The parameter schema is SchemaOf(A),
 // so A must be a struct that derives an object schema. Arguments that fail the schema or have unknown
-// fields are rejected with ErrInvalidToolArguments before fn runs.
+// fields are rejected with ErrInvalidToolArguments before fn runs. name must
+// be 1–64 letters, digits, underscores or hyphens, starting with a letter or
+// underscore.
 func NewTool[A, R any](name, description string, fn func(context.Context, A) (R, error)) (Tool, error) {
-	if name == "" {
-		return Tool{}, fmt.Errorf("%w: empty name", ErrInvalidTool)
+	if !toolName.MatchString(name) {
+		return Tool{}, fmt.Errorf("%w: name %q must match %s", ErrInvalidTool, name, toolName)
 	}
 	if fn == nil {
 		return Tool{}, fmt.Errorf("%w: tool %q has nil function", ErrInvalidTool, name)
