@@ -287,21 +287,21 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: %w", provpkg.ErrIncompleteStream, err))
 				return
 			}
-			c, done, err := parseEvent(data)
+			ev, err := parseEvent(data)
 			if err != nil {
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
 				return
 			}
-			gotText = gotText || c.Text != ""
-			if done && !gotText {
+			gotText = gotText || ev.hasText
+			if ev.done && !gotText {
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: no text", provpkg.ErrEmptyCandidate))
 				return
 			}
-			if done {
-				yield(c, nil)
+			if ev.done {
+				yield(ev.chunk, nil)
 				return
 			}
-			if c.Text != "" && !yield(c, nil) {
+			if ev.chunk.Text != "" && !yield(ev.chunk, nil) {
 				return
 			}
 		}
@@ -310,38 +310,49 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 	}
 }
 
-// parseEvent turns one event into a chunk, and reports whether it ends the
-// reply.
-func parseEvent(data []byte) (c provpkg.Chunk, done bool, err error) {
+// parsedEvent is one stream event turned into a chunk.
+type parsedEvent struct {
+	chunk provpkg.Chunk
+	// hasText is set when the event has a text part, even an empty one.
+	hasText bool
+	// done is set when the event ends the reply.
+	done bool
+}
+
+// parseEvent turns one event into a chunk.
+func parseEvent(data []byte) (parsedEvent, error) {
+	var p parsedEvent
 	var ev streamEvent
 	if err := json.Unmarshal(data, &ev); err != nil {
-		return c, false, fmt.Errorf("%w: unmarshaling stream event: %w", provpkg.ErrInvalidResponsePart, err)
+		return p, fmt.Errorf("%w: unmarshaling stream event: %w", provpkg.ErrInvalidResponsePart, err)
 	}
 	if ev.Error != nil {
-		return c, false, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, ev.Error.Message)
+		return p, fmt.Errorf("%w: %s", provpkg.ErrIncompleteStream, ev.Error.Message)
 	}
 	if len(ev.Candidates) == 0 {
 		if ev.PromptFeedback != nil && ev.PromptFeedback.BlockReason != "" {
-			return c, false, fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, ev.PromptFeedback.BlockReason)
+			return p, fmt.Errorf("%w: no candidates (block reason %q)", provpkg.ErrEmptyCandidate, ev.PromptFeedback.BlockReason)
 		}
-		return c, false, nil
+		return p, nil
 	}
 	cand := ev.Candidates[0]
 	var text strings.Builder
-	for _, p := range cand.Content.Parts {
-		if p.Text == nil {
-			return c, false, fmt.Errorf("%w: part is not text", provpkg.ErrInvalidResponsePart)
+	for _, part := range cand.Content.Parts {
+		if part.Text == nil {
+			return p, fmt.Errorf("%w: part is not text", provpkg.ErrInvalidResponsePart)
 		}
-		text.WriteString(*p.Text)
+		text.WriteString(*part.Text)
 	}
-	c.Text = text.String()
+	p.chunk.Text = text.String()
+	p.hasText = len(cand.Content.Parts) > 0
 	if cand.FinishReason == "" {
-		return c, false, nil
+		return p, nil
 	}
 	if u := ev.UsageMetadata; u != nil {
-		c.Usage = &provpkg.Usage{Input: u.PromptTokenCount, Output: u.CandidatesTokenCount + u.ThoughtsTokenCount}
+		p.chunk.Usage = &provpkg.Usage{Input: u.PromptTokenCount, Output: u.CandidatesTokenCount + u.ThoughtsTokenCount}
 	}
-	return c, true, nil
+	p.done = true
+	return p, nil
 }
 
 // send posts msgs to method. It returns the open body on 200 OK, and

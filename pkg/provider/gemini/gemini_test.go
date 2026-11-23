@@ -625,6 +625,13 @@ func TestStream(t *testing.T) {
 			wantRes: opened,
 		},
 		{
+			name:    "empty text part",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3}}\n\n"),
+			want:    []provpkg.Chunk{{Usage: &provpkg.Usage{Input: 3}}},
+			wantRes: opened,
+		},
+		{
 			name:    "finishes without text",
 			status:  http.StatusOK,
 			body:    strings.NewReader(usage + "data: {\"candidates\":[{\"finishReason\":\"MAX_TOKENS\"}]}\n\n"),
