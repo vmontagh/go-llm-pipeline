@@ -204,10 +204,15 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 		defer closeBody(ctx, t.logger, body)
 		dec := json.NewDecoder(body)
 		for {
+			// The decoder may hold buffered lines that a canceled read would not stop.
+			if err := ctx.Err(); err != nil {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
 			var line streamLine
 			if err := dec.Decode(&line); err != nil {
-				if errors.Is(err, io.EOF) {
-					err = provpkg.ErrIncompleteStream
+				if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+					err = fmt.Errorf("%w: %w", provpkg.ErrIncompleteStream, err)
 				}
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
 				return

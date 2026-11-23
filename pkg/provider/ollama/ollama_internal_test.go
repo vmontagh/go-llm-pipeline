@@ -426,6 +426,14 @@ func TestTransport_Stream(t *testing.T) {
 			wantErr: provpkg.ErrIncompleteStream,
 		},
 		{
+			name:    "ends mid-line",
+			status:  http.StatusOK,
+			body:    hel + `{"message":{"con`,
+			want:    []provpkg.Chunk{{Text: "Hel"}},
+			wantRes: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess},
+			wantErr: provpkg.ErrIncompleteStream,
+		},
+		{
 			name:    "fails mid-stream",
 			status:  http.StatusOK,
 			body:    hel + `{"error":"model crashed"}` + "\n",
@@ -486,6 +494,36 @@ func TestTransport_Stream(t *testing.T) {
 				t.Error("response body not closed")
 			}
 		})
+	}
+}
+
+func TestTransport_StreamCanceled(t *testing.T) {
+	t.Parallel()
+	body := `{"message":{"content":"Hel"}}` + "\n" + `{"message":{"content":"lo"}}` + "\n"
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	tr := &transport{host: "http://example.test", model: "m", client: client, logger: slog.New(slog.DiscardHandler), tracer: noOpTracer{}}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	seq, _ := tr.Stream(ctx, nil, []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "hi")})
+
+	var got []provpkg.Chunk
+	var gotErr error
+	for c, err := range seq {
+		if err != nil {
+			gotErr = err
+			break
+		}
+		got = append(got, c)
+		cancel() // The second line is already buffered.
+	}
+
+	if diff := cmp.Diff([]provpkg.Chunk{{Text: "Hel"}}, got); diff != "" {
+		t.Errorf("Stream() chunks mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(context.Canceled, gotErr, cmpopts.EquateErrors()); diff != "" {
+		t.Errorf("Stream() error mismatch (-want +got):\n%s", diff)
 	}
 }
 
