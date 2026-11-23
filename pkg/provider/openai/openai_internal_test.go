@@ -575,6 +575,31 @@ func TestBuildRequest(t *testing.T) {
 	}
 }
 
+func TestContentJSON(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		content Content
+		want    string
+	}{
+		{name: "text", content: Content{Type: "text", Text: "hi"}, want: `{"type":"text","text":"hi"}`},
+		{name: "empty text keeps the key", content: Content{Type: "text"}, want: `{"type":"text","text":""}`},
+		{name: "image has no text key", content: Content{Type: "image_url", ImageURL: &ImageURL{URL: "u"}}, want: `{"type":"image_url","image_url":{"url":"u"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := json.Marshal(tt.content)
+			if err != nil {
+				t.Fatalf("json.Marshal(%+v) error = %v", tt.content, err)
+			}
+			if diff := cmp.Diff(tt.want, string(got)); diff != "" {
+				t.Errorf("json.Marshal(%+v) mismatch (-want +got):\n%s", tt.content, diff)
+			}
+		})
+	}
+}
+
 func TestBuildRequest_ResponseSchema(t *testing.T) {
 	t.Parallel()
 	schema := map[string]any{"type": "object"}

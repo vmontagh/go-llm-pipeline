@@ -162,6 +162,24 @@ type Content struct {
 	ImageURL *ImageURL `json:"image_url,omitempty"`
 }
 
+// MarshalJSON keeps the text key of a text part even when the text is
+// empty, as OpenAI requires it; an empty tool result is valid.
+func (c Content) MarshalJSON() ([]byte, error) {
+	type plain Content
+	var v any = plain(c)
+	if c.Type == textContentType {
+		v = struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{Type: c.Type, Text: c.Text}
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("encoding content: %w", err)
+	}
+	return out, nil
+}
+
 // ImageURL holds the URL of an image included in a message content.
 type ImageURL struct {
 	URL string `json:"url"`

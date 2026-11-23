@@ -36,7 +36,7 @@ type Tool struct {
 
 // NewTool returns a Tool that decodes the model's arguments into A, calls fn,
 // and sends R back to the model as JSON. The parameter schema is SchemaOf(A),
-// so A must be a struct. Arguments that fail the schema or have unknown
+// so A must be a struct that derives an object schema. Arguments that fail the schema or have unknown
 // fields are rejected with ErrInvalidToolArguments before fn runs.
 func NewTool[A, R any](name, description string, fn func(context.Context, A) (R, error)) (Tool, error) {
 	if name == "" {
@@ -48,6 +48,10 @@ func NewTool[A, R any](name, description string, fn func(context.Context, A) (R,
 	schema, err := SchemaOf(new(A))
 	if err != nil {
 		return Tool{}, fmt.Errorf("%w: tool %q: %w", ErrInvalidTool, name, err)
+	}
+	// Providers take only an object of named arguments.
+	if reason, objectRoot := rootObjectContract(schema); !objectRoot {
+		return Tool{}, fmt.Errorf("%w: tool %q: arguments must be an object, got %s", ErrInvalidTool, name, reason)
 	}
 	run := func(ctx context.Context, args string) (string, error) {
 		a, err := decodeToolArgs[A](schema, args)
@@ -135,9 +139,9 @@ func (ts toolSet) run(ctx context.Context, calls []provider.ToolCall, report boo
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("running tool %q: %w", call.Name, err)
 		}
-		content, err := ts.call(ctx, call)
+		content, invalid, err := ts.call(ctx, call)
 		if err != nil {
-			if !report || !isInvalidCall(err) {
+			if !report || !invalid {
 				return nil, fmt.Errorf("running tool %q: %w", call.Name, err)
 			}
 			content = err.Error()
@@ -147,19 +151,16 @@ func (ts toolSet) run(ctx context.Context, calls []provider.ToolCall, report boo
 	return parts, nil
 }
 
-// call runs one tool call. Errors carry no tool name; run adds it.
-func (ts toolSet) call(ctx context.Context, call provider.ToolCall) (string, error) {
+// call runs one tool call. Errors carry no tool name; run adds it. invalid
+// reports whether an error is the model's mistake: a name not in ts, or
+// invalid arguments. An ErrUnknownTool from a handler is the tool's error.
+func (ts toolSet) call(ctx context.Context, call provider.ToolCall) (content string, invalid bool, err error) {
 	tool, ok := ts[call.Name]
 	if !ok {
-		return "", fmt.Errorf("%w: %q", ErrUnknownTool, call.Name)
+		return "", true, fmt.Errorf("%w: %q", ErrUnknownTool, call.Name)
 	}
-	return tool.run(ctx, call.Arguments)
-}
-
-// isInvalidCall reports whether err is the model's mistake rather than the
-// tool's.
-func isInvalidCall(err error) bool {
-	return errors.Is(err, ErrUnknownTool) || errors.Is(err, ErrInvalidToolArguments)
+	content, err = tool.run(ctx, call.Arguments)
+	return content, errors.Is(err, ErrInvalidToolArguments), err
 }
 
 // toolStep is one model reply in a tool loop: either calls to run, with any

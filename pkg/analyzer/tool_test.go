@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/cenkalti/backoff/v4"
 	"github.com/google/go-cmp/cmp"
@@ -49,12 +50,16 @@ func testTools(t *testing.T, ran *[]string, cancel context.CancelFunc) []Tool {
 		*ran = append(*ran, "fail")
 		return 0, errTool
 	}
+	nested := func(context.Context, noArgs) (int, error) {
+		*ran = append(*ran, "nested")
+		return 0, ErrUnknownTool
+	}
 	stop := func(context.Context, noArgs) (int, error) {
 		*ran = append(*ran, "stop")
 		cancel()
 		return 0, nil
 	}
-	return []Tool{mustTool(t, "add", add), mustTool(t, "div", div), mustTool(t, "fail", fail), mustTool(t, "stop", stop)}
+	return []Tool{mustTool(t, "add", add), mustTool(t, "div", div), mustTool(t, "fail", fail), mustTool(t, "nested", nested), mustTool(t, "stop", stop)}
 }
 
 // unparsable is a reply parseUnlessUnparsable rejects.
@@ -135,6 +140,13 @@ func TestNewTool(t *testing.T) {
 			},
 			wantErr: cmpopts.AnyError,
 		},
+		{
+			name: "args not an object",
+			tool: func() (Tool, error) {
+				return NewTool("at", "", func(context.Context, time.Time) (int, error) { return 0, nil })
+			},
+			wantErr: ErrInvalidTool,
+		},
 		{name: "empty name", tool: func() (Tool, error) { return NewTool("", "", add) }, wantErr: ErrInvalidTool},
 		{name: "nil function", tool: func() (Tool, error) { return NewTool[addArgs, sum]("add", "", nil) }, wantErr: ErrInvalidTool},
 		{
@@ -190,6 +202,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	divByZero := toolCall("c1", "div", `{"A":1,"B":0}`)
 	badArgs := toolCall("c1", "add", `{"A":"one"}`)
 	fail := toolCall("c1", "fail", `{}`)
+	nested := toolCall("c1", "nested", `{}`)
 	stop := toolCall("c1", "stop", `{}`)
 	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
 	tests := []struct {
@@ -275,6 +288,14 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			report:   true,
 			wantErr:  errTool,
 			wantRan:  []string{"fail"},
+			wantSent: []provider.Message{user},
+		},
+		{
+			name:     "unknown tool from a handler fails even when reporting",
+			replies:  []provider.CallResult{callsReply("", nested)},
+			report:   true,
+			wantErr:  ErrUnknownTool,
+			wantRan:  []string{"nested"},
 			wantSent: []provider.Message{user},
 		},
 		{
