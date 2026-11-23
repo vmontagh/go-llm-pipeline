@@ -272,10 +272,11 @@ type streamEvent struct {
 }
 
 // chunks yields the text of each event. The event with a finish reason ends
-// the reply and carries the usage.
+// the reply and carries the usage. Like Call, a reply without text fails.
 func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[provpkg.Chunk, error] {
 	return func(yield func(provpkg.Chunk, error) bool) {
 		defer t.closeBody(body)
+		gotText := false
 		for data, err := range httputil.SSEData(body) {
 			// The reader may hold buffered events that a canceled read would not stop.
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -289,6 +290,11 @@ func (t *transport) chunks(ctx context.Context, body io.ReadCloser) iter.Seq2[pr
 			c, done, err := parseEvent(data)
 			if err != nil {
 				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w", err))
+				return
+			}
+			gotText = gotText || c.Text != ""
+			if done && !gotText {
+				yield(provpkg.Chunk{}, fmt.Errorf("reading stream: %w: no text", provpkg.ErrEmptyCandidate))
 				return
 			}
 			if done {
@@ -323,9 +329,10 @@ func parseEvent(data []byte) (c provpkg.Chunk, done bool, err error) {
 	cand := ev.Candidates[0]
 	var text strings.Builder
 	for _, p := range cand.Content.Parts {
-		if p.Text != nil {
-			text.WriteString(*p.Text)
+		if p.Text == nil {
+			return c, false, fmt.Errorf("%w: part is not text", provpkg.ErrInvalidResponsePart)
 		}
+		text.WriteString(*p.Text)
 	}
 	c.Text = text.String()
 	if cand.FinishReason == "" {

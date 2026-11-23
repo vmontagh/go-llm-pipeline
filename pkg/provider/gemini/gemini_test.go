@@ -618,6 +618,27 @@ func TestStream(t *testing.T) {
 			wantErr: provpkg.ErrEmptyCandidate,
 		},
 		{
+			name:    "final event without text",
+			status:  http.StatusOK,
+			body:    strings.NewReader(hel + "data: {\"candidates\":[{\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":1}}\n\n"),
+			want:    []provpkg.Chunk{{Text: "Hel"}, {Usage: &provpkg.Usage{Input: 3, Output: 1}}},
+			wantRes: opened,
+		},
+		{
+			name:    "finishes without text",
+			status:  http.StatusOK,
+			body:    strings.NewReader(usage + "data: {\"candidates\":[{\"finishReason\":\"MAX_TOKENS\"}]}\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrEmptyCandidate,
+		},
+		{
+			name:    "non-text part",
+			status:  http.StatusOK,
+			body:    strings.NewReader("data: {\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":{}}]}}]}\n\n"),
+			wantRes: opened,
+			wantErr: provpkg.ErrInvalidResponsePart,
+		},
+		{
 			name:    "bad event",
 			status:  http.StatusOK,
 			body:    strings.NewReader("data: nope\n\n"),
