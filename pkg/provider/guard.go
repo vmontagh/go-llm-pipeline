@@ -205,27 +205,28 @@ func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Mes
 	return g.do(ctx, lease, func() CallResult { return mc.CallMessages(ctx, lease, msgs) })
 }
 
-// Stream is Call for a streamed reply. It holds its slot until ranging the
-// iterator stops, though only opening the stream feeds the limit and the
-// breaker, so a long reply is not mistaken for overload. It returns
-// ErrStreamUnsupported when the wrapped provider is not a Streamer.
+// Stream is Call for a streamed reply. Opening the stream feeds the limit
+// and the breaker at once, so a long reply is not mistaken for overload and a
+// probe settles the breaker without waiting for the reply. The slot stays
+// held until ranging the iterator stops. It returns ErrStreamUnsupported when
+// the wrapped provider is not a Streamer.
 func (g *Guard[T]) Stream(ctx context.Context, lease *Lease[T], msgs []Message) (iter.Seq2[Chunk, error], CallResult) {
 	s, ok := AsStreamer(g.Provider)
 	if !ok {
 		return nil, g.unsupported(lease, ErrStreamUnsupported)
 	}
 	var seq iter.Seq2[Chunk, error]
-	res, done := g.start(ctx, lease, func() CallResult {
+	res, free := g.start(ctx, lease, func() CallResult {
 		var r CallResult
 		seq, r = s.Stream(ctx, lease, msgs)
 		return r
 	})
 	if res.Outcome != OutcomeSuccess {
-		done(&res)
+		free()
 		return nil, res
 	}
 	return func(yield func(Chunk, error) bool) {
-		defer done(&res)
+		defer free()
 		seq(yield)
 	}, res
 }
@@ -238,39 +239,40 @@ func (g *Guard[T]) unsupported(lease *Lease[T], err error) CallResult {
 }
 
 func (g *Guard[T]) do(ctx context.Context, lease *Lease[T], call func() CallResult) CallResult {
-	res, done := g.start(ctx, lease, call)
-	done(&res)
+	res, free := g.start(ctx, lease, call)
+	free()
 	return res
 }
 
-// start waits until the call may run, then runs it. The slot stays held
-// until done is called once; done feeds a non-nil res to the limit and the
-// breaker.
-func (g *Guard[T]) start(ctx context.Context, lease *Lease[T], call func() CallResult) (res CallResult, done func(*CallResult)) {
+// start waits until the call may run, runs it, and feeds its result to the
+// limit and the breaker, which ends a probe. The slot stays held until the
+// caller calls free once.
+func (g *Guard[T]) start(ctx context.Context, lease *Lease[T], call func() CallResult) (res CallResult, free func()) {
 	for {
 		probe, err := g.acquire(ctx)
 		if err != nil {
-			return canceledResult(lease, err), func(*CallResult) {}
+			return canceledResult(lease, err), func() {}
 		}
 		keyWait, keyReleased, ready := lease.ensureReady()
 		if ready {
 			start := g.cfg.clock.Now()
 			r := call()
 			latency := g.cfg.clock.Now().Sub(start)
-			return r, func(fb *CallResult) {
-				if ctx.Err() != nil {
-					// A canceled call says nothing about the provider's health.
-					fb = nil
-				}
-				g.release(probe, fb, latency)
+			fb := &r
+			if ctx.Err() != nil {
+				// A canceled call says nothing about the provider's health.
+				fb = nil
 			}
+			g.feed(probe, fb, latency)
+			return r, g.free
 		}
-		g.release(probe, nil, 0)
+		g.feed(probe, nil, 0)
+		g.free()
 		timer := g.cfg.clock.After(keyWait)
 		g.add(MetricGuardWaits)
 		select {
 		case <-ctx.Done():
-			return canceledResult(lease, ctx.Err()), func(*CallResult) {}
+			return canceledResult(lease, ctx.Err()), func() {}
 		case <-timer:
 		case <-keyReleased:
 		}
@@ -325,11 +327,24 @@ func (g *Guard[T]) acquire(ctx context.Context) (bool, error) {
 	}
 }
 
-// release frees the slot and feeds a non-nil res to the limit and the breaker.
-func (g *Guard[T]) release(probe bool, res *CallResult, latency time.Duration) {
+// free gives back a slot.
+func (g *Guard[T]) free() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.inFlight--
+	g.notify()
+}
+
+// notify wakes the calls waiting for a change. The caller holds g.mu.
+func (g *Guard[T]) notify() {
+	close(g.changed)
+	g.changed = make(chan struct{})
+}
+
+// feed ends a probe and passes a non-nil res to the limit and the breaker.
+func (g *Guard[T]) feed(probe bool, res *CallResult, latency time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if probe {
 		g.probing = false
 	}
@@ -341,8 +356,7 @@ func (g *Guard[T]) release(probe bool, res *CallResult, latency time.Duration) {
 	case res.Outcome == OutcomeProviderError:
 		g.onTransient(res, probe)
 	}
-	close(g.changed)
-	g.changed = make(chan struct{})
+	g.notify()
 }
 
 func (g *Guard[T]) onSuccess(probe bool, latency time.Duration) {

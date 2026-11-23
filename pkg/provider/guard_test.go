@@ -83,10 +83,21 @@ type step struct {
 	latency time.Duration // clock advance inside the call
 	gate    chan struct{} // if set, the call signals entered and blocks until closed
 	cancel  bool          // the caller's context is canceled during the call
-	stream  bool          // the call opens a stream and reads it to the end
-	reply   time.Duration // clock advance per streamed chunk
-	res     provider.CallResult
+	stream  bool          // the call opens a stream and reads it
+	// afterFirst is what a stream step does after its first chunk.
+	afterFirst firstChunk
+	reply      time.Duration // clock advance per streamed chunk
+	res        provider.CallResult
 }
+
+// firstChunk is what a stream step does after its first chunk.
+type firstChunk uint8
+
+const (
+	readAll    firstChunk = iota // keep reading to the end
+	leaveOpen                    // stop reading but keep the stream open
+	cancelRead                   // cancel the caller's context, then keep reading
+)
 
 // fakeGuarded returns scripted results; only Call and ClassifyError are used.
 type fakeGuarded struct {
@@ -225,8 +236,7 @@ func (f *guardFixture) runSteps(t *testing.T, n int) {
 			continue
 		}
 		if s.stream {
-			seq, _ := f.guard.Stream(t.Context(), nil, nil)
-			rangeStream(t, seq, func() { f.clock.advance(s.reply) })
+			f.readStream(t, &s)
 			continue
 		}
 		ctx, cancel := context.WithCancel(t.Context())
@@ -247,6 +257,33 @@ func (f *guardFixture) goCall(ctx context.Context) <-chan provider.CallResult {
 	out := make(chan provider.CallResult, 1)
 	go func() { out <- f.guard.Call(ctx, nil, "", nil) }()
 	return out
+}
+
+// readStream opens a stream for s and reads it as s says. A stream left
+// open is closed when the test ends.
+func (f *guardFixture) readStream(t *testing.T, s *step) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	seq, _ := f.guard.Stream(ctx, nil, nil)
+	if seq == nil {
+		return
+	}
+	next, stop := iter.Pull2(seq)
+	for _, err, ok := next(); ok; _, err, ok = next() {
+		if err != nil {
+			t.Fatalf("reading stream: %v", err)
+		}
+		f.clock.advance(s.reply)
+		switch s.afterFirst {
+		case leaveOpen:
+			t.Cleanup(stop)
+			return
+		case cancelRead:
+			cancel()
+		}
+	}
+	stop()
 }
 
 // callRunsNow reports whether a Call gets a slot without waiting. A call
@@ -394,6 +431,24 @@ func TestGuardAdapts(t *testing.T) {
 			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
 			steps: append(toFour, step{res: okResult, stream: true, reply: time.Minute}),
 			want:  outcome{Limit: 4, State: provider.BreakerClosed},
+		},
+		{
+			name:  "canceledReadKeepsOpenFeedback",
+			opts:  []provider.GuardOption{provider.WithLatencyTarget(time.Second)},
+			steps: append(toFour, step{res: okResult, stream: true, latency: 2 * time.Second, afterFirst: cancelRead}),
+			want:  outcome{Limit: 3, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardLimitDecreases: 1}},
+		},
+		{
+			name:  "streamProbeClosesBreakerBeforeReplyEnds",
+			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
+			steps: []step{{res: transientResult}, {before: openFor, res: okResult, stream: true, afterFirst: leaveOpen}},
+			want:  outcome{Limit: 2, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 1}},
+		},
+		{
+			name:  "failedProbeAllowsNextProbe",
+			opts:  []provider.GuardOption{provider.WithBreaker(1, openFor)},
+			steps: []step{{res: transientResult}, {before: openFor, res: transientResult}, {before: openFor, res: okResult}},
+			want:  outcome{Limit: 2, State: provider.BreakerClosed, Metrics: map[string]int64{provider.MetricGuardBreakerOpens: 2}},
 		},
 		{
 			name:  "canceledFailureIgnored",
@@ -764,7 +819,8 @@ func TestGuardStream(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			f := newGuardFixture(t, []step{{res: tt.open}, {res: okResult}})
+			// One slot at most, so a call can only run when the stream frees it.
+			f := newGuardFixture(t, []step{{res: tt.open}, {res: okResult}}, provider.WithConcurrencyLimits(1, 1))
 
 			seq, res := f.guard.Stream(t.Context(), nil, nil)
 			heldWhileReading := true
