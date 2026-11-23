@@ -246,6 +246,51 @@ func TestTransport_Call(t *testing.T) {
 	}
 }
 
+func TestTransport_CallTools(t *testing.T) {
+	t.Parallel()
+	tools := []provpkg.ToolSpec{{Name: "add", Description: "adds", Parameters: map[string]any{"type": "object"}}}
+	tests := []struct {
+		name string
+		body string
+		want provpkg.CallResult
+	}{
+		{
+			name: "tool calls",
+			body: `{"choices":[{"message":{"content":"checking","tool_calls":[{"id":"c1","type":"function","function":{"name":"add","arguments":"{\"A\":1}"}}]}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "checking", ToolCalls: []provpkg.ToolCall{{ID: "c1", Name: "add", Arguments: `{"A":1}`}}},
+		},
+		{
+			name: "final reply",
+			body: `{"choices":[{"message":{"content":"done"}}]}`,
+			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "done"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var sent ChatGPTRequest
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+					return nil, err
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(tt.body)), Header: make(http.Header)}, nil
+			})}
+			tr := &transport{model: DefaultModel, baseURL: "http://example.test", client: client, logger: slog.New(slog.DiscardHandler), tracer: noopTracer{}}
+			msgs := []provpkg.Message{provpkg.TextMessage(provpkg.RoleUser, "u")}
+
+			got := tr.CallTools(t.Context(), &provpkg.Lease[string]{Value: "k"}, msgs, tools)
+
+			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("CallTools() mismatch (-want +got):\n%s", diff)
+			}
+			wantTools := []Tool{{Type: "function", Function: FunctionDef{Name: "add", Description: "adds", Parameters: map[string]any{"type": "object"}}}}
+			if diff := cmp.Diff(wantTools, sent.Tools); diff != "" {
+				t.Errorf("sent tools mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
+}
+
 func TestTransport_Stream(t *testing.T) {
 	t.Parallel()
 	const (
@@ -490,6 +535,29 @@ func TestBuildRequest(t *testing.T) {
 				{Role: "system", Content: []Content{{Type: "text", Text: "s"}}},
 				{Role: "user", Content: []Content{{Type: "text", Text: "u"}}},
 				{Role: "assistant", Content: []Content{{Type: "text", Text: "a"}}},
+			},
+		}, {
+			name: "tool round-trip",
+			msgs: []provpkg.Message{
+				provpkg.TextMessage(provpkg.RoleUser, "u"),
+				{Role: provpkg.RoleAssistant, Parts: []provpkg.Part{
+					{Text: "checking"},
+					{ToolCall: &provpkg.ToolCall{ID: "c1", Name: "add", Arguments: `{"A":1}`}},
+					{ToolCall: &provpkg.ToolCall{ID: "c2", Name: "now"}},
+				}},
+				{Role: provpkg.RoleTool, Parts: []provpkg.Part{
+					{ToolResult: &provpkg.ToolResult{CallID: "c1", Name: "add", Content: "1"}},
+					{ToolResult: &provpkg.ToolResult{CallID: "c2", Name: "now", Content: "noon"}},
+				}},
+			},
+			want: []RequestMessage{
+				{Role: "user", Content: []Content{{Type: "text", Text: "u"}}},
+				{Role: "assistant", Content: []Content{{Type: "text", Text: "checking"}}, ToolCalls: []ToolCall{
+					{ID: "c1", Type: "function", Function: FunctionCall{Name: "add", Arguments: `{"A":1}`}},
+					{ID: "c2", Type: "function", Function: FunctionCall{Name: "now", Arguments: "{}"}},
+				}},
+				{Role: "tool", Content: []Content{{Type: "text", Text: "1"}}, ToolCallID: "c1"},
+				{Role: "tool", Content: []Content{{Type: "text", Text: "noon"}}, ToolCallID: "c2"},
 			},
 		},
 	}

@@ -53,7 +53,11 @@ const (
 	chatCompletionsPath      = "/chat/completions"
 	authorizationHeaderValue = "Bearer "
 	imageDataURLFormat       = "data:image/jpeg;base64,%s"
-	insufficientQuotaType    = "insufficient_quota"
+	functionType             = "function"
+	textContentType          = "text"
+	// emptyArguments is sent for a tool call that has no arguments.
+	emptyArguments        = "{}"
+	insufficientQuotaType = "insufficient_quota"
 )
 
 // ChatGPTRequest represents a request to the OpenAI chat completions API.
@@ -64,6 +68,34 @@ type ChatGPTRequest struct {
 	ResponseFormat *ResponseFormatDef `json:"response_format,omitempty"`
 	Stream         bool               `json:"stream,omitempty"`
 	StreamOptions  *StreamOptions     `json:"stream_options,omitempty"`
+	Tools          []Tool             `json:"tools,omitempty"`
+}
+
+// Tool declares a function the model may call.
+type Tool struct {
+	Type     string      `json:"type"`
+	Function FunctionDef `json:"function"`
+}
+
+// FunctionDef describes a callable function.
+type FunctionDef struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Parameters is the JSON Schema of the arguments object.
+	Parameters any `json:"parameters,omitempty"`
+}
+
+// ToolCall is a function call made by the model.
+type ToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall names the function and holds its JSON arguments.
+type FunctionCall struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 // StreamOptions configures a streamed reply.
@@ -106,16 +138,21 @@ type Choice struct {
 
 // ResponseMessage represents a message within a chat completion response.
 type ResponseMessage struct {
-	Role    string  `json:"role"`
-	Content string  `json:"content"`
-	Refusal *string `json:"refusal"`
+	Role      string     `json:"role"`
+	Content   string     `json:"content"`
+	Refusal   *string    `json:"refusal"`
+	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
 }
 
 // RequestMessage represents a single message in a chat completion request.
+// An assistant message that only calls tools has no Content; a tool message
+// answers the call with ID ToolCallID.
 type RequestMessage struct {
-	Role    string    `json:"role"`
-	Content []Content `json:"content"`
-	Refusal *string   `json:"refusal"`
+	Role       string     `json:"role"`
+	Content    []Content  `json:"content,omitempty"`
+	Refusal    *string    `json:"refusal"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
 }
 
 // Content represents a part of the message content, such as text or an image URL.
@@ -248,8 +285,15 @@ func promptMessage(prompt string, imageData []byte) provpkg.Message {
 
 // CallMessages implements provpkg.MessageCaller with native chat roles.
 func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message) provpkg.CallResult {
+	return t.CallTools(ctx, lease, msgs, nil)
+}
+
+// CallTools implements provpkg.ToolCaller with OpenAI function tools.
+func (t *transport) CallTools(ctx context.Context, lease *provpkg.Lease[string], msgs []provpkg.Message, tools []provpkg.ToolSpec) provpkg.CallResult {
 	defer t.tracer.StartRegion(ctx, callRegionName).End()
-	body, failed := t.send(ctx, lease, buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema))
+	req := buildRequest(t.model, msgs, t.responseSchemaName, t.responseSchema)
+	req.Tools = requestTools(tools)
+	body, failed := t.send(ctx, lease, req)
 	if body == nil {
 		return failed
 	}
@@ -276,7 +320,36 @@ func (t *transport) CallMessages(ctx context.Context, lease *provpkg.Lease[strin
 		}
 	}
 
-	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: response.Choices[0].Message.Content}
+	msg := response.Choices[0].Message
+	return provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: msg.Content, ToolCalls: toolCalls(msg.ToolCalls)}
+}
+
+// requestTools declares tools as OpenAI functions.
+func requestTools(tools []provpkg.ToolSpec) []Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]Tool, 0, len(tools))
+	for _, tool := range tools {
+		out = append(out, Tool{Type: functionType, Function: FunctionDef{
+			Name:        tool.Name,
+			Description: tool.Description,
+			Parameters:  tool.Parameters,
+		}})
+	}
+	return out
+}
+
+// toolCalls converts the model's function calls.
+func toolCalls(calls []ToolCall) []provpkg.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]provpkg.ToolCall, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, provpkg.ToolCall{ID: c.ID, Name: c.Function.Name, Arguments: c.Function.Arguments})
+	}
+	return out
 }
 
 // Stream implements provpkg.Streamer. It asks for the usage, which OpenAI
@@ -429,25 +502,9 @@ func (t *transport) closeBody(body io.Closer) {
 
 // buildRequest constructs the chat-completions payload sent to OpenAI.
 func buildRequest(model string, msgs []provpkg.Message, responseSchemaName string, responseSchema any) *ChatGPTRequest {
-	messages := make([]RequestMessage, 0, len(msgs))
-	for _, m := range msgs {
-		contents := make([]Content, 0, len(m.Parts))
-		for _, p := range m.Parts {
-			if len(p.Image) == 0 {
-				contents = append(contents, Content{Type: "text", Text: p.Text})
-				continue
-			}
-			data64 := base64.StdEncoding.EncodeToString(p.Image)
-			contents = append(contents, Content{
-				Type:     "image_url",
-				ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
-			})
-		}
-		messages = append(messages, RequestMessage{Role: m.Role.String(), Content: contents})
-	}
 	req := &ChatGPTRequest{
 		Model:     model,
-		Messages:  messages,
+		Messages:  requestMessages(msgs),
 		MaxTokens: provpkg.DefaultMaxTokens,
 	}
 	if responseSchema != nil {
@@ -461,6 +518,44 @@ func buildRequest(model string, msgs []provpkg.Message, responseSchemaName strin
 		}
 	}
 	return req
+}
+
+// requestMessages converts msgs. Each tool result becomes its own tool
+// message, as OpenAI expects.
+func requestMessages(msgs []provpkg.Message) []RequestMessage {
+	out := make([]RequestMessage, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == provpkg.RoleTool {
+			for _, p := range m.Parts {
+				out = append(out, RequestMessage{
+					Role:       m.Role.String(),
+					Content:    []Content{{Type: textContentType, Text: p.ToolResult.Content}},
+					ToolCallID: p.ToolResult.CallID,
+				})
+			}
+			continue
+		}
+		rm := RequestMessage{Role: m.Role.String()}
+		for _, p := range m.Parts {
+			switch {
+			case p.ToolCall != nil:
+				rm.ToolCalls = append(rm.ToolCalls, ToolCall{ID: p.ToolCall.ID, Type: functionType, Function: FunctionCall{
+					Name:      p.ToolCall.Name,
+					Arguments: cmp.Or(p.ToolCall.Arguments, emptyArguments),
+				}})
+			case len(p.Image) > 0:
+				data64 := base64.StdEncoding.EncodeToString(p.Image)
+				rm.Content = append(rm.Content, Content{
+					Type:     "image_url",
+					ImageURL: &ImageURL{URL: fmt.Sprintf(imageDataURLFormat, data64)},
+				})
+			default:
+				rm.Content = append(rm.Content, Content{Type: textContentType, Text: p.Text})
+			}
+		}
+		out = append(out, rm)
+	}
+	return out
 }
 
 // ProviderOption configures an OpenAI provider at construction time.

@@ -12,6 +12,11 @@ import (
 func TestValidateMessages(t *testing.T) {
 	t.Parallel()
 	user := provider.TextMessage(provider.RoleUser, "u")
+	call := provider.Part{ToolCall: &provider.ToolCall{ID: "c1", Name: "lookup", Arguments: "{}"}}
+	result := provider.Part{ToolResult: &provider.ToolResult{CallID: "c1", Name: "lookup", Content: "42"}}
+	msg := func(role provider.Role, parts ...provider.Part) provider.Message {
+		return provider.Message{Role: role, Parts: parts}
+	}
 	tests := []struct {
 		name         string
 		msgs         []provider.Message
@@ -40,6 +45,17 @@ func TestValidateMessages(t *testing.T) {
 		},
 		{name: "assistant image", msgs: []provider.Message{user, {Role: provider.RoleAssistant, Parts: []provider.Part{{Image: []byte("img")}}}}, wantErr: provider.ErrInvalidMessages},
 		{name: "only system", msgs: []provider.Message{provider.TextMessage(provider.RoleSystem, "s")}, wantErr: provider.ErrInvalidMessages},
+		{
+			name: "valid tool round-trip",
+			msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{Text: "checking"}, call), msg(provider.RoleTool, result)},
+		},
+		{name: "tool call and text in one part", msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{Text: "a", ToolCall: call.ToolCall})}, wantErr: provider.ErrInvalidMessages},
+		{name: "user tool call", msgs: []provider.Message{msg(provider.RoleUser, call)}, wantErr: provider.ErrInvalidMessages},
+		{name: "assistant tool result", msgs: []provider.Message{user, msg(provider.RoleAssistant, result)}, wantErr: provider.ErrInvalidMessages},
+		{name: "tool message text", msgs: []provider.Message{user, msg(provider.RoleTool, provider.Part{Text: "42"})}, wantErr: provider.ErrInvalidMessages},
+		{name: "tool message image", msgs: []provider.Message{user, msg(provider.RoleTool, provider.Part{Image: []byte("img")})}, wantErr: provider.ErrInvalidMessages},
+		{name: "unnamed tool call", msgs: []provider.Message{user, msg(provider.RoleAssistant, provider.Part{ToolCall: &provider.ToolCall{ID: "c1"}})}, wantErr: provider.ErrInvalidMessages},
+		{name: "unnamed tool result", msgs: []provider.Message{user, msg(provider.RoleTool, provider.Part{ToolResult: &provider.ToolResult{CallID: "c1"}})}, wantErr: provider.ErrInvalidMessages},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -205,6 +205,16 @@ func (g *Guard[T]) CallMessages(ctx context.Context, lease *Lease[T], msgs []Mes
 	return g.do(ctx, lease, func() CallResult { return mc.CallMessages(ctx, lease, msgs) })
 }
 
+// CallTools is Call with tools. It returns ErrToolsUnsupported when the
+// wrapped provider is not a ToolCaller.
+func (g *Guard[T]) CallTools(ctx context.Context, lease *Lease[T], msgs []Message, tools []ToolSpec) CallResult {
+	tc, ok := AsToolCaller(g.Provider)
+	if !ok {
+		return g.unsupported(lease, ErrToolsUnsupported)
+	}
+	return g.do(ctx, lease, func() CallResult { return tc.CallTools(ctx, lease, msgs, tools) })
+}
+
 // Stream is Call for a streamed reply. Opening the stream feeds the limit
 // and the breaker at once, so a long reply is not mistaken for overload and a
 // probe settles the breaker without waiting for the reply. The slot stays
