@@ -206,6 +206,17 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	nested := toolCall("c1", "nested", `{}`)
 	stop := toolCall("c1", "stop", `{}`)
 	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	// Every default step calls add; the last request holds all earlier rounds.
+	defaultSteps := make([]provider.CallResult, 0, DefaultMaxToolSteps)
+	defaultRan := make([]string, 0, DefaultMaxToolSteps)
+	defaultSent := []provider.Message{user}
+	for i := range DefaultMaxToolSteps {
+		defaultSteps = append(defaultSteps, callsReply("", add))
+		defaultRan = append(defaultRan, "add")
+		if i < DefaultMaxToolSteps-1 {
+			defaultSent = append(defaultSent, exchange("", []provider.ToolCall{add}, `{"Sum":3}`)...)
+		}
+	}
 	tests := []struct {
 		name     string
 		replies  []provider.CallResult
@@ -327,6 +338,21 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			wantErr:  ErrMaxToolSteps,
 			wantRan:  []string{"add", "add"},
 			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{add}, `{"Sum":3}`)...),
+		},
+		{
+			name:     "final reply on the last step",
+			replies:  []provider.CallResult{callsReply("", add), textReply("3")},
+			maxSteps: 2,
+			want:     "3",
+			wantRan:  []string{"add"},
+			wantSent: append([]provider.Message{user}, exchange("", []provider.ToolCall{add}, `{"Sum":3}`)...),
+		},
+		{
+			name:     "default max steps",
+			replies:  defaultSteps,
+			wantErr:  ErrMaxToolSteps,
+			wantRan:  defaultRan,
+			wantSent: defaultSent,
 		},
 	}
 	for _, tt := range tests {
