@@ -2,11 +2,11 @@ name: API compatibility
 
 # Fails a pull request that breaks the API of a stable package (see README,
 # "API stability"). Add the breaking-change label to accept an intended break;
-# the label events re-run this check.
+# the label events re-run this check, and edited covers a changed base branch.
 on:
   pull_request:
     branches: [main]
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read

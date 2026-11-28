@@ -1,5 +1,12 @@
 package llmvcr
 
+import (
+	errors "errors"
+	http "net/http"
+	io "io"
+	testing "testing"
+)
+
 const GoldenUpdateEnv = "LLMVCR_UPDATE"
 
 var ErrCassetteMiss = errors.New("llmvcr: refusing live network call (cassette miss)")
