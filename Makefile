@@ -30,14 +30,15 @@ test-contrib:
 test-unit-cover:
 	go test -race -coverprofile=coverage.out ./...
 
-# cover-check fails when any package with statements is below COVER_MIN percent
-# statement coverage, as reported per package by `go test -cover`. Packages
+# cover-check runs the tests like test-unit-cover (writing coverage.out) and
+# fails when any package with statements is below COVER_MIN percent statement
+# coverage, as reported per package by `go test`. Packages
 # without statements are skipped. To exempt a package, add its import path to
 # COVER_EXCLUDE together with a comment giving the reason.
 COVER_MIN ?= 80
 COVER_EXCLUDE :=
 cover-check:
-	@out=$$(go test -race -cover ./...) || { echo "$$out"; exit 1; }; \
+	@out=$$(go test -race -coverprofile=coverage.out ./...) || { echo "$$out"; exit 1; }; \
 	echo "$$out" | awk -v min=$(COVER_MIN) -v exclude="$(COVER_EXCLUDE)" ' \
 		BEGIN { n = split(exclude, ex, " "); for (i = 1; i <= n; i++) skip[ex[i]] = 1 } \
 		match($$0, /coverage: [0-9.]+% of statements/) { \

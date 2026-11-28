@@ -30,10 +30,7 @@ jobs:
       - name: Build
         run: make build
 
-      - name: Test
-        run: make test-unit-cover
-
-      - name: Check per-package coverage
+      - name: Test with per-package coverage check
         run: make cover-check
 
       - name: Upload coverage reports to Codecov
