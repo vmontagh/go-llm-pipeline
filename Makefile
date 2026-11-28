@@ -59,7 +59,7 @@ api-diff:
 		echo "pkg/$$p: API changes vs $(API_BASE):"; echo "$$out"; \
 		case "$$out" in *"Incompatible changes:"*) broken=1;; esac; \
 	done; \
-	if [ $$broken = 1 ] && [ -z "$(ALLOW_BREAKING)" ]; then \
+	if [ $$broken = 1 ] && [ "$(ALLOW_BREAKING)" != 1 ]; then \
 		echo "api-diff: incompatible changes to a stable package; set ALLOW_BREAKING=1 if intended" >&2; exit 1; fi
 
 lint:

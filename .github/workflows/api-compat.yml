@@ -30,7 +30,6 @@ jobs:
       - name: Compare with base branch
         shell: bash
         env:
-          BASE_REF: ${{ github.base_ref }}
           ALLOW_BREAKING: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') && '1' || '' }}
         run: |
           {
@@ -38,6 +37,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           status=0
-          make api-diff API_BASE="origin/$BASE_REF" ALLOW_BREAKING="$ALLOW_BREAKING" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          # The checkout is the PR merged into its base; the first parent is that
+          # exact base revision, even if the base branch has moved since.
+          make api-diff API_BASE=HEAD^1 ALLOW_BREAKING="$ALLOW_BREAKING" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
