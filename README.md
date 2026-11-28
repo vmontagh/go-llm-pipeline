@@ -327,9 +327,10 @@ notes. All other packages are experimental and may change in any release.
 Two checks guard the stable API:
 
 - `make test` compares each stable package with its snapshot in `api/`. After an intended change,
-  run `make api` and commit the updated snapshot so reviewers see the diff.
+  run `make api` and commit the updated snapshot so reviewers see the diff. The snapshot is
+  syntactic, so it misses a type change inferred from an expression.
 - The API compatibility workflow runs `make api-diff`, which uses `apidiff` to fail a pull request
-  that breaks compatibility with `main`. Add the `breaking-change` label to accept an intended break.
+  that breaks compatibility with `main`, including type changes the snapshot misses. Add the `breaking-change` label to accept an intended break.
 
 ### Determinism and testing
 

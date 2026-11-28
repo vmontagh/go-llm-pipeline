@@ -37,6 +37,10 @@ var (
 // the import path of every package qualifier the declarations use, so changing
 // an import alone also changes the snapshot. Render runs go list in dir to
 // resolve package names.
+//
+// Render works on syntax, not types: a type inferred from an expression, such
+// as var X = y.Field, changes without changing the snapshot. The type-checked
+// make api-diff catches those changes.
 func Render(ctx context.Context, dir, importPath string) (string, error) {
 	fset := token.NewFileSet()
 	files, err := parseDir(fset, dir)
