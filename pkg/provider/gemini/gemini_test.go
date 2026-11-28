@@ -17,6 +17,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider/gemini"
 )
@@ -414,7 +415,7 @@ func TestCall_APIError(t *testing.T) {
 		{
 			name:   "rate limit forwards Retry-After",
 			status: http.StatusTooManyRequests,
-			header: http.Header{"Retry-After": {"7"}},
+			header: http.Header{httputil.RetryAfterHeader: {"7"}},
 			body:   `{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}`,
 			wantResult: provpkg.CallResult{
 				Outcome:    provpkg.OutcomeProviderError,
@@ -485,7 +486,7 @@ func TestCall_TransportFailure(t *testing.T) {
 			rt: func(r *http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: http.StatusTooManyRequests,
-					Header:     http.Header{"Retry-After": {"7"}},
+					Header:     http.Header{httputil.RetryAfterHeader: {"7"}},
 					Body:       io.NopCloser(errReader{errTest}),
 					Request:    r,
 				}, nil

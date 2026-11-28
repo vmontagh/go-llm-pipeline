@@ -83,6 +83,14 @@ func checkOrigin(want string, target *url.URL) error {
 	return nil
 }
 
+const (
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
+	// Default ports for schemeHTTP and schemeHTTPS (RFC 9110 §4.2).
+	portHTTP  = "80"
+	portHTTPS = "443"
+)
+
 // origin returns u's scheme, host and port in the form net/http dials, with
 // the scheme's default port filled in, so EXAMPLE.com and example.com:443
 // compare equal over HTTPS. url.Parse already lower-cases the scheme.
@@ -91,15 +99,16 @@ func origin(u *url.URL) string {
 	if port == "" {
 		port = defaultPort(u.Scheme)
 	}
-	return u.Scheme + "://" + net.JoinHostPort(canonicalHost(u.Hostname()), port)
+	canonical := url.URL{Scheme: u.Scheme, Host: net.JoinHostPort(canonicalHost(u.Hostname()), port)}
+	return canonical.String()
 }
 
 func defaultPort(scheme string) string {
 	switch scheme {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
+	case schemeHTTP:
+		return portHTTP
+	case schemeHTTPS:
+		return portHTTPS
 	default:
 		return ""
 	}

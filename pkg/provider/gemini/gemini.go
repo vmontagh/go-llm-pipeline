@@ -444,7 +444,7 @@ func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req 
 		Err:        newAPIError(resp.StatusCode, body),
 		StatusCode: resp.StatusCode,
 		Body:       body,
-		RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+		RetryAfter: httputil.ParseRetryAfter(resp.Header.Get(httputil.RetryAfterHeader)),
 	}
 }
 
@@ -455,7 +455,7 @@ func readFailure(status int, header http.Header, err error) provpkg.CallResult {
 		Outcome:    provpkg.OutcomeProviderError,
 		Err:        fmt.Errorf("reading gemini response: %w", err),
 		StatusCode: status,
-		RetryAfter: httputil.ParseRetryAfter(header.Get("Retry-After")),
+		RetryAfter: httputil.ParseRetryAfter(header.Get(httputil.RetryAfterHeader)),
 	}
 }
 

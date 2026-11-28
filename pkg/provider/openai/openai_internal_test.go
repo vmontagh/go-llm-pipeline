@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -188,7 +189,7 @@ func TestTransport_Call(t *testing.T) {
 			name: "body read error keeps status code and Retry-After",
 			client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				h := make(http.Header)
-				h.Set("Retry-After", "7")
+				h.Set(httputil.RetryAfterHeader, "7")
 				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: errReadCloser{}, Header: h}, nil
 			})},
 			wantOut:        provpkg.OutcomeProviderError,
@@ -213,7 +214,7 @@ func TestTransport_Call(t *testing.T) {
 			client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				body := `{"error":{"message":"rate","type":"server_error","code":"rate_limit_exceeded"}}`
 				h := make(http.Header)
-				h.Set("Retry-After", "10")
+				h.Set(httputil.RetryAfterHeader, "10")
 				return &http.Response{
 					StatusCode: http.StatusTooManyRequests,
 					Body:       io.NopCloser(strings.NewReader(body)),

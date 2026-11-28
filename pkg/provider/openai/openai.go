@@ -493,7 +493,7 @@ func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req 
 			Err:        fmt.Errorf("%w: HTTP %d", provpkg.ErrUnexpectedStatus, resp.StatusCode),
 			StatusCode: resp.StatusCode,
 			Body:       bodyBytes,
-			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get(httputil.RetryAfterHeader)),
 		}
 	}
 
@@ -510,7 +510,7 @@ func readFailure(status int, header http.Header, err error) provpkg.CallResult {
 		Outcome:    provpkg.OutcomeProviderError,
 		Err:        fmt.Errorf("reading response: %w", err),
 		StatusCode: status,
-		RetryAfter: httputil.ParseRetryAfter(header.Get("Retry-After")),
+		RetryAfter: httputil.ParseRetryAfter(header.Get(httputil.RetryAfterHeader)),
 	}
 }
 

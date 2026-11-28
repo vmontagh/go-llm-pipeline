@@ -15,6 +15,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -320,7 +321,7 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 				attempt++
 				resp := jsonResponse(r.status, r.body)
 				if r.retryAfter != "" {
-					resp.Header.Set("Retry-After", r.retryAfter)
+					resp.Header.Set(httputil.RetryAfterHeader, r.retryAfter)
 				}
 				if r.readFails {
 					resp.Body = errReadCloser{}

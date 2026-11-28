@@ -84,7 +84,7 @@ func readJSONResult(ctx context.Context, logger *slog.Logger, resp *http.Respons
 	// Parse the cooldown first so a failed body read still honors it.
 	res := jsonPostResult{
 		statusCode: resp.StatusCode,
-		retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+		retryAfter: httputil.ParseRetryAfter(resp.Header.Get(httputil.RetryAfterHeader)),
 	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 )
 
 // errRead is returned by errReadBody so tests can assert that doJSONPost
@@ -29,12 +30,12 @@ func TestDoJSONPost(t *testing.T) {
 	const okBody = `{"ok":true}`
 	readErrClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		h := make(http.Header)
-		h.Set("Retry-After", "3")
+		h.Set(httputil.RetryAfterHeader, "3")
 		return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: errReadBody{}, Header: h}, nil
 	})}
 	okClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		h := make(http.Header)
-		h.Set("Retry-After", "2")
+		h.Set(httputil.RetryAfterHeader, "2")
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(okBody)), Header: h}, nil
 	})}
 

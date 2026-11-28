@@ -15,6 +15,13 @@ import (
 
 var errTest = errors.New("test error")
 
+// Paths the test servers route.
+const (
+	rootPath = "/"
+	nextPath = "/next"
+	okPath   = "/ok"
+)
+
 // routes maps request paths to handlers for serve.
 type routes map[string]http.Handler
 
@@ -53,7 +60,7 @@ func (c *counter) count(next http.Handler) http.Handler {
 func newSink(t *testing.T) (*httptest.Server, *counter) {
 	t.Helper()
 	var c counter
-	return serve(t, routes{"/": c.count(nil)}), &c
+	return serve(t, routes{rootPath: c.count(nil)}), &c
 }
 
 // assertRefused checks that err is a cross-origin refusal and that sink got
@@ -167,7 +174,7 @@ func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sink, hits := newSink(t)
-			srv := serve(t, routes{"/": redirectTo("/next"), "/next": redirectTo(sink.URL)})
+			srv := serve(t, routes{rootPath: redirectTo(nextPath), nextPath: redirectTo(sink.URL)})
 			caller := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				tt.rewrite(req, via, sink.Listener.Addr().String())
 				return nil
@@ -183,18 +190,18 @@ func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 func TestSameOriginClientFollowsSameOrigin(t *testing.T) {
 	t.Parallel()
 	const okBody = "ok"
+	accept := func(*http.Request, []*http.Request) error { return nil }
+	reject := func(*http.Request, []*http.Request) error { return errTest }
 	tests := []struct {
-		name          string
-		checkRedirect func(*http.Request, []*http.Request) error
-		want          string
-		wantErr       error
+		name    string
+		client  *http.Client
+		want    string
+		wantErr error
 	}{
-		{name: "followed by default", want: okBody},
-		{
-			name:          "caller CheckRedirect still applies",
-			checkRedirect: func(*http.Request, []*http.Request) error { return errTest },
-			wantErr:       errTest,
-		},
+		{name: "nil client", want: okBody},
+		{name: "client without CheckRedirect", client: &http.Client{}, want: okBody},
+		{name: "caller CheckRedirect accepts", client: &http.Client{CheckRedirect: accept}, want: okBody},
+		{name: "caller CheckRedirect rejects", client: &http.Client{CheckRedirect: reject}, wantErr: errTest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,9 +211,9 @@ func TestSameOriginClientFollowsSameOrigin(t *testing.T) {
 					t.Errorf("WriteString() = %v", err)
 				}
 			})
-			srv := serve(t, routes{"/": redirectTo("/ok"), "/ok": ok})
+			srv := serve(t, routes{rootPath: redirectTo(okPath), okPath: ok})
 
-			got, err := post(t, SameOriginClient(&http.Client{CheckRedirect: tt.checkRedirect}, 0), srv.URL)
+			got, err := post(t, SameOriginClient(tt.client, 0), srv.URL)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("Do() error mismatch (-want +got):\n%s", diff)
@@ -234,7 +241,7 @@ func TestSameOriginClientStopsRedirectLoop(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			var loop counter
-			srv := serve(t, routes{"/": loop.count(redirectTo("/"))})
+			srv := serve(t, routes{rootPath: loop.count(redirectTo(rootPath))})
 
 			_, err := post(t, SameOriginClient(tt.client, 0), srv.URL)
 

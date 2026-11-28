@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -233,7 +234,7 @@ func TestTransport_Call(t *testing.T) {
 			name: "body read error keeps status code and Retry-After",
 			client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				h := make(http.Header)
-				h.Set("Retry-After", "4")
+				h.Set(httputil.RetryAfterHeader, "4")
 				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: errReadCloser{}, Header: h}, nil
 			})},
 			wantOut:        provpkg.OutcomeProviderError,
