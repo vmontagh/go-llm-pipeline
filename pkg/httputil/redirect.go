@@ -59,17 +59,33 @@ func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*
 	}
 }
 
-// origin returns u's scheme, host and port in canonical form: lower-case
-// host, with the scheme's default port filled in, so EXAMPLE.com and
-// example.com:443 compare equal over HTTPS. url.Parse already lower-cases
-// the scheme.
+// origin returns u's scheme, host and port in canonical form, with the
+// scheme's default port filled in, so EXAMPLE.com and example.com:443
+// compare equal over HTTPS. url.Parse already lower-cases the scheme.
 func origin(u *url.URL) string {
 	scheme := u.Scheme
 	port := u.Port()
 	if port == "" {
 		port = defaultPorts[scheme]
 	}
-	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+	return scheme + "://" + net.JoinHostPort(foldHost(u.Hostname()), port)
 }
 
 var defaultPorts = map[string]string{"http": "80", "https": "443"}
+
+// foldHost lower-cases only ASCII letters, as DNS does. Unicode folding
+// would merge distinct names (İ.example and i.example), and an IPv6 zone
+// after '%' is case-sensitive, so it is kept verbatim.
+func foldHost(host string) string {
+	addr, zone, hasZone := strings.Cut(host, "%")
+	addr = strings.Map(func(r rune) rune {
+		if 'A' <= r && r <= 'Z' {
+			return r + ('a' - 'A')
+		}
+		return r
+	}, addr)
+	if hasZone {
+		return addr + "%" + zone
+	}
+	return addr
+}

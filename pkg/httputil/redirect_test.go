@@ -213,6 +213,9 @@ func TestSameOriginRedirectsOrigin(t *testing.T) {
 		{from: "https://example.com/a", to: "https://example.com:8443/b", wantErr: ErrCrossOriginRedirect},
 		{from: "https://example.com/a", to: "http://example.com:443/b", wantErr: ErrCrossOriginRedirect},
 		{from: "https://example.com/a", to: "https://api.example.com/b", wantErr: ErrCrossOriginRedirect},
+		{from: "http://[FE80::1%25eth0]:8080/a", to: "http://[fe80::1%25eth0]:8080/b"},
+		{from: "https://i.example/a", to: "https://\u0130.example/b", wantErr: ErrCrossOriginRedirect},
+		{from: "http://[fe80::1%25ethA]:8080/a", to: "http://[fe80::1%25etha]:8080/b", wantErr: ErrCrossOriginRedirect},
 	}
 	for _, tt := range tests {
 		t.Run(tt.from+" to "+tt.to, func(t *testing.T) {
