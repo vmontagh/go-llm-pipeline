@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -598,75 +597,6 @@ func TestCall_CrossOriginRedirectRefused(t *testing.T) {
 			default:
 			}
 		})
-	}
-}
-
-func TestCall_SameOriginRedirect(t *testing.T) {
-	t.Parallel()
-	const okBody = `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`
-	newServer := func(t *testing.T) *httptest.Server {
-		t.Helper()
-		srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-			if r.URL.Query().Has("moved") {
-				if _, err := io.WriteString(rw, okBody); err != nil {
-					t.Errorf("WriteString() = %v", err)
-				}
-				return
-			}
-			http.Redirect(rw, r, r.URL.Path+"?moved", http.StatusTemporaryRedirect)
-		}))
-		t.Cleanup(srv.Close)
-		return srv
-	}
-	tests := []struct {
-		name          string
-		checkRedirect func(*http.Request, []*http.Request) error
-		want          provpkg.CallResult
-	}{
-		{
-			name: "followed by default",
-			want: provpkg.CallResult{Outcome: provpkg.OutcomeSuccess, Text: "ok"},
-		},
-		{
-			name:          "caller CheckRedirect still applies",
-			checkRedirect: func(*http.Request, []*http.Request) error { return errTest },
-			want:          provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: errTest},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			srv := newServer(t)
-			client := &http.Client{CheckRedirect: tt.checkRedirect}
-			p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL), gemini.WithHTTPClient(client))
-
-			got := call(t, p, nil)
-
-			if diff := cmp.Diff(tt.want, got, cmpopts.EquateErrors()); diff != "" {
-				t.Errorf("Call() mismatch (-want +got):\n%s", diff)
-			}
-		})
-	}
-}
-
-func TestCall_RedirectLoopStops(t *testing.T) {
-	t.Parallel()
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		http.Redirect(rw, r, r.URL.Path, http.StatusTemporaryRedirect)
-	}))
-	t.Cleanup(srv.Close)
-	p := gemini.NewProvider(nil, gemini.WithBaseURL(srv.URL))
-
-	got := call(t, p, nil)
-
-	if !errors.Is(got.Err, gemini.ErrTooManyRedirects) {
-		t.Errorf("Call() error = %v, want %v", got.Err, gemini.ErrTooManyRedirects)
-	}
-	const wantHits = 10
-	if got := hits.Load(); got != wantHits {
-		t.Errorf("server hits = %d, want %d", got, wantHits)
 	}
 }
 

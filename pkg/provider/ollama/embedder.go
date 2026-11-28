@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
@@ -95,7 +96,7 @@ func NewEmbedder(host, model string, opts ...ProviderOption) *Embedder {
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := clientWithTimeout(cfg.client, cfg.httpTimeout)
+	client := httputil.SameOriginClient(cfg.client, cfg.httpTimeout)
 	maxRetries := cfg.maxRetries
 	if maxRetries < 0 {
 		maxRetries = 0
@@ -220,7 +221,7 @@ func (e *Embedder) doEmbed(ctx context.Context, input any) embedResult {
 		if errors.Is(err, errRequestNotSent) {
 			return embedResult{tier: provpkg.TierTerminal, err: err}
 		}
-		return embedResult{tier: provpkg.TierShortTransient, err: fmt.Errorf("embed: %w", err)}
+		return embedResult{tier: provpkg.TierShortTransient, retryAfter: res.retryAfter, err: fmt.Errorf("embed: %w", err)}
 	}
 
 	if res.statusCode != http.StatusOK {

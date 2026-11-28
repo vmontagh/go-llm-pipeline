@@ -25,7 +25,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"iter"
@@ -77,18 +76,14 @@ const (
 	resultKey = "result"
 )
 
-// maxRedirects mirrors net/http's default redirect limit, which no longer
-// applies once CheckRedirect is set.
-const maxRedirects = 10
-
 // ErrCrossOriginRedirect is returned when the API answers with a redirect to
 // a different scheme, host or port. Such redirects are refused because
 // net/http would forward the X-Goog-Api-Key header and, for 307/308, the
 // prompt and image body to the new origin.
-var ErrCrossOriginRedirect = errors.New("gemini: refusing cross-origin redirect")
+var ErrCrossOriginRedirect = httputil.ErrCrossOriginRedirect
 
-// ErrTooManyRedirects is returned after maxRedirects same-origin redirects.
-var ErrTooManyRedirects = errors.New("gemini: too many redirects")
+// ErrTooManyRedirects is returned after too many same-origin redirects.
+var ErrTooManyRedirects = httputil.ErrTooManyRedirects
 
 // Tracer is the tracing interface required by the Gemini transport.
 type Tracer interface {
@@ -735,43 +730,8 @@ func NewProvider(apiKeys []string, opts ...ProviderOption) provpkg.Provider[stri
 		baseURL:        cfg.baseURL,
 		apiKeys:        provpkg.NewKeyPoolWithClock(apiKeys, clock),
 		responseSchema: cfg.responseSchema,
-		client:         httpClient(cfg.client, cfg.httpTimeout),
+		client:         httputil.SameOriginClient(cfg.client, cfg.httpTimeout),
 		tracer:         tr,
 		logger:         lg,
-	}
-}
-
-// httpClient returns the client to use. It works on a copy so a
-// caller-supplied client is never mutated, applies timeout, and restricts
-// redirects to the original origin before deferring to the caller's
-// CheckRedirect.
-func httpClient(client *http.Client, timeout time.Duration) *http.Client {
-	var c http.Client
-	if client != nil {
-		c = *client
-	}
-	if timeout > 0 {
-		c.Timeout = timeout
-	}
-	c.CheckRedirect = sameOriginRedirects(c.CheckRedirect)
-	return &c
-}
-
-// sameOriginRedirects wraps next with a policy that only follows redirects
-// whose scheme and host:port match the first request, which also rules out
-// HTTPS-to-HTTP downgrades.
-func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
-	return func(req *http.Request, via []*http.Request) error {
-		orig := via[0].URL
-		if req.URL.Scheme != orig.Scheme || req.URL.Host != orig.Host {
-			return fmt.Errorf("%w: %s://%s to %s://%s", ErrCrossOriginRedirect, orig.Scheme, orig.Host, req.URL.Scheme, req.URL.Host)
-		}
-		if next != nil {
-			return next(req, via)
-		}
-		if len(via) >= maxRedirects {
-			return fmt.Errorf("%w: stopped after %d", ErrTooManyRedirects, maxRedirects)
-		}
-		return nil
 	}
 }

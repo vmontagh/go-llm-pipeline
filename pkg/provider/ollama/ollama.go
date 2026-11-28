@@ -19,6 +19,7 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
@@ -417,7 +418,7 @@ func failedResult(res jsonPostResult, err error) (provpkg.CallResult, bool) {
 	case errors.Is(err, errRequestNotSent):
 		return provpkg.CallResult{Outcome: provpkg.OutcomeTerminal, Err: backoff.Permanent(err)}, true
 	case err != nil:
-		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err, StatusCode: res.statusCode}, true
+		return provpkg.CallResult{Outcome: provpkg.OutcomeProviderError, Err: err, StatusCode: res.statusCode, RetryAfter: res.retryAfter}, true
 	case res.statusCode == http.StatusTooManyRequests || res.statusCode >= http.StatusInternalServerError:
 		return provpkg.CallResult{
 			Outcome:    provpkg.OutcomeProviderError,
@@ -613,22 +614,6 @@ func WithTracer(tr Tracer) ProviderOption {
 	return func(c *providerConfig) { c.tracer = tr }
 }
 
-// clientWithTimeout returns the HTTP client to use for requests. A caller-
-// supplied client is shallow-copied before a timeout is applied so the caller's
-// (often shared) client is never mutated; a nil client yields a fresh one.
-func clientWithTimeout(client *http.Client, timeout time.Duration) *http.Client {
-	if client == nil {
-		client = &http.Client{}
-	} else {
-		clone := *client
-		client = &clone
-	}
-	if timeout > 0 {
-		client.Timeout = timeout
-	}
-	return client
-}
-
 func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[struct{}] {
 	cfg := providerConfig{}
 	for _, opt := range opts {
@@ -642,7 +627,7 @@ func NewProvider(host, model string, opts ...ProviderOption) provpkg.Provider[st
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := clientWithTimeout(cfg.client, cfg.httpTimeout)
+	client := httputil.SameOriginClient(cfg.client, cfg.httpTimeout)
 	return &transport{
 		host:           host,
 		model:          model,

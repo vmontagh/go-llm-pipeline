@@ -81,16 +81,17 @@ func sendJSON(ctx context.Context, req jsonPostRequest) (*http.Response, error) 
 func readJSONResult(ctx context.Context, logger *slog.Logger, resp *http.Response) (jsonPostResult, error) {
 	defer closeBody(ctx, logger, resp.Body)
 
+	// Parse the cooldown first so a failed body read still honors it.
+	res := jsonPostResult{
+		statusCode: resp.StatusCode,
+		retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+	}
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return jsonPostResult{statusCode: resp.StatusCode}, fmt.Errorf("reading response body: %w", err)
+		return res, fmt.Errorf("reading response body: %w", err)
 	}
-
-	return jsonPostResult{
-		statusCode: resp.StatusCode,
-		body:       bodyBytes,
-		retryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
-	}, nil
+	res.body = bodyBytes
+	return res, nil
 }
 
 func closeBody(ctx context.Context, logger *slog.Logger, body io.Closer) {
