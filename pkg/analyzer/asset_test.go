@@ -211,18 +211,11 @@ func TestTemplate_AnalyzeAsset(t *testing.T) {
 					gotPayload = imageData
 				},
 			}
-			opts := []TemplateConfigurator{WithTemplateBackOff(&backoff.StopBackOff{})}
+			b := echoBuilder(p).WithBackOff(&backoff.StopBackOff{})
 			if tt.maxBytes != 0 {
-				opts = append(opts, WithTemplateMaxAssetBytes(tt.maxBytes))
+				b.WithMaxAssetBytes(tt.maxBytes)
 			}
-			tmpl, err := NewTemplate[string, parsedResult](
-				p,
-				func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil },
-				opts...,
-			)
-			if err != nil {
-				t.Fatalf("NewTemplate: %v", err)
-			}
+			tmpl := buildTemplate(t, b)
 
 			var gotJobID string
 			publish := func(_, itemID, _ string, _ bool) { gotJobID = itemID }

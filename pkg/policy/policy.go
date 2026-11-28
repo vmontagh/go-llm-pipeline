@@ -17,10 +17,7 @@
 //     round-trip used by every retry tier.
 //
 // Provider sentinel errors (ErrQuotaExceeded, ErrRateLimitExceeded, ...)
-// remain in pkg/provider; analyzer-specific sentinels
-// (ErrParsing, ErrMalformedResponse, ErrRetryableResponse) stay in
-// pkg/analyzer because they describe analyzer-internal parsing
-// failures rather than a retry routing class.
+// remain in pkg/provider.
 package policy
 
 import (
@@ -174,11 +171,7 @@ func TierCode(tier ErrorTier, err error) codes.Code {
 //
 // As a fallback, the provider sentinel errors are mapped directly so
 // that call sites which wrap a provider sentinel without going through
-// WithCode still classify correctly. Analyzer-specific sentinels
-// (ErrParsing, ErrMalformedResponse, ErrRetryableResponse) are not
-// inspected here — those errors are always wrapped via WithCode by the
-// analyzer before they escape the package, so the codedError path
-// already classifies them.
+// WithCode still classify correctly.
 func Code(err error) codes.Code {
 	if err == nil {
 		return codes.OK

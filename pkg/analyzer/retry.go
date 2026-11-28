@@ -9,8 +9,8 @@ import (
 	"github.com/cenkalti/backoff/v4"
 )
 
-// RetryConfig holds the parameters for ExecuteWithRetries.
-type RetryConfig struct {
+// retryConfig holds the parameters for executeWithRetries.
+type retryConfig struct {
 	ModelName       string
 	JobID           string
 	Publish         func(eventType, itemID, message string, isError bool)
@@ -21,15 +21,15 @@ type RetryConfig struct {
 	Timer           backoff.Timer   // Optional: for injecting logical time timer in tests
 }
 
-func ExecuteWithRetries[R any](
+func executeWithRetries[R any](
 	ctx context.Context,
-	cfg *RetryConfig,
+	cfg *retryConfig,
 	generator func() (string, error),
 	parser func(string) (R, error),
 ) (R, error) {
 
 	if cfg == nil {
-		cfg = &RetryConfig{}
+		cfg = &retryConfig{}
 	}
 
 	var parsedContent R
@@ -58,7 +58,7 @@ func ExecuteWithRetries[R any](
 				return backoff.Permanent(fmt.Errorf("parsing %s response after %d attempts: %w", cfg.ModelName, parseAttempts, parseErr))
 			}
 			if cfg.Publish != nil {
-				cfg.Publish(EventLLMRetrying, cfg.JobID, fmt.Sprintf("Retrying %s due to parse error: %v", cfg.ModelName, parseErr), true)
+				cfg.Publish(eventLLMRetrying, cfg.JobID, fmt.Sprintf("Retrying %s due to parse error: %v", cfg.ModelName, parseErr), true)
 			}
 			if cfg.Logger != nil {
 				cfg.Logger.Warn("retrying due to parse failure",

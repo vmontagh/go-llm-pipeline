@@ -73,29 +73,29 @@ func TestTemplate_Analyze(t *testing.T) {
 			name: "terminal outcome propagates sentinel",
 			callResult: provider.CallResult{
 				Outcome: provider.OutcomeTerminal,
-				Err:     backoff.Permanent(ErrRateLimitExceeded),
+				Err:     backoff.Permanent(provider.ErrRateLimitExceeded),
 			},
 			keys:    []string{"k1"},
-			wantErr: ErrRateLimitExceeded,
+			wantErr: provider.ErrRateLimitExceeded,
 		},
 		{
 			name: "provider error short-transient exits via StopBackOff",
 			callResult: provider.CallResult{
 				Outcome: provider.OutcomeProviderError,
-				Err:     ErrRateLimitExceeded,
+				Err:     provider.ErrRateLimitExceeded,
 			},
 			classifyTier: provider.TierShortTransient,
 			keys:         []string{"k1"},
-			wantErr:      ErrRateLimitExceeded,
+			wantErr:      provider.ErrRateLimitExceeded,
 		},
 		{
-			name: "missing API key returns ErrMissingAPIKey",
+			name: "missing API key returns provider.ErrMissingAPIKey",
 			keys: nil,
 			callResult: provider.CallResult{
 				Outcome: provider.OutcomeSuccess,
 				Text:    validText,
 			},
-			wantErr: ErrMissingAPIKey,
+			wantErr: provider.ErrMissingAPIKey,
 		},
 		{
 			name: "context cancellation returns wrapped context.Canceled",
@@ -129,14 +129,7 @@ func TestTemplate_Analyze(t *testing.T) {
 				callResult:   tt.callResult,
 				classifyTier: tt.classifyTier,
 			}
-			mustTemplate := func(p provider.Provider[string], parser func(string) (parsedResult, error), opts ...TemplateConfigurator) *Template[string, parsedResult] {
-				tInst, err := NewTemplate[string, parsedResult](p, parser, opts...)
-				if err != nil {
-					t.Fatalf("NewTemplate() = %v, want nil", err)
-				}
-				return tInst
-			}
-			tmpl := mustTemplate(p, func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }, WithTemplateBackOff(&backoff.StopBackOff{}))
+			tmpl := buildTemplate(t, echoBuilder(p).WithBackOff(&backoff.StopBackOff{}))
 
 			if tt.wantName != "" {
 				if diff := cmp.Diff(tt.wantName, tmpl.Name()); diff != "" {
@@ -195,7 +188,7 @@ func TestTemplate_AnalyzeMessages(t *testing.T) {
 	mp := newToolProvider(nil)
 	mp.callResult = provider.CallResult{Outcome: provider.OutcomeSuccess, Text: "ok"}
 	logs := &capturingHandler{}
-	tmpl := newEchoTemplate(t, mp, WithTemplateLogger(slog.New(logs)))
+	tmpl := buildTemplate(t, echoBuilder(mp).WithLogger(slog.New(logs)))
 
 	got, err := tmpl.AnalyzeMessages(t.Context(), msgs, "job", nil)
 	if err != nil {
@@ -249,7 +242,7 @@ func TestTemplate_AnalyzeMessagesRejects(t *testing.T) {
 
 func TestTemplate_StreamMessages(t *testing.T) {
 	t.Parallel()
-	failed := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	failed := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: provider.ErrRateLimitExceeded}
 	opened := provider.CallResult{Outcome: provider.OutcomeSuccess}
 	tests := []struct {
 		name      string
@@ -263,7 +256,7 @@ func TestTemplate_StreamMessages(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			sp := newStreamProvider(tt.opens, tt.streamErr)
-			tmpl := newEchoTemplate(t, sp, WithTemplateBackOff(&backoff.ZeroBackOff{}))
+			tmpl := buildTemplate(t, echoBuilder(sp).WithBackOff(&backoff.ZeroBackOff{}))
 			msgs := []provider.Message{provider.TextMessage(provider.RoleUser, "u")}
 
 			got, err := readStream(tmpl.StreamMessages(t.Context(), msgs, "job", nil))
@@ -326,15 +319,25 @@ func TestTemplate_StreamMessagesRejects(t *testing.T) {
 	}
 }
 
-// newEchoTemplate returns a Template whose parser keeps the raw response.
-func newEchoTemplate(t *testing.T, p provider.Provider[string], opts ...TemplateConfigurator) *Template[string, parsedResult] {
+// echoBuilder returns a Builder whose parser keeps the raw response.
+func echoBuilder(p provider.Provider[string]) *Builder[string, parsedResult] {
+	return NewBuilder(p, func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil })
+}
+
+// buildTemplate builds b and fails the test on error.
+func buildTemplate(t *testing.T, b *Builder[string, parsedResult]) *Template[string, parsedResult] {
 	t.Helper()
-	parse := func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil }
-	tmpl, err := NewTemplate[string, parsedResult](p, parse, opts...)
+	tmpl, err := b.Build()
 	if err != nil {
-		t.Fatalf("NewTemplate() error = %v", err)
+		t.Fatalf("Build() error = %v", err)
 	}
 	return tmpl
+}
+
+// newEchoTemplate returns a Template whose parser keeps the raw response.
+func newEchoTemplate(t *testing.T, p provider.Provider[string]) *Template[string, parsedResult] {
+	t.Helper()
+	return buildTemplate(t, echoBuilder(p))
 }
 
 // wrapInGuards wraps p in n Guards.
@@ -412,22 +415,15 @@ func TestTemplate_callOnce_AllKeysCoolingDown(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			pool := tt.buildPool(t)
-			tmpl, err := NewTemplate[string, parsedResult](
-				&mockProvider{
-					name:        "mock/test-model",
-					model:       "test-model",
-					label:       "mock",
-					traceRegion: "Analyze_Mock",
-					keys:        pool,
-				},
-				func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil },
-				WithTemplateShortCooldownRetryThreshold(tt.threshold),
-			)
-			if err != nil {
-				t.Fatalf("NewTemplate() = %v, want nil", err)
-			}
+			tmpl := buildTemplate(t, echoBuilder(&mockProvider{
+				name:        "mock/test-model",
+				model:       "test-model",
+				label:       "mock",
+				traceRegion: "Analyze_Mock",
+				keys:        pool,
+			}).WithShortCooldownRetryThreshold(tt.threshold))
 
-			_, err = tmpl.callOnce(context.Background(), &callOnceParams[string]{prompt: "prompt"})
+			_, err := tmpl.callOnce(context.Background(), &callOnceParams[string]{prompt: "prompt"})
 			if diff := cmp.Diff(provider.ErrAllKeysCoolingDown, err, cmpopts.EquateErrors()); diff != "" {
 				t.Fatalf("callOnce error mismatch (-want +got):\n%s", diff)
 			}
@@ -452,7 +448,7 @@ func (c *advancingClock) Now() time.Time {
 	return now
 }
 
-func TestWithTemplateScrubFunc(t *testing.T) {
+func TestBuilderWithScrubFunc(t *testing.T) {
 	t.Parallel()
 
 	logHandler := &capturingHandler{}
@@ -468,16 +464,7 @@ func TestWithTemplateScrubFunc(t *testing.T) {
 		return strings.ReplaceAll(s, "secret=abc123", "secret=[REDACTED]")
 	}
 
-	tmpl, err := NewTemplate[string, parsedResult](
-		p,
-		func(raw string) (parsedResult, error) { return parsedResult{Value: raw}, nil },
-		WithTemplateBackOff(&backoff.StopBackOff{}),
-		WithTemplateLogger(lg),
-		WithTemplateScrubFunc(scrub),
-	)
-	if err != nil {
-		t.Fatalf("NewTemplate: %v", err)
-	}
+	tmpl := buildTemplate(t, echoBuilder(p).WithBackOff(&backoff.StopBackOff{}).WithLogger(lg).WithScrubFunc(scrub))
 
 	got, err := tmpl.Analyze(t.Context(), "prompt: secret=abc123", nil, "job1", func(string, string, string, bool) {})
 	if err != nil {
@@ -543,7 +530,7 @@ func (h *capturingHandler) WithGroup(name string) slog.Handler {
 	return h
 }
 
-func TestNewTemplate_Validation(t *testing.T) {
+func TestBuilderBuild_Validation(t *testing.T) {
 	t.Parallel()
 	mockP := newMockProvider(&provider.CallResult{})
 
@@ -568,9 +555,9 @@ func TestNewTemplate_Validation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := NewTemplate[string, string](tt.p, tt.parser)
-			if !errors.Is(err, tt.wantErr) {
-				t.Errorf("NewTemplate() error = %v, wantErr %v", err, tt.wantErr)
+			_, err := NewBuilder(tt.p, tt.parser).Build()
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("Build() error mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

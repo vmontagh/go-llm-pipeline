@@ -42,9 +42,9 @@ func parseCaption(s string) (caption, error) {
 	return c, nil
 }
 
-// ExampleNewTemplate builds an analyzer on a local Ollama model and parses its
+// ExampleNewBuilder builds an analyzer on a local Ollama model and parses its
 // JSON reply into a Go type.
-func ExampleNewTemplate() {
+func ExampleNewBuilder() {
 	rec, err := llmvcr.New("testdata/cassettes/example_analyze", llmvcr.ModeReplayOnly)
 	if err != nil {
 		fmt.Println(err)
@@ -53,7 +53,7 @@ func ExampleNewTemplate() {
 	defer stop(rec)
 	p := replayProvider(rec)
 
-	a, err := analyzer.NewTemplate(p, parseCaption)
+	a, err := analyzer.NewBuilder(p, parseCaption).Build()
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -80,7 +80,7 @@ func ExampleExtract() {
 	}
 	defer stop(rec)
 	p := replayProvider(rec)
-	a, err := analyzer.NewTextTemplate(p)
+	a, err := analyzer.NewTextBuilder(p).Build()
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -118,13 +118,13 @@ func ExampleTemplate_AnalyzeWithTools() {
 	type sum struct {
 		Sum int `json:"sum"`
 	}
-	a, err := analyzer.NewTemplate(p, func(s string) (sum, error) {
+	a, err := analyzer.NewBuilder(p, func(s string) (sum, error) {
 		var v sum
 		if err := json.Unmarshal([]byte(s), &v); err != nil {
 			return sum{}, fmt.Errorf("parsing sum: %w", err)
 		}
 		return v, nil
-	})
+	}).Build()
 	if err != nil {
 		fmt.Println(err)
 		return

@@ -94,11 +94,11 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 	textU := implementsMarshaler(t, textUnmarshalerType)
 	switch {
 	case jsonU && textU:
-		return map[string]any{PropType: TypeString}, nil
+		return map[string]any{propType: typeString}, nil
 	case jsonU:
 		return nil, fmt.Errorf("%w: type %s uses custom JSON unmarshaling; its wire shape cannot be reflected", ErrSchemaDerivation, t)
 	case textU:
-		return map[string]any{PropType: TypeString}, nil
+		return map[string]any{propType: typeString}, nil
 	}
 	if implementsMarshaler(t, textMarshalerType) {
 		return nil, fmt.Errorf("%w: type %s marshals to text but cannot unmarshal from it", ErrSchemaDerivation, t)
@@ -109,11 +109,11 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		// string, even though its kind is reflect.String; describe it as a number
 		// so a numeric response validates and decodes.
 		if t == jsonNumberType {
-			return map[string]any{PropType: TypeNumber}, nil
+			return map[string]any{propType: typeNumber}, nil
 		}
-		return map[string]any{PropType: TypeString}, nil
+		return map[string]any{propType: typeString}, nil
 	case reflect.Bool:
-		return map[string]any{PropType: TypeBoolean}, nil
+		return map[string]any{propType: typeBoolean}, nil
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 		return integerSchema(t.Kind()), nil
@@ -125,13 +125,13 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		// decode-backed base64 check (schema-valid iff base64-decodable). A named
 		// byte element decodes identically, so it takes the same path.
 		if t.Elem().Kind() == reflect.Uint8 {
-			return map[string]any{PropType: TypeString, PropStringEncodedKind: StringEncodedBytes}, nil
+			return map[string]any{propType: typeString, propStringEncodedKind: stringEncodedBytes}, nil
 		}
 		items, err := schemaForType(t.Elem(), seen)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{PropType: TypeArray, PropItems: items}, nil
+		return map[string]any{propType: typeArray, propItems: items}, nil
 	case reflect.Array:
 		items, err := schemaForType(t.Elem(), seen)
 		if err != nil {
@@ -141,7 +141,7 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		// items; without this a response with too few or too many elements would
 		// be silently zero-filled or truncated on decode with no feedback.
 		n := json.Number(strconv.Itoa(t.Len()))
-		return map[string]any{PropType: TypeArray, PropItems: items, PropMinItems: n, PropMaxItems: n}, nil
+		return map[string]any{propType: typeArray, propItems: items, propMinItems: n, propMaxItems: n}, nil
 	case reflect.Map:
 		if t.Key().Kind() != reflect.String {
 			return nil, fmt.Errorf("%w: map key type %s is not a string", ErrSchemaDerivation, t.Key())
@@ -150,7 +150,7 @@ func schemaForType(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, 
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{PropType: TypeObject, PropAdditional: elem}, nil
+		return map[string]any{propType: typeObject, propAdditional: elem}, nil
 	case reflect.Struct:
 		if implementsMarshaler(t, jsonMarshalerType) {
 			return nil, fmt.Errorf("%w: type %s uses custom JSON marshaling", ErrSchemaDerivation, t)
@@ -172,10 +172,10 @@ func isNamedType(t reflect.Type) bool {
 // (a uint8 rejects -1 and 256 as schema violations with field-level feedback
 // rather than a generic decode failure). Bounds are exact json.Number literals.
 func integerSchema(kind reflect.Kind) map[string]any {
-	schema := map[string]any{PropType: TypeInteger}
+	schema := map[string]any{propType: typeInteger}
 	lo, hi := integerBounds(kind)
-	schema[PropMinimum] = lo
-	schema[PropMaximum] = hi
+	schema[propMinimum] = lo
+	schema[propMaximum] = hi
 	return schema
 }
 
@@ -222,15 +222,15 @@ func integerBounds(kind reflect.Kind) (lo, hi json.Number) {
 // range (for example 1e400 for float64) is rejected as a schema violation with
 // field-level feedback rather than surfacing as an opaque decode failure.
 func floatSchema(kind reflect.Kind) map[string]any {
-	schema := map[string]any{PropType: TypeNumber}
+	schema := map[string]any{propType: typeNumber}
 	bitSize := 64
 	maxVal := math.MaxFloat64
 	if kind == reflect.Float32 {
 		bitSize = 32
 		maxVal = math.MaxFloat32
 	}
-	schema[PropMinimum] = json.Number(strconv.FormatFloat(-maxVal, 'g', -1, bitSize))
-	schema[PropMaximum] = json.Number(strconv.FormatFloat(maxVal, 'g', -1, bitSize))
+	schema[propMinimum] = json.Number(strconv.FormatFloat(-maxVal, 'g', -1, bitSize))
+	schema[propMaximum] = json.Number(strconv.FormatFloat(maxVal, 'g', -1, bitSize))
 	return schema
 }
 
@@ -247,12 +247,12 @@ func structSchema(t reflect.Type, seen map[reflect.Type]bool) (map[string]any, e
 	}
 
 	schema := map[string]any{
-		PropType:       TypeObject,
-		PropProperties: props,
-		PropAdditional: false,
+		propType:       typeObject,
+		propProperties: props,
+		propAdditional: false,
 	}
 	if len(required) > 0 {
-		schema[PropRequired] = required
+		schema[propRequired] = required
 	}
 	return schema, nil
 }
@@ -446,7 +446,7 @@ func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.T
 		if baseKind(field.Type) == reflect.String {
 			return nil, fmt.Errorf(`%w: json:",string" on a string field requires double-encoded JSON, which cannot be expressed as a plain-string schema; remove the ,string option`, ErrSchemaDerivation)
 		}
-		child = map[string]any{PropType: TypeString}
+		child = map[string]any{propType: typeString}
 		// A json:",string" numeric/bool field decodes from a quoted literal. Record
 		// the Go kind so Validate can confirm the quoted string actually decodes
 		// into it, making schema-validity and decodability identical by
@@ -454,7 +454,7 @@ func fieldSchema(field *reflect.StructField, info *fieldInfo, seen map[reflect.T
 		// grammar). A regular-expression approximation would drift from
 		// encoding/json in both directions, so it is deliberately avoided. Recorded
 		// before applySchemaTag so an explicit jsonschema:"pattern=" still composes.
-		child[PropStringEncodedKind] = baseKind(field.Type).String()
+		child[propStringEncodedKind] = baseKind(field.Type).String()
 	} else {
 		derived, err := schemaForType(field.Type, seen)
 		if err != nil {
@@ -591,37 +591,37 @@ func applySchemaDirective(schema map[string]any, key, val string, hasValue bool)
 		}
 		return nil
 	case "description":
-		schema[PropDescription] = val
+		schema[propDescription] = val
 	case "pattern":
-		if err := requireType(schema, key, TypeString); err != nil {
+		if err := requireType(schema, key, typeString); err != nil {
 			return err
 		}
 		if _, err := regexp.Compile(val); err != nil {
 			return fmt.Errorf("%w: invalid pattern %q: %w", ErrSchemaDerivation, val, err)
 		}
-		schema[PropPattern] = val
+		schema[propPattern] = val
 	case "enum":
-		schema[PropEnum] = parseEnum(val)
+		schema[propEnum] = parseEnum(val)
 	case "min":
-		if err := requireType(schema, key, TypeInteger, TypeNumber); err != nil {
+		if err := requireType(schema, key, typeInteger, typeNumber); err != nil {
 			return err
 		}
-		return setBound(schema, PropMinimum, key, val)
+		return setBound(schema, propMinimum, key, val)
 	case "max":
-		if err := requireType(schema, key, TypeInteger, TypeNumber); err != nil {
+		if err := requireType(schema, key, typeInteger, typeNumber); err != nil {
 			return err
 		}
-		return setBound(schema, PropMaximum, key, val)
+		return setBound(schema, propMaximum, key, val)
 	case "minLength":
-		if err := requireType(schema, key, TypeString); err != nil {
+		if err := requireType(schema, key, typeString); err != nil {
 			return err
 		}
-		return setLength(schema, PropMinLength, key, val)
+		return setLength(schema, propMinLength, key, val)
 	case "maxLength":
-		if err := requireType(schema, key, TypeString); err != nil {
+		if err := requireType(schema, key, typeString); err != nil {
 			return err
 		}
-		return setLength(schema, PropMaxLength, key, val)
+		return setLength(schema, propMaxLength, key, val)
 	default:
 		return fmt.Errorf("%w: unknown jsonschema directive %q", ErrSchemaDerivation, key)
 	}
@@ -631,7 +631,7 @@ func applySchemaDirective(schema map[string]any, key, val string, hasValue bool)
 // requireType rejects a directive whose keyword cannot be enforced against the
 // field's derived type, so a constraint is never silently dropped by Validate.
 func requireType(schema map[string]any, directive string, want ...string) error {
-	typ, _ := stringField(schema, PropType)
+	typ, _ := stringField(schema, propType)
 	for _, w := range want {
 		if typ == w {
 			return nil
@@ -659,8 +659,8 @@ func setBound(schema map[string]any, key, directive, val string) error {
 
 // narrowBound intersects a tagged bound with any pre-existing native bound so a
 // tag only ever tightens the range. It returns tagged when there is no native
-// bound. key selects the direction: PropMinimum keeps the larger value, any other
-// (PropMaximum) keeps the smaller.
+// bound. key selects the direction: propMinimum keeps the larger value, any other
+// (propMaximum) keeps the smaller.
 func narrowBound(native any, tagged json.Number, key string) json.Number {
 	nativeNum, ok := native.(json.Number)
 	if !ok {
@@ -672,7 +672,7 @@ func narrowBound(native any, tagged json.Number, key string) json.Number {
 		return tagged
 	}
 	cmp := taggedRat.Cmp(nativeRat)
-	if key == PropMinimum {
+	if key == propMinimum {
 		if cmp < 0 {
 			return nativeNum
 		}
@@ -739,15 +739,15 @@ func parseEnum(val string) []any {
 // member that cannot be converted is an error rather than a silently
 // unmatchable constraint.
 func coerceEnumTypes(schema map[string]any) error {
-	members, ok := schema[PropEnum].([]any)
+	members, ok := schema[propEnum].([]any)
 	if !ok {
 		return nil
 	}
-	typ, _ := stringField(schema, PropType)
+	typ, _ := stringField(schema, propType)
 	switch typ {
-	case TypeString:
+	case typeString:
 		return nil
-	case TypeInteger, TypeNumber:
+	case typeInteger, typeNumber:
 		for i, m := range members {
 			s, ok := m.(string)
 			if !ok {
@@ -757,7 +757,7 @@ func coerceEnumTypes(schema map[string]any) error {
 			if err != nil {
 				return fmt.Errorf("%w: enum member %q is not a number", ErrSchemaDerivation, s)
 			}
-			if typ == TypeInteger {
+			if typ == typeInteger {
 				r, ok := new(big.Rat).SetString(s)
 				if !ok || !r.IsInt() {
 					return fmt.Errorf("%w: enum member %q is not an integer", ErrSchemaDerivation, s)
@@ -766,7 +766,7 @@ func coerceEnumTypes(schema map[string]any) error {
 			members[i] = n
 		}
 		return nil
-	case TypeBoolean:
+	case typeBoolean:
 		for i, m := range members {
 			s, ok := m.(string)
 			if !ok {

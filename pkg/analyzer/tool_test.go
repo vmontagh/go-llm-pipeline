@@ -211,7 +211,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 	fail := toolCall("c1", "fail", `{}`)
 	nested := toolCall("c1", "nested", `{}`)
 	stop := toolCall("c1", "stop", `{}`)
-	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: ErrRateLimitExceeded}
+	rateLimited := provider.CallResult{Outcome: provider.OutcomeProviderError, Err: provider.ErrRateLimitExceeded}
 	// A reply whose provider keeps its parts in order, with signatures.
 	signedParts := []provider.Part{{Text: "a", Signature: "s1"}, {ToolCall: &add, Signature: "s2"}, {Signature: "s3"}, {Text: "b"}, {ToolCall: &add2}}
 	signedReply := callsReply("ab", add, add2)
@@ -381,10 +381,7 @@ func TestTemplate_AnalyzeWithTools(t *testing.T) {
 			var ran []string
 			tp := newToolProvider(tt.replies)
 			// Guarded, so the loop must look past the Guard's own CallTools.
-			tmpl, err := NewTemplate[string, parsedResult](wrapInGuards(t, tp, 1), parseUnlessUnparsable, WithTemplateBackOff(&backoff.ZeroBackOff{}))
-			if err != nil {
-				t.Fatalf("NewTemplate() error = %v", err)
-			}
+			tmpl := buildTemplate(t, NewBuilder(wrapInGuards(t, tp, 1), parseUnlessUnparsable).WithBackOff(&backoff.ZeroBackOff{}))
 			loop := ToolLoop{Tools: testTools(t, &ran, cancel), MaxSteps: tt.maxSteps, ReportInvalidCalls: tt.report}
 
 			got, err := tmpl.AnalyzeWithTools(ctx, []provider.Message{user}, loop, "job", nil)

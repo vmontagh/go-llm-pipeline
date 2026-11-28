@@ -11,23 +11,32 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/policy"
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
 	"github.com/vmontagh/go-llm-pipeline/pkg/trace"
 )
 
 const llmStartedEventType = "LLM_STARTED"
 
+// ErrUnknownCallOutcome is returned when a provider reports a CallOutcome the
+// Template does not handle.
 var ErrUnknownCallOutcome = errors.New("analyzer: provider returned unknown CallOutcome")
-var ErrNilParser = errors.New("analyzer: NewTemplate called with nil parser")
-var ErrNilProvider = errors.New("analyzer: NewTemplate called with nil provider")
 
+// ErrNilParser is returned by Build when the Builder has no parser.
+var ErrNilParser = errors.New("analyzer: nil parser")
+
+// ErrNilProvider is returned by Build when the Builder has no provider.
+var ErrNilProvider = errors.New("analyzer: nil provider")
+
+// Template runs prompts against a Provider with tiered retries and parses each
+// reply into R. Build one with NewBuilder or NewTextBuilder.
 type Template[T any, R any] struct {
 	provider provider.Provider[T]
 	parser   func(string) (R, error)
 
 	logger          *slog.Logger
 	tracer          Tracer
-	policy          RetryPolicy
+	retryPolicy     policy.RetryPolicy
 	maxElapsedTime  time.Duration
 	maxParseRetries int
 	backOff         backoff.BackOff
@@ -39,7 +48,7 @@ type Template[T any, R any] struct {
 type templateConfig struct {
 	logger          *slog.Logger
 	tracer          Tracer
-	policy          RetryPolicy
+	retryPolicy     policy.RetryPolicy
 	maxElapsedTime  time.Duration
 	maxParseRetries int
 	backOff         backoff.BackOff
@@ -50,88 +59,30 @@ type templateConfig struct {
 
 const defaultShortCooldownRetryThreshold = 5 * time.Second
 
-type TemplateConfigurator interface {
-	applyTemplate(*templateConfig)
+func defaultTemplateConfig() templateConfig {
+	return templateConfig{
+		logger:        slog.New(slog.DiscardHandler),
+		tracer:        trace.NewNoOpTracer(),
+		retryPolicy:   policy.DefaultRetryPolicy(),
+		shortCooldown: defaultShortCooldownRetryThreshold,
+		scrubFn:       func(s string) string { return s },
+		maxAssetBytes: DefaultMaxAssetBytes,
+	}
 }
 
-type templateConfiguratorFunc func(*templateConfig)
-
-func (f templateConfiguratorFunc) applyTemplate(c *templateConfig) { f(c) }
-
-// WithTemplateLogger sets the *slog.Logger used for debug/warn messages.
-func WithTemplateLogger(l *slog.Logger) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.logger = l })
-}
-
-func WithTemplateTracer(t Tracer) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.tracer = t })
-}
-
-func WithTemplateRetryPolicy(p RetryPolicy) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.policy = p })
-}
-
-func WithTemplateMaxElapsedTime(d time.Duration) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.maxElapsedTime = d })
-}
-
-func WithTemplateMaxParseRetries(r int) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.maxParseRetries = r })
-}
-
-func WithTemplateBackOff(b backoff.BackOff) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.backOff = b })
-}
-
-func WithTemplateShortCooldownRetryThreshold(d time.Duration) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.shortCooldown = d })
-}
-
-// WithTemplateScrubFunc sets a function applied to prompt and response text before they are
-// emitted as debug log messages. Use it to redact PII or secrets (e.g. via pkg/scrub.Scrubber.Scrub)
-// while still retaining full detail for local debugging. The scrub function is never applied to
-// the values passed to the provider or parser.
-func WithTemplateScrubFunc(fn func(string) string) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) { c.scrubFn = fn })
-}
-
-// WithTemplateMaxAssetBytes bounds how many bytes AnalyzeAsset reads from an
-// Asset payload. A value of zero disables the bound; a negative value is
-// ignored. Defaults to DefaultMaxAssetBytes.
-func WithTemplateMaxAssetBytes(n int64) TemplateConfigurator {
-	return templateConfiguratorFunc(func(c *templateConfig) {
-		if n >= 0 {
-			c.maxAssetBytes = n
-		}
-	})
-}
-
-func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, error), opts ...TemplateConfigurator) (*Template[T, R], error) {
+func newTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, error), cfg *templateConfig) (*Template[T, R], error) {
 	if p == nil {
 		return nil, ErrNilProvider
 	}
 	if parser == nil {
 		return nil, ErrNilParser
 	}
-	cfg := templateConfig{
-		logger:        slog.New(slog.DiscardHandler),
-		tracer:        trace.NewNoOpTracer(),
-		policy:        DefaultRetryPolicy(),
-		shortCooldown: defaultShortCooldownRetryThreshold,
-		scrubFn:       func(s string) string { return s },
-		maxAssetBytes: DefaultMaxAssetBytes,
-	}
-	for _, o := range opts {
-		if o != nil {
-			o.applyTemplate(&cfg)
-		}
-	}
 	return &Template[T, R]{
 		provider:        p,
 		parser:          parser,
 		logger:          cfg.logger,
 		tracer:          cfg.tracer,
-		policy:          cfg.policy,
+		retryPolicy:     cfg.retryPolicy,
 		maxElapsedTime:  cfg.maxElapsedTime,
 		maxParseRetries: cfg.maxParseRetries,
 		backOff:         cfg.backOff,
@@ -141,10 +92,16 @@ func NewTemplate[T any, R any](p provider.Provider[T], parser func(string) (R, e
 	}, nil
 }
 
+// Name returns the provider name.
 func (t *Template[T, R]) Name() string { return t.provider.Name() }
 
+// Provider returns the provider, wrapped in a provider.Guard when the Builder
+// used WithGuard.
 func (t *Template[T, R]) Provider() provider.Provider[T] { return t.provider }
 
+// Analyze sends prompt and optional imageData to the provider, retrying by
+// error tier, and parses the reply. publish, if not nil, receives progress
+// events tagged with jobID.
 func (t *Template[T, R]) Analyze(
 	ctx context.Context,
 	prompt string,
@@ -266,7 +223,7 @@ func retry[T, R, V any](ctx context.Context, t *Template[T, R], p *callOnceParam
 
 	retryStart := time.Now()
 	attempt := 0
-	return ExecuteWithRetries[V](ctx, &RetryConfig{
+	return executeWithRetries[V](ctx, &retryConfig{
 		ModelName:       t.provider.Model(),
 		JobID:           p.jobID,
 		Publish:         p.publish,
@@ -412,7 +369,7 @@ func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams[T]) (st
 			lease.Release()
 			return "", backoff.Permanent(fmt.Errorf("request canceled: %w", result.Err))
 		}
-		tier := ErrorTier(t.provider.ClassifyError(provider.ClassifyInput{
+		tier := policy.ErrorTier(t.provider.ClassifyError(provider.ClassifyInput{
 			Err:        result.Err,
 			StatusCode: result.StatusCode,
 			Body:       result.Body,
@@ -423,7 +380,7 @@ func (t *Template[T, R]) callOnce(ctx context.Context, p *callOnceParams[T]) (st
 			Lease:      lease,
 			Tier:       tier,
 			Err:        enriched,
-			Policy:     t.policy,
+			Policy:     t.retryPolicy,
 			RetryAfter: result.RetryAfter,
 			RC:         rc,
 			Info: providerErrorInfo{
