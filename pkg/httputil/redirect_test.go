@@ -108,6 +108,14 @@ func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 				via[0].URL.Host = host
 			},
 		},
+		{
+			name: "callback rewrites only the first request URL before a cross-origin hop",
+			rewrite: func(_ *http.Request, via []*http.Request, host string) {
+				if len(via) == 1 {
+					via[0].URL.Host = host
+				}
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,6 +128,10 @@ func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 				t.Fatalf("url.Parse(%q) error = %v", other.URL, err)
 			}
 			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/next" {
+					http.Redirect(rw, r, other.URL, http.StatusTemporaryRedirect)
+					return
+				}
 				http.Redirect(rw, r, "/next", http.StatusTemporaryRedirect)
 			}))
 			t.Cleanup(srv.Close)

@@ -59,6 +59,10 @@ func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*
 		if err := next(req, via); err != nil {
 			return err
 		}
+		// via[0] must stay intact too: later hops compare against it.
+		if err := checkOrigin(want, via[0].URL); err != nil {
+			return err
+		}
 		return checkOrigin(want, req.URL)
 	}
 }
