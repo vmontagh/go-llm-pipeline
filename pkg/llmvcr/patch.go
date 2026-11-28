@@ -1,4 +1,4 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"errors"
@@ -12,14 +12,14 @@ type Scenario struct {
 	Patches        []Patch
 }
 
-// Patch pairs a request Matcher with a response/interaction Action.
+// Patch pairs a request InteractionMatcher with a response/interaction Action.
 type Patch struct {
-	Match  Matcher
+	Match  InteractionMatcher
 	Action Action
 }
 
 // ErrInvalidPatch is returned when a patch has a nil Match or Action.
-var ErrInvalidPatch = errors.New("invalid patch")
+var ErrInvalidPatch = errors.New("llmvcr: invalid patch")
 
 // Execute loads the BaseCassette, applies the first matching Patch to each interaction, and saves the result to TargetCassette.
 func (s *Scenario) Execute() error {

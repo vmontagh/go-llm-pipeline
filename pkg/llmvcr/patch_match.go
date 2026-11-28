@@ -1,12 +1,12 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"net/url"
 	"strings"
 )
 
-// Matcher defines the contract to match a recorded request.
-type Matcher interface {
+// InteractionMatcher defines the contract to match a recorded request.
+type InteractionMatcher interface {
 	Match(req *InteractionReq) bool
 }
 
@@ -22,7 +22,7 @@ func (m urlContainsMatcher) Match(req *InteractionReq) bool {
 }
 
 // URLContains matches if the request URL contains the substring.
-func URLContains(substr string) Matcher {
+func URLContains(substr string) InteractionMatcher {
 	return urlContainsMatcher{substr: substr}
 }
 
@@ -38,7 +38,7 @@ func (m methodEqualsMatcher) Match(req *InteractionReq) bool {
 }
 
 // MethodEquals matches if the request method equals (case-insensitive) the method.
-func MethodEquals(method string) Matcher {
+func MethodEquals(method string) InteractionMatcher {
 	return methodEqualsMatcher{method: method}
 }
 
@@ -54,7 +54,7 @@ func (m bodyContainsMatcher) Match(req *InteractionReq) bool {
 }
 
 // BodyContains matches if the request body contains the substring.
-func BodyContains(substr string) Matcher {
+func BodyContains(substr string) InteractionMatcher {
 	return bodyContainsMatcher{substr: substr}
 }
 
@@ -88,7 +88,7 @@ func (m headerEqualsMatcher) Match(req *InteractionReq) bool {
 }
 
 // HeaderEquals matches if the request header contains the key-value pair.
-func HeaderEquals(key, value string) Matcher {
+func HeaderEquals(key, value string) InteractionMatcher {
 	return headerEqualsMatcher{key: key, value: value}
 }
 
@@ -113,12 +113,12 @@ func (m urlQueryParamMatcher) Match(req *InteractionReq) bool {
 }
 
 // URLQueryParam matches if the request URL contains a query param matching key=value.
-func URLQueryParam(key, value string) Matcher {
+func URLQueryParam(key, value string) InteractionMatcher {
 	return urlQueryParamMatcher{key: key, value: value}
 }
 
 type nthMatchMatcher struct {
-	inner Matcher
+	inner InteractionMatcher
 	n     int
 	count int
 }
@@ -135,15 +135,15 @@ func (m *nthMatchMatcher) Match(req *InteractionReq) bool {
 }
 
 // NthMatch matches only on the Nth occurrence (1-based index) of the inner matcher.
-// Note: The returned Matcher is stateful (it keeps track of matches across calls)
+// Note: The returned InteractionMatcher is stateful (it keeps track of matches across calls)
 // and is not safe for concurrent use. If a Scenario or Patch is reused, or executed
-// concurrently, a fresh Matcher must be constructed.
-func NthMatch(inner Matcher, n int) Matcher {
+// concurrently, a fresh InteractionMatcher must be constructed.
+func NthMatch(inner InteractionMatcher, n int) InteractionMatcher {
 	return &nthMatchMatcher{inner: inner, n: n}
 }
 
 type andMatcher struct {
-	matchers []Matcher
+	matchers []InteractionMatcher
 }
 
 func (m andMatcher) Match(req *InteractionReq) bool {
@@ -156,12 +156,12 @@ func (m andMatcher) Match(req *InteractionReq) bool {
 }
 
 // And matches if all matchers match.
-func And(matchers ...Matcher) Matcher {
+func And(matchers ...InteractionMatcher) InteractionMatcher {
 	return andMatcher{matchers: matchers}
 }
 
 type orMatcher struct {
-	matchers []Matcher
+	matchers []InteractionMatcher
 }
 
 func (m orMatcher) Match(req *InteractionReq) bool {
@@ -174,6 +174,6 @@ func (m orMatcher) Match(req *InteractionReq) bool {
 }
 
 // Or matches if any of the matchers match.
-func Or(matchers ...Matcher) Matcher {
+func Or(matchers ...InteractionMatcher) InteractionMatcher {
 	return orMatcher{matchers: matchers}
 }

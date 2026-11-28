@@ -1,4 +1,4 @@
-package llmtest_test
+package llmvcr_test
 
 import (
 	"os"
@@ -6,8 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/llmtest"
+	"github.com/vmontagh/go-llm-pipeline/pkg/llmvcr"
 )
 
 type result struct {
@@ -75,14 +74,14 @@ func TestGolden(t *testing.T) {
 			if tt.update {
 				update = "1"
 			}
-			t.Setenv(llmtest.UpdateEnv, update)
+			t.Setenv(llmvcr.GoldenUpdateEnv, update)
 
 			tb := &fakeTB{}
 			name := tt.file
 			if name == "" {
 				name = goldenName
 			}
-			llmtest.Golden(tb, name, tt.got)
+			llmvcr.Golden(tb, name, tt.got)
 
 			if diff := cmp.Diff(tt.want, tb.got); diff != "" {
 				t.Errorf("Golden(%q, %v) outcome mismatch (-want +got):\n%s", name, tt.got, diff)

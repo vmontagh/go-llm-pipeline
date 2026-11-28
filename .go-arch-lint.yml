@@ -9,6 +9,8 @@ components:
     in: internal/appendfile/**
   doclinks:
     in: internal/doclinks/**
+  llmfixtures:
+    in: internal/llmfixtures/**
   trace:
     in: pkg/trace/**
   httputil:
@@ -33,14 +35,8 @@ components:
     in: pkg/pipeline/**
   policy:
     in: pkg/policy/**
-  vcrpatch:
-    in: pkg/vcrpatch/**
-  llmtest:
-    in: pkg/llmtest/**
   eval:
     in: pkg/eval/**
-  scrub:
-    in: pkg/scrub/**
   llmvcr:
     in: pkg/llmvcr/**
   vcrtest:
@@ -180,36 +176,23 @@ deps:
       - logger
       - pipeline
 
-  vcrpatch:
-    anyProjectDeps: false
-    anyVendorDeps: true
-    mayDependOn:
-      - vcrpatch
-
-  llmtest:
-    anyProjectDeps: false
-    anyVendorDeps: true
-    mayDependOn:
-      - vcrpatch
-      - llmtest
-
   eval:
     anyProjectDeps: false
     anyVendorDeps: true
     mayDependOn:
       - eval
 
-  scrub:
+  llmfixtures:
     anyProjectDeps: false
-    anyVendorDeps: true
-    mayDependOn: []
+    anyVendorDeps: false
+    mayDependOn:
+      - llmvcr
 
   llmvcr:
     anyProjectDeps: false
     anyVendorDeps: true
     mayDependOn:
       - llmvcr
-      - scrub
       - provider
       - openai
       - gemini
@@ -220,7 +203,6 @@ deps:
     mayDependOn:
       - vcrtest
       - llmvcr
-      - scrub
 
   vectorstore:
     anyProjectDeps: false

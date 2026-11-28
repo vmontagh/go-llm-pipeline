@@ -12,7 +12,7 @@
 //
 // Record (developer-only): set VCR_MODE=record and point the adapter at a real
 // backend to record any missing cassette exactly once. Secrets are redacted (via
-// pkg/scrub through pkg/llmvcr) before anything is written to disk, so no
+// pkg/llmvcr) before anything is written to disk, so no
 // credentials land in the YAML. An existing cassette is left untouched; to
 // refresh one, delete its file and re-record.
 //

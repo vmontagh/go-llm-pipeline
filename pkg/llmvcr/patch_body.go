@@ -1,4 +1,4 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"errors"
@@ -8,7 +8,9 @@ import (
 
 const patchHeaderContentLength = "Content-Length"
 
-var ErrIndexOutOfBounds = errors.New("interaction index out of bounds")
+// ErrIndexOutOfBounds is returned when PatchInteractionBody gets an index
+// outside the cassette.
+var ErrIndexOutOfBounds = errors.New("llmvcr: interaction index out of bounds")
 
 // PatchInteractionBody replaces the body of a request or response in a cassette by index.
 func PatchInteractionBody(path string, index int, isRequest bool, newBody string) (string, error) {

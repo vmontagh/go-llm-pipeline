@@ -1,4 +1,4 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"bytes"
@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 // Action defines the contract to mutate an interaction response or inject interactions.
@@ -131,8 +130,6 @@ func InjectBefore(interactions ...Interaction) Action {
 
 type syncContentLengthAction struct{}
 
-const contentTypeJSON = "application/json"
-
 func (syncContentLengthAction) Apply(matched *Interaction, _ []Interaction) ([]Interaction, error) {
 	resp := &matched.Response
 	if hasJSONContentType(resp.Headers) {
@@ -162,18 +159,6 @@ func SyncContentLength() Action {
 // hasJSONContentType checks whether any Content-Type header contains
 // "application/json", using case-insensitive matching for both the
 // header key and value per HTTP spec.
-func hasJSONContentType(headers map[string][]string) bool {
-	for k, v := range headers {
-		if !strings.EqualFold(k, "Content-Type") {
-			continue
-		}
-		if len(v) > 0 && strings.Contains(strings.ToLower(v[0]), contentTypeJSON) {
-			return true
-		}
-	}
-	return false
-}
-
 type chainAction struct {
 	actions []Action
 }

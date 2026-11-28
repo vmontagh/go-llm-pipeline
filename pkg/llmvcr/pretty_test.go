@@ -1,4 +1,4 @@
-package pretty
+package llmvcr
 
 import (
 	"bytes"
@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/vmontagh/go-llm-pipeline/pkg/vcrpatch"
 )
 
 func TestFormatJSON(t *testing.T) {
@@ -60,31 +59,31 @@ func TestFormatInteraction(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name            string
-		interaction     vcrpatch.Interaction
+		interaction     Interaction
 		wantChanged     bool
-		wantInteraction vcrpatch.Interaction
+		wantInteraction Interaction
 	}{
 		{
 			name: "non-JSON content type is no-op",
-			interaction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			interaction: Interaction{
+				Request: InteractionReq{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
 				},
 			},
-			wantInteraction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			wantInteraction: Interaction{
+				Request: InteractionReq{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
@@ -93,8 +92,8 @@ func TestFormatInteraction(t *testing.T) {
 		},
 		{
 			name: "JSON request formatted, headers and length updated",
-			interaction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			interaction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json"},
 						"Content-Length": {"7"},
@@ -102,15 +101,15 @@ func TestFormatInteraction(t *testing.T) {
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
 				},
 			},
 			wantChanged: true,
-			wantInteraction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			wantInteraction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json"},
 						"Content-Length": {"12"},
@@ -120,7 +119,7 @@ func TestFormatInteraction(t *testing.T) {
 }`,
 					ContentLength: 12,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
@@ -129,13 +128,13 @@ func TestFormatInteraction(t *testing.T) {
 		},
 		{
 			name: "JSON response formatted, headers and length updated",
-			interaction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			interaction: Interaction{
+				Request: InteractionReq{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json; charset=utf-8"},
 						"Content-Length": {"7"},
@@ -145,13 +144,13 @@ func TestFormatInteraction(t *testing.T) {
 				},
 			},
 			wantChanged: true,
-			wantInteraction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			wantInteraction: Interaction{
+				Request: InteractionReq{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json; charset=utf-8"},
 						"Content-Length": {"12"},
@@ -165,8 +164,8 @@ func TestFormatInteraction(t *testing.T) {
 		},
 		{
 			name: "malformed JSON request passes through",
-			interaction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			interaction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json"},
 						"Content-Length": {"6"},
@@ -174,14 +173,14 @@ func TestFormatInteraction(t *testing.T) {
 					Body:          `{"a":1`,
 					ContentLength: 6,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
 				},
 			},
-			wantInteraction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			wantInteraction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"Content-Type":   {"application/json"},
 						"Content-Length": {"6"},
@@ -189,7 +188,7 @@ func TestFormatInteraction(t *testing.T) {
 					Body:          `{"a":1`,
 					ContentLength: 6,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
@@ -198,8 +197,8 @@ func TestFormatInteraction(t *testing.T) {
 		},
 		{
 			name: "case-insensitive Content-Type is detected as JSON",
-			interaction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			interaction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"content-type":   {"Application/JSON"},
 						"Content-Length": {"7"},
@@ -207,15 +206,15 @@ func TestFormatInteraction(t *testing.T) {
 					Body:          `{"a":1}`,
 					ContentLength: 7,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,
 				},
 			},
 			wantChanged: true,
-			wantInteraction: vcrpatch.Interaction{
-				Request: vcrpatch.InteractionReq{
+			wantInteraction: Interaction{
+				Request: InteractionReq{
 					Headers: map[string][]string{
 						"content-type":   {"Application/JSON"},
 						"Content-Length": {"12"},
@@ -225,7 +224,7 @@ func TestFormatInteraction(t *testing.T) {
 }`,
 					ContentLength: 12,
 				},
-				Response: vcrpatch.InteractionResp{
+				Response: InteractionResp{
 					Headers:       map[string][]string{"Content-Type": {"text/plain"}},
 					Body:          `{"b":2}`,
 					ContentLength: 7,

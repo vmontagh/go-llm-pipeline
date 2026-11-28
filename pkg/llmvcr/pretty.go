@@ -1,4 +1,4 @@
-package pretty
+package llmvcr
 
 import (
 	"bytes"
@@ -6,15 +6,10 @@ import (
 	"fmt"
 	"io"
 	"strconv"
-	"strings"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/vcrpatch"
 )
 
 const (
-	headerContentType   = "Content-Type"
 	headerContentLength = "Content-Length"
-	contentTypeJSON     = "application/json"
 	jsonIndentNone      = ""
 	jsonIndentPadding   = "  "
 	msgFormattedJSON    = "Formatted JSON in %s\n"
@@ -34,7 +29,7 @@ func FormatJSON(raw string) string {
 }
 
 // FormatInteraction pretty-prints request/response JSON bodies in an interaction.
-func FormatInteraction(i *vcrpatch.Interaction) bool {
+func FormatInteraction(i *Interaction) bool {
 	if i == nil {
 		return false
 	}
@@ -43,7 +38,7 @@ func FormatInteraction(i *vcrpatch.Interaction) bool {
 	return requestChanged || responseChanged
 }
 
-func formatRequest(i *vcrpatch.Interaction) bool {
+func formatRequest(i *Interaction) bool {
 	prettyReq, updated := formatBody(i.Request.Body, i.Request.Headers, i.Request.ContentLength)
 	if !updated {
 		return false
@@ -53,7 +48,7 @@ func formatRequest(i *vcrpatch.Interaction) bool {
 	return true
 }
 
-func formatResponse(i *vcrpatch.Interaction) bool {
+func formatResponse(i *Interaction) bool {
 	prettyResp, updated := formatBody(i.Response.Body, i.Response.Headers, i.Response.ContentLength)
 	if !updated {
 		return false
@@ -64,7 +59,7 @@ func formatResponse(i *vcrpatch.Interaction) bool {
 }
 
 func formatBody(body string, headers map[string][]string, contentLength int) (string, bool) {
-	if !isJSONContent(headers) {
+	if !hasJSONContentType(headers) {
 		return body, false
 	}
 	prettyBody := FormatJSON(body)
@@ -77,21 +72,9 @@ func formatBody(body string, headers map[string][]string, contentLength int) (st
 	return prettyBody, true
 }
 
-func isJSONContent(headers map[string][]string) bool {
-	for k, v := range headers {
-		if !strings.EqualFold(k, headerContentType) {
-			continue
-		}
-		if len(v) > 0 && strings.Contains(strings.ToLower(v[0]), contentTypeJSON) {
-			return true
-		}
-	}
-	return false
-}
-
 // FormatCassette reads a cassette file, pretty-prints its JSON interactions, and saves it.
 func FormatCassette(path string) (bool, error) {
-	c, err := vcrpatch.LoadCassette(path)
+	c, err := LoadCassette(path)
 	if err != nil {
 		return false, fmt.Errorf("loading %s: %w", path, err)
 	}
@@ -106,7 +89,7 @@ func FormatCassette(path string) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	if err := vcrpatch.SaveCassette(path, c); err != nil {
+	if err := SaveCassette(path, c); err != nil {
 		return false, fmt.Errorf("saving %s: %w", path, err)
 	}
 	return true, nil

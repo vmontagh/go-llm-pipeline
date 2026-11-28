@@ -1,4 +1,4 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"errors"
@@ -64,7 +64,7 @@ func TestMatchers(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		matcher Matcher
+		matcher InteractionMatcher
 		want    bool
 	}{
 		{"URLContains success", URLContains("/v1/"), true},
@@ -98,7 +98,7 @@ func TestMatchers(t *testing.T) {
 		t.Parallel()
 		tests := []struct {
 			name    string
-			matcher Matcher
+			matcher InteractionMatcher
 		}{
 			{"URLContains", URLContains("/v1/")},
 			{"MethodEquals", MethodEquals("post")},
@@ -125,7 +125,7 @@ func TestNthMatch(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		matcher Matcher
+		matcher InteractionMatcher
 		reqs    []*InteractionReq
 		want    []bool
 	}{
@@ -295,7 +295,7 @@ func TestAndOrNilMatcher(t *testing.T) {
 	req := &InteractionReq{Method: "GET", URL: "http://example.com"}
 	tests := []struct {
 		name    string
-		matcher Matcher
+		matcher InteractionMatcher
 		want    bool
 	}{
 		{"And with nil element", And(MethodEquals("GET"), nil), false},
