@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -149,6 +150,8 @@ func TestTransport_Call(t *testing.T) {
 		wantCode int
 		wantText string
 		wantErr  error
+		// wantRetryAfter is checked on every case.
+		wantRetryAfter time.Duration
 	}
 
 	assertResult := func(t *testing.T, tc testCase, got provpkg.CallResult) {
@@ -169,6 +172,9 @@ func TestTransport_Call(t *testing.T) {
 		if tc.wantErr != nil && !errors.Is(got.Err, tc.wantErr) {
 			t.Fatalf("error = %v, want errors.Is(_, %v)", got.Err, tc.wantErr)
 		}
+		if diff := cmp.Diff(tc.wantRetryAfter, got.RetryAfter); diff != "" {
+			t.Errorf("RetryAfter mismatch (-want +got):\n%s", diff)
+		}
 	}
 
 	tests := []testCase{
@@ -180,12 +186,15 @@ func TestTransport_Call(t *testing.T) {
 			wantOut: provpkg.OutcomeProviderError,
 		},
 		{
-			name: "body read error keeps status code",
+			name: "body read error keeps status code and Retry-After",
 			client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-				return &http.Response{StatusCode: http.StatusInternalServerError, Body: errReadCloser{}}, nil
+				h := make(http.Header)
+				h.Set(httputil.RetryAfterHeader, "7")
+				return &http.Response{StatusCode: http.StatusServiceUnavailable, Body: errReadCloser{}, Header: h}, nil
 			})},
-			wantOut:  provpkg.OutcomeProviderError,
-			wantCode: http.StatusInternalServerError,
+			wantOut:        provpkg.OutcomeProviderError,
+			wantCode:       http.StatusServiceUnavailable,
+			wantRetryAfter: 7 * time.Second,
 		},
 		{
 			name: "successful response returns text",
@@ -205,16 +214,17 @@ func TestTransport_Call(t *testing.T) {
 			client: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				body := `{"error":{"message":"rate","type":"server_error","code":"rate_limit_exceeded"}}`
 				h := make(http.Header)
-				h.Set("Retry-After", "10")
+				h.Set(httputil.RetryAfterHeader, "10")
 				return &http.Response{
 					StatusCode: http.StatusTooManyRequests,
 					Body:       io.NopCloser(strings.NewReader(body)),
 					Header:     h,
 				}, nil
 			})},
-			wantOut:  provpkg.OutcomeProviderError,
-			wantCode: http.StatusTooManyRequests,
-			wantErr:  provpkg.ErrUnexpectedStatus,
+			wantOut:        provpkg.OutcomeProviderError,
+			wantCode:       http.StatusTooManyRequests,
+			wantErr:        provpkg.ErrUnexpectedStatus,
+			wantRetryAfter: 10 * time.Second,
 		},
 		{
 			name: "non-200 non-retryable is terminal",

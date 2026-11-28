@@ -319,7 +319,7 @@ func (t *transport) CallTools(ctx context.Context, lease *provpkg.Lease[string],
 
 	bodyBytes, err := io.ReadAll(body)
 	if err != nil {
-		return readFailure(http.StatusOK, err)
+		return readFailure(http.StatusOK, nil, err)
 	}
 
 	var response ChatGPTResponse
@@ -484,7 +484,7 @@ func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req 
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, readFailure(resp.StatusCode, err)
+		return nil, readFailure(resp.StatusCode, resp.Header, err)
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
@@ -493,7 +493,7 @@ func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req 
 			Err:        fmt.Errorf("%w: HTTP %d", provpkg.ErrUnexpectedStatus, resp.StatusCode),
 			StatusCode: resp.StatusCode,
 			Body:       bodyBytes,
-			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			RetryAfter: httputil.ParseRetryAfter(resp.Header.Get(httputil.RetryAfterHeader)),
 		}
 	}
 
@@ -503,12 +503,14 @@ func (t *transport) send(ctx context.Context, lease *provpkg.Lease[string], req 
 	}
 }
 
-// readFailure is the result of a reply whose body could not be read.
-func readFailure(status int, err error) provpkg.CallResult {
+// readFailure is the result of a reply whose body could not be read. It
+// still honors the server's cooldown on a 429 or 503.
+func readFailure(status int, header http.Header, err error) provpkg.CallResult {
 	return provpkg.CallResult{
 		Outcome:    provpkg.OutcomeProviderError,
 		Err:        fmt.Errorf("reading response: %w", err),
 		StatusCode: status,
+		RetryAfter: httputil.ParseRetryAfter(header.Get(httputil.RetryAfterHeader)),
 	}
 }
 
@@ -669,13 +671,6 @@ func NewProvider(apiKeys []string, opts ...ProviderOption) provpkg.Provider[stri
 	if cfg.tracer == nil {
 		cfg.tracer = trace.NewNoOpTracer()
 	}
-	client := cfg.client
-	if client == nil {
-		client = &http.Client{}
-	}
-	if cfg.httpTimeout > 0 {
-		client.Timeout = cfg.httpTimeout
-	}
 	return &transport{
 		apiKeys:            provpkg.NewKeyPool(apiKeys),
 		model:              cfg.model,
@@ -683,7 +678,7 @@ func NewProvider(apiKeys []string, opts ...ProviderOption) provpkg.Provider[stri
 		organization:       cfg.organization,
 		responseSchema:     cfg.responseSchema,
 		responseSchemaName: cfg.responseSchemaName,
-		client:             client,
+		client:             httputil.SameOriginClient(cfg.client, cfg.httpTimeout),
 		logger:             cfg.logger,
 		tracer:             cfg.tracer,
 	}

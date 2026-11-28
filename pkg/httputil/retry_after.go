@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// RetryAfterHeader is the name of the HTTP header that carries a server's
+// suggested retry delay; see ParseRetryAfter.
+const RetryAfterHeader = "Retry-After"
+
 // ParseRetryAfter interprets the value of an HTTP `Retry-After` header
 // per RFC 7231 §7.1.3. The header may be either:
 //

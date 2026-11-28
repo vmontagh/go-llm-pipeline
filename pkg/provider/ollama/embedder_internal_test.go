@@ -15,6 +15,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/httputil"
 	provpkg "github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -242,6 +243,8 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 		status     int
 		body       string
 		retryAfter string
+		// readFails makes reading the body fail.
+		readFails bool
 	}
 	tests := []struct {
 		name       string
@@ -290,6 +293,19 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 			wantVec:    []float64{0.5},
 		},
 		{
+			name: "retry-after survives a failed body read",
+			opts: []ProviderOption{
+				WithMaxRetries(1),
+				WithRetryBackoff(50*time.Millisecond, 0),
+			},
+			responses: []stubResp{
+				{status: http.StatusServiceUnavailable, retryAfter: "2", readFails: true},
+				{status: http.StatusOK, body: okBody},
+			},
+			wantDelays: []time.Duration{2 * time.Second},
+			wantVec:    []float64{0.5},
+		},
+		{
 			name:      "success on first attempt never sleeps",
 			opts:      []ProviderOption{WithMaxRetries(2)},
 			responses: []stubResp{{status: http.StatusOK, body: okBody}},
@@ -305,7 +321,10 @@ func TestEmbedder_RetryTiming(t *testing.T) {
 				attempt++
 				resp := jsonResponse(r.status, r.body)
 				if r.retryAfter != "" {
-					resp.Header.Set("Retry-After", r.retryAfter)
+					resp.Header.Set(httputil.RetryAfterHeader, r.retryAfter)
+				}
+				if r.readFails {
+					resp.Body = errReadCloser{}
 				}
 				return resp, nil
 			})
