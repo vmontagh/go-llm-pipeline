@@ -1,4 +1,4 @@
-package llmtest
+package llmvcr
 
 import (
 	"encoding/json"
@@ -11,9 +11,9 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
-// UpdateEnv names the environment variable that makes Golden rewrite golden
+// GoldenUpdateEnv names the environment variable that makes Golden rewrite golden
 // files instead of comparing against them. Set it to any non-empty value.
-const UpdateEnv = "LLMTEST_UPDATE"
+const GoldenUpdateEnv = "LLMVCR_UPDATE"
 
 const (
 	goldenDir  = "testdata"
@@ -25,7 +25,7 @@ const (
 
 // Golden compares got, encoded as indented JSON, with testdata/<name>.golden.
 // JSON encoding sorts map keys, so the output is stable across runs. With
-// UpdateEnv set, Golden writes the file instead.
+// GoldenUpdateEnv set, Golden writes the file instead.
 func Golden(t testing.TB, name string, got any) {
 	t.Helper()
 	data, err := json.MarshalIndent(got, "", jsonIndent)
@@ -36,7 +36,7 @@ func Golden(t testing.TB, name string, got any) {
 	data = append(data, '\n')
 	file := name + goldenExt
 
-	if os.Getenv(UpdateEnv) != "" {
+	if os.Getenv(GoldenUpdateEnv) != "" {
 		if err := writeGolden(file, data); err != nil {
 			t.Fatalf("Golden(%q): %v", name, err)
 		}
@@ -45,7 +45,7 @@ func Golden(t testing.TB, name string, got any) {
 
 	want, err := readGolden(file)
 	if err != nil {
-		t.Fatalf("Golden(%q): %v (set %s=1 to create it)", name, err, UpdateEnv)
+		t.Fatalf("Golden(%q): %v (set %s=1 to create it)", name, err, GoldenUpdateEnv)
 		return
 	}
 	if diff := cmp.Diff(want, string(data)); diff != "" {

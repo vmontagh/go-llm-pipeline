@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/vmontagh/go-llm-pipeline/pkg/llmvcr"
-	"github.com/vmontagh/go-llm-pipeline/pkg/scrub"
 )
 
 const (
@@ -388,8 +387,8 @@ func TestWithAdditionalScrubRules(t *testing.T) {
 
 	// Two separate calls must both take effect (they accumulate rather than the
 	// later call replacing the earlier one).
-	ruleA := scrub.MustRegexpRule(`topsecret-\w+`, "REDACTED")
-	ruleB := scrub.MustRegexpRule(`classified-\w+`, "REDACTED")
+	ruleA := llmvcr.MustRegexpRule(`topsecret-\w+`, "REDACTED")
+	ruleB := llmvcr.MustRegexpRule(`classified-\w+`, "REDACTED")
 	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce,
 		llmvcr.WithAdditionalScrubRules(ruleA),
 		llmvcr.WithAdditionalScrubRules(ruleB),

@@ -1,4 +1,4 @@
-package vcrpatch
+package llmvcr
 
 import (
 	"fmt"

@@ -1,4 +1,4 @@
-package scrub
+package llmvcr
 
 import (
 	"testing"

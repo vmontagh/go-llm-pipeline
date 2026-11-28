@@ -8,26 +8,24 @@ import (
 	"strings"
 
 	"gopkg.in/dnaeon/go-vcr.v3/cassette"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/scrub"
 )
 
 // defaultScrubRules returns the built-in redaction rules applied to cassette
 // bodies and remaining header values: bearer tokens, OpenAI secret keys, and
 // Google API keys.
-func defaultScrubRules() []scrub.Rule {
-	return []scrub.Rule{
-		scrub.MustRegexpRule(`(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*`, "${1}"+redactedValue),
-		scrub.MustRegexpRule(`sk-[A-Za-z0-9_\-]{20,}`, redactedValue),
-		scrub.MustRegexpRule(`AIza[0-9A-Za-z_\-]{35}`, redactedValue),
+func defaultScrubRules() []Rule {
+	return []Rule{
+		MustRegexpRule(`(?i)(bearer\s+)[A-Za-z0-9\-._~+/]+=*`, "${1}"+redactedValue),
+		MustRegexpRule(`sk-[A-Za-z0-9_\-]{20,}`, redactedValue),
+		MustRegexpRule(`AIza[0-9A-Za-z_\-]{35}`, redactedValue),
 	}
 }
 
 // DefaultScrubber returns a scrubber that redacts common LLM provider secrets
 // (bearer tokens, OpenAI sk- keys, Google AIza keys) from any text it is applied
-// to. Callers can extend it with additional scrub.Rules.
-func DefaultScrubber() *scrub.Scrubber {
-	return scrub.NewScrubber(defaultScrubRules()...)
+// to. Callers can extend it with additional Rules.
+func DefaultScrubber() *Scrubber {
+	return NewScrubber(defaultScrubRules()...)
 }
 
 // beforeSaveHook builds the go-vcr BeforeSave hook that redacts and formats an

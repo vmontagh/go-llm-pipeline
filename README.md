@@ -305,10 +305,7 @@ borderline conditions surface without blocking automation.
 | `pkg/provider/ollama` | Transport half of the analyzer Template Method for local Ollama, plus a local `Embedder` (`/api/embed`) that returns `[]float64` for `pkg/vectorstore`. |
 | `pkg/strategy` | Ensemble generation and judge-synthesis strategies (`Generator`/`Judge`). |
 | `pkg/policy` | Provider-agnostic retry/error taxonomy (tiers, `RetryPolicy`, error classification). |
-| `pkg/scrub` | Regexp-based text scrubbing to redact sensitive patterns and PII. |
-| `pkg/vcrpatch` | Patch and rewrite VCR cassettes (match requests, apply actions). |
-| `pkg/llmvcr` | Standalone VCR record/replay for provider `http.Client`s; auto-redacts secrets (via `pkg/scrub`) before writing cassettes; fail-fast on miss. |
-| `pkg/llmtest` | Mock provider fixtures and golden-file snapshots for deterministic tests. |
+| `pkg/llmvcr` | VCR record/replay for provider `http.Client`s with fail-fast on miss; regexp scrubbing that redacts secrets before cassettes are written; cassette patching; provider response builders and golden-file snapshots for tests. |
 | `pkg/eval` | Offline evaluation: YAML datasets, field-match and LLM-judge scoring, CI pass-rate gates. |
 | `pkg/observ` | Observability HTTP server (pprof) bound to a loopback address. |
 | `pkg/trace` | `runtime/trace`-based `Tracer` plus a no-op implementation. |
@@ -331,11 +328,11 @@ Deterministic, zero-cost CI is a first-class goal. The determinism toolkit is ce
   `llmvcr.ErrCassetteMiss` on a cassette miss instead of making a live call. It works with any client
   that accepts an `*http.Client`, including the OpenAI provider (`openai.WithHTTPClient`) and the
   Gemini `genai.Client` (`option.WithHTTPClient`). Sensitive headers, query parameters, and body
-  tokens (bearer tokens, `sk-` and `AIza` keys) are redacted via `pkg/scrub` before any cassette is
-  written.
-- `pkg/vcrpatch` patches and rewrites recorded cassettes for scenario testing.
-- `pkg/scrub` provides the regexp redaction rules reused by `pkg/llmvcr` (and usable for logs).
-- `pkg/llmtest` provides mock provider fixtures and the `Golden` snapshot helper for tests.
+  tokens (bearer tokens, `sk-` and `AIza` keys) are redacted before any cassette is written.
+- The same package patches and rewrites recorded cassettes for scenario testing (`Patch`,
+  `Scenario`, `ExecuteAll`), provides the regexp `Scrubber` used for redaction (also usable for
+  logs), provider response builders (`GeminiResponse`, `OpenAIInteraction`, ...), and the `Golden`
+  snapshot helper.
 
 ```go
 rec, err := llmvcr.New("testdata/openai_success", llmvcr.ModeReplayOnly)
@@ -352,7 +349,7 @@ provider := openai.NewProvider(apiKeys, openai.WithHTTPClient(rec.HTTPClient()))
 
 #### Locking results with golden files
 
-`llmtest.Golden` catches unexpected changes to an extraction result. It writes the result as
+`llmvcr.Golden` catches unexpected changes to an extraction result. It writes the result as
 indented JSON (map keys sorted) and compares it with `testdata/<name>.golden`, printing a
 `cmp.Diff` on mismatch. Replay a cassette so the result is the same on every run:
 
@@ -363,11 +360,11 @@ func TestExtract(t *testing.T) {
     if err != nil {
         t.Fatal(err)
     }
-    llmtest.Golden(t, "extract_cat", got)
+    llmvcr.Golden(t, "extract_cat", got)
 }
 ```
 
-Run `LLMTEST_UPDATE=1 go test ./...` to create or refresh the golden files, then review and
+Run `LLMVCR_UPDATE=1 go test ./...` to create or refresh the golden files, then review and
 commit them.
 
 #### Evaluating quality in CI
@@ -406,7 +403,7 @@ func TestQuality(t *testing.T) {
     if err := report.Check(0.9); err != nil {
         t.Error(err)
     }
-    llmtest.Golden(t, "quality_report", report) // optional: track per-example changes
+    llmvcr.Golden(t, "quality_report", report) // optional: track per-example changes
 }
 ```
 

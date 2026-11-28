@@ -2,8 +2,12 @@
 // standard Go http.Client instances used by LLM provider SDKs. It records HTTP
 // interactions to YAML cassettes and replays them offline for zero-cost,
 // deterministic CI, failing fast on a cassette miss. Sensitive headers, query
-// parameters, and body tokens are redacted (via pkg/scrub) before any cassette
+// parameters, and body tokens are redacted by a Scrubber before any cassette
 // is written to disk.
+//
+// The package also patches recorded cassettes for scenario tests (Patch,
+// Scenario, ExecuteAll), builds canned provider replies (GeminiResponse,
+// OpenAIInteraction, ...), and compares results with golden files (Golden).
 //
 // The zero dependency on any particular provider means the *http.Client returned
 // by Recorder.HTTPClient works with any client that accepts one, including the
@@ -20,8 +24,6 @@ import (
 
 	"gopkg.in/dnaeon/go-vcr.v3/cassette"
 	"gopkg.in/dnaeon/go-vcr.v3/recorder"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/scrub"
 )
 
 // ErrCassetteMiss indicates a live network call was attempted while replaying in
@@ -83,8 +85,8 @@ type MatcherFunc func(*http.Request, RecordedRequest) bool
 type config struct {
 	redactHeaders     []string
 	redactQueryParams []string
-	scrubber          *scrub.Scrubber
-	additionalRules   []scrub.Rule
+	scrubber          *Scrubber
+	additionalRules   []Rule
 	prettyJSON        bool
 	failFastOnMiss    bool
 	matcher           MatcherFunc
@@ -111,8 +113,8 @@ func WithRedactQueryParams(params ...string) Option {
 // over WithAdditionalScrubRules: when an explicit scrubber is provided, any
 // additional rules are ignored. To extend rather than replace the defaults,
 // use WithAdditionalScrubRules — the default scrubber's rules cannot be read
-// back out of a *scrub.Scrubber.
-func WithScrubber(s *scrub.Scrubber) Option {
+// back out of a *Scrubber.
+func WithScrubber(s *Scrubber) Option {
 	return func(c *config) {
 		if s != nil {
 			c.scrubber = s
@@ -123,7 +125,7 @@ func WithScrubber(s *scrub.Scrubber) Option {
 // WithAdditionalScrubRules appends rules to the default scrubber. Multiple calls
 // accumulate. It has no effect when WithScrubber provides an explicit scrubber,
 // which takes precedence.
-func WithAdditionalScrubRules(rules ...scrub.Rule) Option {
+func WithAdditionalScrubRules(rules ...Rule) Option {
 	return func(c *config) {
 		c.additionalRules = append(c.additionalRules, rules...)
 	}
@@ -240,7 +242,7 @@ func New(cassettePath string, mode Mode, opts ...Option) (*Recorder, error) {
 	// Resolve the scrubber once: an explicit WithScrubber takes precedence,
 	// otherwise build from the defaults plus any accumulated additional rules.
 	if cfg.scrubber == nil {
-		cfg.scrubber = scrub.NewScrubber(append(defaultScrubRules(), cfg.additionalRules...)...)
+		cfg.scrubber = NewScrubber(append(defaultScrubRules(), cfg.additionalRules...)...)
 	}
 
 	rec, err := recorder.NewWithOptions(&recorder.Options{

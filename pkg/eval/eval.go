@@ -135,7 +135,7 @@ type Summary struct {
 }
 
 // Report is the result of Run. Examples are sorted by name, so a report
-// compares cleanly across runs (for example with llmtest.Golden).
+// compares cleanly across runs (for example with llmvcr.Golden).
 type Report struct {
 	Examples   []ExampleResult    `json:"examples"`
 	PassRate   float64            `json:"pass_rate"`

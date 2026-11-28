@@ -1,8 +1,4 @@
-// Package scrub provides text scrubbing utilities for redacting sensitive patterns from strings.
-// A Scrubber holds an ordered list of regexp-based Rules and applies them in sequence, making it
-// suitable for removing PII from debug log messages, VCR cassette bodies, or any text before it
-// is persisted or emitted.
-package scrub
+package llmvcr
 
 import "regexp"
 
@@ -26,7 +22,7 @@ func RegexpRule(pattern, replacement string) (Rule, error) {
 func MustRegexpRule(pattern, replacement string) Rule {
 	r, err := RegexpRule(pattern, replacement)
 	if err != nil {
-		panic("scrub.MustRegexpRule: " + err.Error())
+		panic("MustRegexpRule: " + err.Error())
 	}
 	return r
 }

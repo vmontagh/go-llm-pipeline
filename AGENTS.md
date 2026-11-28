@@ -37,7 +37,7 @@ A new package needs a component in `.go-arch-lint.yml`.
 Tests replay recorded HTTP interactions and never call live APIs. Cassettes are
 re-recorded only with `make test-bdd-live` against a local Ollama; see
 [integ-test/README.md](integ-test/README.md). Recording redacts secrets through
-`pkg/scrub`, but review every cassette diff before committing it.
+`pkg/llmvcr`, but review every cassette diff before committing it.
 
 ### Commits and pull requests
 

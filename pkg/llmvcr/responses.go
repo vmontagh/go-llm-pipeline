@@ -1,11 +1,9 @@
-package llmtest
+package llmvcr
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-
-	"github.com/vmontagh/go-llm-pipeline/pkg/vcrpatch"
 )
 
 const (
@@ -16,22 +14,6 @@ const (
 	contentKey  = "content"
 	roleKey     = "role"
 )
-
-// ValidResultObj is a mock JSON string containing a valid tags response object.
-const ValidResultObj = `{"heading": "Cute Indoor Cat", "tags": ["animal", "cat", "indoor", "cute", "feline", "pet", "whiskers", "paws", "meow", "purr", "furry", "kitty", "kitten", "domestic", "mammal", "portrait", "eyes", "ears", "tail", "snout", "beautiful", "adorable", "looking", "fur"]}`
-
-// ValidJudgeResultObj is a mock JSON string containing a valid judge response object.
-const ValidJudgeResultObj = `{"approved": true, "selected_draft_index": 0, "feedback": "Looks good"}`
-
-// GeminiSuccess returns a mock JSON response for a successful Gemini generateContent call.
-func GeminiSuccess() string {
-	return GeminiResponse(ValidResultObj)
-}
-
-// GeminiJudgeSuccess returns a mock JSON response for a successful Gemini judge call.
-func GeminiJudgeSuccess() string {
-	return GeminiResponse(ValidJudgeResultObj)
-}
 
 // GeminiResponse wraps text in candidates[].content.parts[].text.
 func GeminiResponse(text string) string {
@@ -57,16 +39,6 @@ func GeminiResponse(text string) string {
 // GeminiQuotaExceeded returns a mock JSON response simulating a Gemini 429 error.
 func GeminiQuotaExceeded() string {
 	return `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
-}
-
-// OpenAISuccess returns a mock JSON response for a successful OpenAI completions call.
-func OpenAISuccess() string {
-	return OpenAIResponse(ValidResultObj)
-}
-
-// OpenAIJudgeSuccess returns a mock JSON response for a successful OpenAI judge call.
-func OpenAIJudgeSuccess() string {
-	return OpenAIResponse(ValidJudgeResultObj)
 }
 
 // OpenAIResponse wraps text in choices[].message.content.
@@ -99,16 +71,6 @@ func OpenAIQuotaExceeded() string {
 	return `{"error": {"message": "You exceeded your current quota.", "type": "insufficient_quota", "param": null, "code": "insufficient_quota"}}`
 }
 
-// OllamaSuccess returns a mock JSON response for a successful Ollama generate call.
-func OllamaSuccess() string {
-	return OllamaResponse(ValidResultObj)
-}
-
-// OllamaJudgeSuccess returns a mock JSON response for a successful Ollama judge call.
-func OllamaJudgeSuccess() string {
-	return OllamaResponse(ValidJudgeResultObj)
-}
-
 // OllamaResponse wraps text in response field.
 func OllamaResponse(text string) string {
 	resp := map[string]interface{}{
@@ -129,16 +91,11 @@ func OllamaQuotaExceeded() string {
 	return `{"error": "rate limit exceeded"}`
 }
 
-// OllamaMalformedJSON returns a mock JSON response simulating a parse failure.
-func OllamaMalformedJSON(text string) string {
-	return OllamaResponse(text)
-}
-
 // GeminiInteraction constructs a cassette interaction for a Gemini call.
-func GeminiInteraction(code int, body string) vcrpatch.Interaction {
+func GeminiInteraction(code int, body string) Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
-	return vcrpatch.Interaction{
-		Request: vcrpatch.InteractionReq{
+	return Interaction{
+		Request: InteractionReq{
 			Method:     methodPost,
 			Host:       "generativelanguage.googleapis.com",
 			URL:        "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
@@ -147,7 +104,7 @@ func GeminiInteraction(code int, body string) vcrpatch.Interaction {
 			ProtoMinor: 1,
 			Headers:    map[string][]string{},
 		},
-		Response: vcrpatch.InteractionResp{
+		Response: InteractionResp{
 			Body:       body,
 			Code:       code,
 			Status:     status,
@@ -161,10 +118,10 @@ func GeminiInteraction(code int, body string) vcrpatch.Interaction {
 }
 
 // OpenAIInteraction constructs a cassette interaction for an OpenAI call.
-func OpenAIInteraction(code int, body string) vcrpatch.Interaction {
+func OpenAIInteraction(code int, body string) Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
-	return vcrpatch.Interaction{
-		Request: vcrpatch.InteractionReq{
+	return Interaction{
+		Request: InteractionReq{
 			Method:     methodPost,
 			Host:       "api.openai.com",
 			URL:        "https://api.openai.com/v1/chat/completions",
@@ -173,7 +130,7 @@ func OpenAIInteraction(code int, body string) vcrpatch.Interaction {
 			ProtoMinor: 1,
 			Headers:    map[string][]string{},
 		},
-		Response: vcrpatch.InteractionResp{
+		Response: InteractionResp{
 			Body:       body,
 			Code:       code,
 			Status:     status,
@@ -187,10 +144,10 @@ func OpenAIInteraction(code int, body string) vcrpatch.Interaction {
 }
 
 // OllamaInteraction constructs a cassette interaction for an Ollama call.
-func OllamaInteraction(code int, body string) vcrpatch.Interaction {
+func OllamaInteraction(code int, body string) Interaction {
 	status := fmt.Sprintf("%d %s", code, http.StatusText(code))
-	return vcrpatch.Interaction{
-		Request: vcrpatch.InteractionReq{
+	return Interaction{
+		Request: InteractionReq{
 			Method:     methodPost,
 			Host:       "localhost:11434",
 			URL:        "http://localhost:11434/api/generate",
@@ -199,7 +156,7 @@ func OllamaInteraction(code int, body string) vcrpatch.Interaction {
 			ProtoMinor: 1,
 			Headers:    map[string][]string{},
 		},
-		Response: vcrpatch.InteractionResp{
+		Response: InteractionResp{
 			Body:       body,
 			Code:       code,
 			Status:     status,
