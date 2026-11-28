@@ -52,7 +52,10 @@ func (b *Builder[T, R]) WithRetryPolicy(p policy.RetryPolicy) *Builder[T, R] {
 	return b
 }
 
-// WithMaxElapsedTime sets the total backoff budget for one call. Zero keeps the default.
+// WithMaxElapsedTime sets how long the default exponential backoff keeps
+// retrying one call. Zero keeps the default. It is ignored when WithBackOff
+// sets a custom strategy, and it does not cancel a provider call in flight;
+// use a context deadline to bound the whole call.
 func (b *Builder[T, R]) WithMaxElapsedTime(d time.Duration) *Builder[T, R] {
 	if d != 0 {
 		b.cfg.maxElapsedTime = d
@@ -66,7 +69,8 @@ func (b *Builder[T, R]) WithMaxParseRetries(r int) *Builder[T, R] {
 	return b
 }
 
-// WithBackOff injects a custom BackOff strategy. A nil BackOff is ignored.
+// WithBackOff injects a custom BackOff strategy, which replaces the default
+// and its WithMaxElapsedTime budget. A nil BackOff is ignored.
 func (b *Builder[T, R]) WithBackOff(bo backoff.BackOff) *Builder[T, R] {
 	if bo != nil {
 		b.cfg.backOff = bo
