@@ -1,0 +1,56 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 222
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "qwen3",
+              "prompt": "Caption this photo of a beach as JSON.",
+              "images": null,
+              "stream": false,
+              "format": "json",
+              "options": {
+                "num_ctx": 8192,
+                "num_predict": 1024,
+                "temperature": 0.3
+              }
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/generate
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 186
+        uncompressed: false
+        body: |-
+            {
+              "model": "qwen3",
+              "response": "{\"heading\":\"Sandy Beach\",\"tags\":[\"beach\",\"sea\"]}",
+              "done": true,
+              "done_reason": "stop",
+              "prompt_eval_count": 24,
+              "eval_count": 16
+            }
+        headers:
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 2.292µs

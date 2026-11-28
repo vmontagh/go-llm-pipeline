@@ -10,6 +10,8 @@ import (
 	"sort"
 	"sync"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/vmontagh/go-llm-pipeline/pkg/pipeline"
 )
 
@@ -168,4 +170,96 @@ func ExampleCheckpointed() {
 	// analyzing c
 	// second run:
 	// analyzing b
+}
+
+// ExampleConsumeAll processes a slice with a pool of workers and waits for
+// them. Results are sorted because workers finish in any order.
+func ExampleConsumeAll() {
+	var (
+		mu      sync.Mutex
+		lengths []int
+	)
+	err := pipeline.ConsumeAll(context.Background(), []string{"cat", "horse", "ox"}, 2, func(_ context.Context, s string) {
+		mu.Lock()
+		defer mu.Unlock()
+		lengths = append(lengths, len(s))
+	})
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	sort.Ints(lengths)
+	fmt.Println(lengths)
+
+	// Output:
+	// [2 3 5]
+}
+
+// Example_localAndRemote runs local, CPU-bound work and remote API calls as
+// two stages, each with its own worker cap. The local stage (here, resizing
+// photos) is sized to the CPU cores. The remote stage is sized to the
+// provider's rate limit and uses an errgroup, so the first failed call stops
+// both stages and is returned.
+func Example_localAndRemote() {
+	const remoteWorkers = 4 // set from the provider's rate limit
+	photos := []string{"a.jpg", "b.jpg", "c.jpg"}
+
+	g, ctx := errgroup.WithContext(context.Background())
+	resized := make(chan string)
+	g.Go(func() error {
+		defer close(resized)
+		return pipeline.ConsumeAll(ctx, photos, runtime.NumCPU(), func(ctx context.Context, p string) {
+			select {
+			case resized <- "small-" + p:
+			case <-ctx.Done():
+			}
+		})
+	})
+
+	var (
+		mu       sync.Mutex
+		captions []string
+	)
+	g.Go(func() error {
+		calls, ctx := errgroup.WithContext(ctx)
+		calls.SetLimit(remoteWorkers)
+		for {
+			select {
+			case p, ok := <-resized:
+				if !ok {
+					return calls.Wait()
+				}
+				calls.Go(func() error {
+					c, err := describe(ctx, p)
+					if err != nil {
+						return fmt.Errorf("describing %s: %w", p, err)
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					captions = append(captions, c)
+					return nil
+				})
+			case <-ctx.Done():
+				return calls.Wait() // a call failed; returning cancels the local stage
+			}
+		}
+	})
+
+	if err := g.Wait(); err != nil {
+		fmt.Println(err)
+		return
+	}
+	sort.Strings(captions)
+	fmt.Println(captions)
+
+	// Output:
+	// [caption of small-a.jpg caption of small-b.jpg caption of small-c.jpg]
+}
+
+// describe stands in for a remote model call, such as Template.Analyze.
+func describe(ctx context.Context, photo string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("describing photo: %w", err)
+	}
+	return "caption of " + photo, nil
 }

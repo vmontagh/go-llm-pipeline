@@ -1,0 +1,213 @@
+---
+version: 2
+interactions:
+    - id: 0
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 940
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "qwen3",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Use the add tool to add 2 and 3. Answer as {\"sum\": n}."
+                }
+              ],
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "add",
+                    "description": "Adds two integers",
+                    "parameters": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "a": {
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        },
+                        "b": {
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "a",
+                        "b"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                }
+              ],
+              "stream": false,
+              "options": {
+                "num_ctx": 8192,
+                "num_predict": 1024,
+                "temperature": 0.3
+              }
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/chat
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 374
+        uncompressed: false
+        body: |-
+            {
+              "model": "qwen3",
+              "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_1",
+                    "function": {
+                      "name": "add",
+                      "arguments": {
+                        "a": 2,
+                        "b": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              "done": true,
+              "done_reason": "stop",
+              "prompt_eval_count": 180,
+              "eval_count": 20
+            }
+        headers:
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 2.584µs
+    - id: 1
+      request:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        content_length: 1338
+        transfer_encoding: []
+        trailer: {}
+        host: localhost:11434
+        remote_addr: ""
+        request_uri: ""
+        body: |-
+            {
+              "model": "qwen3",
+              "messages": [
+                {
+                  "role": "user",
+                  "content": "Use the add tool to add 2 and 3. Answer as {\"sum\": n}."
+                },
+                {
+                  "role": "assistant",
+                  "content": "",
+                  "tool_calls": [
+                    {
+                      "id": "call_1",
+                      "function": {
+                        "name": "add",
+                        "arguments": {
+                          "a": 2,
+                          "b": 3
+                        }
+                      }
+                    }
+                  ]
+                },
+                {
+                  "role": "tool",
+                  "content": "5",
+                  "tool_name": "add",
+                  "tool_call_id": "call_1"
+                }
+              ],
+              "tools": [
+                {
+                  "type": "function",
+                  "function": {
+                    "name": "add",
+                    "description": "Adds two integers",
+                    "parameters": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "a": {
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        },
+                        "b": {
+                          "maximum": 9223372036854775807,
+                          "minimum": -9223372036854775808,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "a",
+                        "b"
+                      ],
+                      "type": "object"
+                    }
+                  }
+                }
+              ],
+              "stream": false,
+              "options": {
+                "num_ctx": 8192,
+                "num_predict": 1024,
+                "temperature": 0.3
+              }
+            }
+        form: {}
+        headers:
+            Content-Type:
+                - application/json
+        url: http://localhost:11434/api/chat
+        method: POST
+      response:
+        proto: HTTP/1.1
+        proto_major: 1
+        proto_minor: 1
+        transfer_encoding: []
+        trailer: {}
+        content_length: 184
+        uncompressed: false
+        body: |-
+            {
+              "model": "qwen3",
+              "message": {
+                "role": "assistant",
+                "content": "{\"sum\":5}"
+              },
+              "done": true,
+              "done_reason": "stop",
+              "prompt_eval_count": 210,
+              "eval_count": 6
+            }
+        headers:
+            Content-Type:
+                - application/json
+        status: 200 OK
+        code: 200
+        duration: 9.25µs
