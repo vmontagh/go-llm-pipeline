@@ -326,13 +326,9 @@ a breaking change ships only in a new minor release and is listed in the release
 packages, including the provider implementations under `pkg/provider/`, are experimental and may
 change in any release.
 
-Two checks guard the stable API:
-
-- `make test` compares each stable package with its snapshot in `api/`. After an intended change,
-  run `make api` and commit the updated snapshot so reviewers see the diff. The snapshot is
-  syntactic, so it misses a type change inferred from an expression.
-- The API compatibility workflow runs `make api-diff`, which uses `apidiff` to fail a pull request
-  that breaks compatibility with `main`, including type changes the snapshot misses. Add the `breaking-change` label to accept an intended break.
+The API compatibility workflow runs `make api-diff`, which uses `apidiff` to list every change to a
+stable package since `main` in the job summary and fails the pull request on an incompatible one.
+Add the `breaking-change` label to accept an intended break.
 
 ### Determinism and testing
 
@@ -488,8 +484,7 @@ Common `make` targets:
 | --- | --- |
 | `make build` | Compile all packages. |
 | `make test` | Run the full test suite with the race detector. |
-| `make api` | Rewrite the API snapshots in `api/` for the stable packages. |
-| `make api-diff` | Fail on incompatible changes to a stable package since `API_BASE` (default `origin/main`). |
+| `make api-diff` | List API changes to the stable packages since `API_BASE` (default `origin/main`) and fail on incompatible ones unless `ALLOW_BREAKING=1`. |
 | `make test-unit-cover` | Run tests with a coverage profile. |
 | `make lint` | Run `golangci-lint`. |
 | `make lint-arch` | Run the architecture linter (`go-arch-lint`). |

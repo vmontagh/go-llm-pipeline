@@ -1,8 +1,9 @@
 name: API compatibility
 
-# Fails a pull request that breaks the API of a stable package (see README,
-# "API stability"). Add the breaking-change label to accept an intended break;
-# the label events re-run this check, and edited covers a changed base branch.
+# Lists the API changes a pull request makes to the stable packages (see
+# README, "API stability") and fails on incompatible ones. Add the
+# breaking-change label to accept an intended break; label events re-run this
+# check, and edited covers a changed base branch.
 on:
   pull_request:
     branches: [main]
@@ -14,7 +15,6 @@ permissions:
 jobs:
   apidiff:
     name: Check stable API compatibility
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'breaking-change') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,6 +28,16 @@ jobs:
           cache: false
 
       - name: Compare with base branch
+        shell: bash
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: make api-diff API_BASE="origin/$BASE_REF"
+          ALLOW_BREAKING: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') && '1' || '' }}
+        run: |
+          {
+            echo '## Stable API changes'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          make api-diff API_BASE="origin/$BASE_REF" ALLOW_BREAKING="$ALLOW_BREAKING" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
