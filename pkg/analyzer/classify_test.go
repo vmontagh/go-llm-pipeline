@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/policy"
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
@@ -51,14 +52,14 @@ func TestHandleProviderError_ReportsEffectiveCooldown(t *testing.T) {
 			}
 
 			var gotMsg string
-			policy := RetryPolicy{Tiers: map[ErrorTier]TierPolicy{
-				TierShortRateLimit: {Cooldown: baseCooldown, HonorRetryAfter: tt.honorRetryAfter},
+			rp := policy.RetryPolicy{Tiers: map[policy.ErrorTier]policy.TierPolicy{
+				policy.TierShortRateLimit: {Cooldown: baseCooldown, HonorRetryAfter: tt.honorRetryAfter},
 			}}
 			req := handleProviderErrorRequest[string]{
 				Lease:      lease,
-				Tier:       TierShortRateLimit,
+				Tier:       policy.TierShortRateLimit,
 				Err:        errClassifyTest,
-				Policy:     policy,
+				Policy:     rp,
 				RetryAfter: tt.retryAfter,
 				Info: providerErrorInfo{
 					Provider:        "mock",

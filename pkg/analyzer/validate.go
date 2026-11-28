@@ -255,18 +255,18 @@ var keywordRules []keywordRule
 
 func init() {
 	keywordRules = []keywordRule{
-		{PropRequired, kindObject, applyRequired},
-		{PropAdditional, kindObject, applyAdditional},
-		{PropProperties, kindObject, applyProperties},
-		{PropMinItems, kindArray, applyMinItems},
-		{PropMaxItems, kindArray, applyMaxItems},
-		{PropItems, kindArray, applyItems},
-		{PropMinLength, kindString, applyMinLength},
-		{PropMaxLength, kindString, applyMaxLength},
-		{PropPattern, kindString, applyPattern},
-		{PropStringEncodedKind, kindString, applyStringEncoded},
-		{PropMinimum, kindNumber, applyMinimum},
-		{PropMaximum, kindNumber, applyMaximum},
+		{propRequired, kindObject, applyRequired},
+		{propAdditional, kindObject, applyAdditional},
+		{propProperties, kindObject, applyProperties},
+		{propMinItems, kindArray, applyMinItems},
+		{propMaxItems, kindArray, applyMaxItems},
+		{propItems, kindArray, applyItems},
+		{propMinLength, kindString, applyMinLength},
+		{propMaxLength, kindString, applyMaxLength},
+		{propPattern, kindString, applyPattern},
+		{propStringEncodedKind, kindString, applyStringEncoded},
+		{propMinimum, kindNumber, applyMinimum},
+		{propMaximum, kindNumber, applyMaximum},
 	}
 }
 
@@ -279,7 +279,7 @@ func init() {
 // new rule is recognized automatically with no second source to keep in sync.
 func keywordRecognized(key string) bool {
 	switch key {
-	case PropType, PropEnum, PropDescription:
+	case propType, propEnum, propDescription:
 		return true
 	}
 	for _, rule := range keywordRules {
@@ -336,10 +336,10 @@ func checkSchema(schema map[string]any, path string, errs *[]error) {
 			}
 		}
 	}
-	if items, ok := schema[PropItems].(map[string]any); ok {
+	if items, ok := schema[propItems].(map[string]any); ok {
 		checkSchema(items, path+itemsSchemaPath, errs)
 	}
-	if additional, ok := schema[PropAdditional].(map[string]any); ok {
+	if additional, ok := schema[propAdditional].(map[string]any); ok {
 		checkSchema(additional, childPath(path, additionalPropertiesSchemaKey), errs)
 	}
 }
@@ -374,15 +374,15 @@ func checkKeywordShapes(schema map[string]any, path string, errs *[]error) {
 	checkRequiredShape(schema, path, errs)
 	checkPropertiesShape(schema, path, errs)
 	checkAdditionalShape(schema, path, errs)
-	checkIntKeywordShape(schema, PropMinItems, path, errs)
-	checkIntKeywordShape(schema, PropMaxItems, path, errs)
+	checkIntKeywordShape(schema, propMinItems, path, errs)
+	checkIntKeywordShape(schema, propMaxItems, path, errs)
 	checkItemsShape(schema, path, errs)
-	checkIntKeywordShape(schema, PropMinLength, path, errs)
-	checkIntKeywordShape(schema, PropMaxLength, path, errs)
+	checkIntKeywordShape(schema, propMinLength, path, errs)
+	checkIntKeywordShape(schema, propMaxLength, path, errs)
 	checkPatternShape(schema, path, errs)
 	checkStringEncodedShape(schema, path, errs)
-	checkBoundShape(schema, PropMinimum, path, errs)
-	checkBoundShape(schema, PropMaximum, path, errs)
+	checkBoundShape(schema, propMinimum, path, errs)
+	checkBoundShape(schema, propMaximum, path, errs)
 }
 
 // checkTypeShape reports a type keyword that is malformed or names an unsupported
@@ -391,11 +391,11 @@ func checkTypeShape(schema map[string]any, path string, errs *[]error) {
 	types, present, malformed := schemaTypes(schema)
 	switch {
 	case malformed:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("invalid schema type: %v", schema[PropType])})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propType, Detail: fmt.Sprintf("invalid schema type: %v", schema[propType])})
 	case present:
 		for _, typ := range types {
 			if !isKnownType(typ) {
-				*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("unsupported schema type %q", typ)})
+				*errs = append(*errs, &FieldError{Path: path, Rule: propType, Detail: fmt.Sprintf("unsupported schema type %q", typ)})
 				return
 			}
 		}
@@ -406,55 +406,55 @@ func checkTypeShape(schema map[string]any, path string, errs *[]error) {
 // annotation is not enforced against the instance, but its value shape is still
 // checked so a malformed recognized keyword fails closed like any other.
 func checkDescriptionShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropDescription]
+	raw, present := schema[propDescription]
 	if !present {
 		return
 	}
 	if _, ok := raw.(string); !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropDescription, Detail: "schema description must be a string"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propDescription, Detail: "schema description must be a string"})
 	}
 }
 
 // checkEnumShape reports an enum keyword that is not a non-empty array. JSON
 // Schema requires at least one member, so an empty enum permits nothing.
 func checkEnumShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropEnum]
+	raw, present := schema[propEnum]
 	if !present {
 		return
 	}
 	members, ok := raw.([]any)
 	switch {
 	case !ok:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum must be an array"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propEnum, Detail: "schema enum must be an array"})
 	case len(members) == 0:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropEnum, Detail: "schema enum is empty; no value is permitted"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propEnum, Detail: "schema enum is empty; no value is permitted"})
 	}
 }
 
 // checkRequiredShape reports a required keyword that is not an array of strings.
 func checkRequiredShape(schema map[string]any, path string, errs *[]error) {
-	if _, present := schema[PropRequired]; !present {
+	if _, present := schema[propRequired]; !present {
 		return
 	}
 	if _, malformed := requiredNames(schema); malformed {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropRequired, Detail: "schema required must be an array of strings"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propRequired, Detail: "schema required must be an array of strings"})
 	}
 }
 
 // checkPropertiesShape reports a properties keyword that is not a schema object
 // map, and each child that is not a schema object.
 func checkPropertiesShape(schema map[string]any, path string, errs *[]error) {
-	if _, present := schema[PropProperties]; !present {
+	if _, present := schema[propProperties]; !present {
 		return
 	}
 	props, ok := propertiesMap(schema)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropProperties, Detail: "schema properties must be a schema object map"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propProperties, Detail: "schema properties must be a schema object map"})
 		return
 	}
 	for _, name := range sortedKeys(props) {
 		if _, ok := props[name].(map[string]any); !ok {
-			*errs = append(*errs, &FieldError{Path: childPath(path, name), Rule: PropProperties, Detail: "property schema must be a schema object"})
+			*errs = append(*errs, &FieldError{Path: childPath(path, name), Rule: propProperties, Detail: "property schema must be a schema object"})
 		}
 	}
 }
@@ -462,7 +462,7 @@ func checkPropertiesShape(schema map[string]any, path string, errs *[]error) {
 // checkAdditionalShape reports an additionalProperties keyword that is neither a
 // boolean nor a schema object.
 func checkAdditionalShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropAdditional]
+	raw, present := schema[propAdditional]
 	if !present {
 		return
 	}
@@ -470,18 +470,18 @@ func checkAdditionalShape(schema map[string]any, path string, errs *[]error) {
 	case bool, map[string]any:
 		// Well-formed; a schema-valued additionalProperties is recursed by checkSchema.
 	default:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropAdditional, Detail: "schema additionalProperties must be a boolean or schema object"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propAdditional, Detail: "schema additionalProperties must be a boolean or schema object"})
 	}
 }
 
 // checkItemsShape reports an items keyword that is not a schema object.
 func checkItemsShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropItems]
+	raw, present := schema[propItems]
 	if !present {
 		return
 	}
 	if _, ok := raw.(map[string]any); !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropItems, Detail: "schema items must be a schema object"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propItems, Detail: "schema items must be a schema object"})
 	}
 }
 
@@ -510,18 +510,18 @@ func checkBoundShape(schema map[string]any, key, path string, errs *[]error) {
 // checkPatternShape reports a pattern keyword that is not a string or is not a
 // compilable regular expression. An empty pattern imposes no constraint.
 func checkPatternShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropPattern]
+	raw, present := schema[propPattern]
 	if !present {
 		return
 	}
 	pattern, ok := raw.(string)
 	switch {
 	case !ok:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: "schema pattern must be a string"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propPattern, Detail: "schema pattern must be a string"})
 	case pattern == "":
 	default:
 		if _, err := regexp.Compile(pattern); err != nil {
-			*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
+			*errs = append(*errs, &FieldError{Path: path, Rule: propPattern, Detail: fmt.Sprintf("schema pattern %q is invalid: %v", pattern, err)})
 		}
 	}
 }
@@ -529,17 +529,17 @@ func checkPatternShape(schema map[string]any, path string, errs *[]error) {
 // checkStringEncodedShape reports an x-goStringKind keyword that is not a string
 // or names an unsupported Go kind.
 func checkStringEncodedShape(schema map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropStringEncodedKind]
+	raw, present := schema[propStringEncodedKind]
 	if !present {
 		return
 	}
 	name, ok := raw.(string)
 	if !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: "schema x-goStringKind must be a string"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propStringEncodedKind, Detail: "schema x-goStringKind must be a string"})
 		return
 	}
 	if _, ok := stringEncodedKindType(name); !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("schema x-goStringKind %q is not a supported kind", name)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propStringEncodedKind, Detail: fmt.Sprintf("schema x-goStringKind %q is not a supported kind", name)})
 	}
 }
 
@@ -594,12 +594,12 @@ func enforceType(schema map[string]any, value any, path string, errs *[]error) (
 	}
 	for _, typ := range types {
 		if valueMatchesType(typ, value) {
-			return true, typ == TypeInteger
+			return true, typ == typeInteger
 		}
 	}
 	*errs = append(*errs, &FieldError{
 		Path:   path,
-		Rule:   PropType,
+		Rule:   propType,
 		Detail: fmt.Sprintf("expected one of [%s], got %s", strings.Join(types, ", "), jsonKind(value)),
 	})
 	return false, false
@@ -607,42 +607,42 @@ func enforceType(schema map[string]any, value any, path string, errs *[]error) (
 
 // enforceSingleType checks value against a single declared type, reproducing the
 // type-mismatch messages of the former per-kind validators. A number matches
-// TypeNumber and TypeInteger regardless of literal form: the integer-form check is
+// typeNumber and typeInteger regardless of literal form: the integer-form check is
 // a separate, non-fatal numeric check, so type:integer reports a fractional
 // literal as "not an integer" rather than as a type mismatch.
 func enforceSingleType(typ string, value any, path string, errs *[]error) (ok, integerRequired bool) {
 	switch typ {
-	case TypeObject:
+	case typeObject:
 		if _, isObj := value.(map[string]any); !isObj {
-			addTypeError(errs, path, TypeObject, value)
+			addTypeError(errs, path, typeObject, value)
 			return false, false
 		}
-	case TypeArray:
+	case typeArray:
 		if _, isArr := value.([]any); !isArr {
-			addTypeError(errs, path, TypeArray, value)
+			addTypeError(errs, path, typeArray, value)
 			return false, false
 		}
-	case TypeString:
+	case typeString:
 		if _, isStr := value.(string); !isStr {
-			addTypeError(errs, path, TypeString, value)
+			addTypeError(errs, path, typeString, value)
 			return false, false
 		}
-	case TypeBoolean:
+	case typeBoolean:
 		if _, isBool := value.(bool); !isBool {
-			addTypeError(errs, path, TypeBoolean, value)
+			addTypeError(errs, path, typeBoolean, value)
 			return false, false
 		}
-	case TypeNull:
+	case typeNull:
 		if value != nil {
-			addTypeError(errs, path, TypeNull, value)
+			addTypeError(errs, path, typeNull, value)
 			return false, false
 		}
-	case TypeInteger, TypeNumber:
+	case typeInteger, typeNumber:
 		if _, isNum := value.(json.Number); !isNum {
 			addTypeError(errs, path, typ, value)
 			return false, false
 		}
-		return true, typ == TypeInteger
+		return true, typ == typeInteger
 	}
 	return true, false
 }
@@ -658,15 +658,15 @@ func checkNumberInstance(num json.Number, integerRequired bool, path string, err
 	// Guard before any big.Rat conversion: big.Rat.SetString expands decimal
 	// exponents, so an untrusted literal like 1e100000000 could exhaust memory.
 	if numberMagnitudeExceeded(s) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: "number magnitude exceeds supported range"})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propType, Detail: "number magnitude exceeds supported range"})
 		return false
 	}
 	if _, ok := toBigRat(num); !ok {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not a number", s)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propType, Detail: fmt.Sprintf("value %s is not a number", s)})
 		return false
 	}
 	if integerRequired && !jsonIntegerLiteral(num) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropType, Detail: fmt.Sprintf("value %s is not an integer", s)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propType, Detail: fmt.Sprintf("value %s is not an integer", s)})
 	}
 	return true
 }
@@ -679,7 +679,7 @@ func checkNumberInstance(num json.Number, integerRequired bool, path string, err
 // non-string/non-array value — so the caller fails closed with a schema error
 // rather than silently skipping type checks.
 func schemaTypes(schema map[string]any) (types []string, present, malformed bool) {
-	raw, ok := schema[PropType]
+	raw, ok := schema[propType]
 	if !ok {
 		return nil, false, false
 	}
@@ -715,7 +715,7 @@ func schemaTypes(schema map[string]any) (types []string, present, malformed bool
 // enforces.
 func isKnownType(typ string) bool {
 	switch typ {
-	case TypeObject, TypeArray, TypeString, TypeInteger, TypeNumber, TypeBoolean, TypeNull:
+	case typeObject, typeArray, typeString, typeInteger, typeNumber, typeBoolean, typeNull:
 		return true
 	default:
 		return false
@@ -727,24 +727,24 @@ func isKnownType(typ string) bool {
 // json.Number written in integer form (see jsonIntegerLiteral).
 func valueMatchesType(typ string, value any) bool {
 	switch typ {
-	case TypeNull:
+	case typeNull:
 		return value == nil
-	case TypeBoolean:
+	case typeBoolean:
 		_, ok := value.(bool)
 		return ok
-	case TypeString:
+	case typeString:
 		_, ok := value.(string)
 		return ok
-	case TypeNumber:
+	case typeNumber:
 		_, ok := value.(json.Number)
 		return ok
-	case TypeInteger:
+	case typeInteger:
 		n, ok := value.(json.Number)
 		return ok && jsonIntegerLiteral(n)
-	case TypeObject:
+	case typeObject:
 		_, ok := value.(map[string]any)
 		return ok
-	case TypeArray:
+	case typeArray:
 		_, ok := value.([]any)
 		return ok
 	default:
@@ -794,7 +794,7 @@ func applyRequired(schema map[string]any, value any, path string, errs *[]error)
 		if _, present := obj[name]; !present {
 			*errs = append(*errs, &FieldError{
 				Path:   childPath(path, name),
-				Rule:   PropRequired,
+				Rule:   propRequired,
 				Detail: "missing required property",
 			})
 		}
@@ -844,7 +844,7 @@ func applyAdditional(schema map[string]any, value any, path string, errs *[]erro
 // keyword is present but not an object map, so a caller schema that misshapes
 // properties fails closed; an absent keyword yields a nil map and ok=true.
 func propertiesMap(schema map[string]any) (map[string]any, bool) {
-	raw, present := schema[PropProperties]
+	raw, present := schema[propProperties]
 	if !present {
 		return nil, true
 	}
@@ -857,7 +857,7 @@ func propertiesMap(schema map[string]any) (map[string]any, bool) {
 // allows them; a schema map validates each extra property against that schema,
 // which is how map[string]T fields are checked.
 func validateAdditional(schema, obj, props map[string]any, path string, errs *[]error) {
-	raw, present := schema[PropAdditional]
+	raw, present := schema[propAdditional]
 	if !present {
 		return
 	}
@@ -870,7 +870,7 @@ func validateAdditional(schema, obj, props map[string]any, path string, errs *[]
 		for _, name := range extras {
 			*errs = append(*errs, &FieldError{
 				Path:   childPath(path, name),
-				Rule:   PropAdditional,
+				Rule:   propAdditional,
 				Detail: "unexpected property",
 			})
 		}
@@ -901,12 +901,12 @@ func applyMinItems(schema map[string]any, value any, path string, errs *[]error)
 	if !ok {
 		return
 	}
-	minItems, valid := intKeyword(schema, PropMinItems)
+	minItems, valid := intKeyword(schema, propMinItems)
 	switch {
 	case !valid:
 		// A malformed minItems is reported by checkSchema; skip enforcement.
 	case int64(len(arr)) < minItems:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinItems, Detail: fmt.Sprintf("array length %d is below minimum %d", len(arr), minItems)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMinItems, Detail: fmt.Sprintf("array length %d is below minimum %d", len(arr), minItems)})
 	}
 }
 
@@ -916,12 +916,12 @@ func applyMaxItems(schema map[string]any, value any, path string, errs *[]error)
 	if !ok {
 		return
 	}
-	maxItems, valid := intKeyword(schema, PropMaxItems)
+	maxItems, valid := intKeyword(schema, propMaxItems)
 	switch {
 	case !valid:
 		// A malformed maxItems is reported by checkSchema; skip enforcement.
 	case int64(len(arr)) > maxItems:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxItems, Detail: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxItems)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMaxItems, Detail: fmt.Sprintf("array length %d exceeds maximum %d", len(arr), maxItems)})
 	}
 }
 
@@ -932,7 +932,7 @@ func applyItems(schema map[string]any, value any, path string, errs *[]error) {
 	if !ok {
 		return
 	}
-	items, ok := schema[PropItems].(map[string]any)
+	items, ok := schema[propItems].(map[string]any)
 	if !ok {
 		return
 	}
@@ -949,12 +949,12 @@ func applyMinLength(schema map[string]any, value any, path string, errs *[]error
 		return
 	}
 	runes := int64(utf8.RuneCountInString(s))
-	minLen, valid := intKeyword(schema, PropMinLength)
+	minLen, valid := intKeyword(schema, propMinLength)
 	switch {
 	case !valid:
 		// A malformed minLength is reported by checkSchema; skip enforcement.
 	case runes < minLen:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, minLen)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMinLength, Detail: fmt.Sprintf("length %d is below minimum %d", runes, minLen)})
 	}
 }
 
@@ -965,12 +965,12 @@ func applyMaxLength(schema map[string]any, value any, path string, errs *[]error
 		return
 	}
 	runes := int64(utf8.RuneCountInString(s))
-	maxLen, valid := intKeyword(schema, PropMaxLength)
+	maxLen, valid := intKeyword(schema, propMaxLength)
 	switch {
 	case !valid:
 		// A malformed maxLength is reported by checkSchema; skip enforcement.
 	case runes > maxLen:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, maxLen)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMaxLength, Detail: fmt.Sprintf("length %d exceeds maximum %d", runes, maxLen)})
 	}
 }
 
@@ -982,7 +982,7 @@ func applyPattern(schema map[string]any, value any, path string, errs *[]error) 
 	if !ok {
 		return
 	}
-	pattern, ok := schema[PropPattern].(string)
+	pattern, ok := schema[propPattern].(string)
 	if !ok || pattern == "" {
 		return
 	}
@@ -991,7 +991,7 @@ func applyPattern(schema map[string]any, value any, path string, errs *[]error) 
 		return
 	}
 	if !re.MatchString(s) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propPattern, Detail: fmt.Sprintf("value %q does not match pattern %q", s, pattern)})
 	}
 }
 
@@ -1005,7 +1005,7 @@ func applyStringEncoded(schema map[string]any, value any, path string, errs *[]e
 	if !ok {
 		return
 	}
-	raw, present := schema[PropStringEncodedKind]
+	raw, present := schema[propStringEncodedKind]
 	if !present {
 		return
 	}
@@ -1018,7 +1018,7 @@ func applyStringEncoded(schema map[string]any, value any, path string, errs *[]e
 		return
 	}
 	if !stringDecodesInto(elem, s) {
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropStringEncodedKind, Detail: fmt.Sprintf("value %q does not decode into %s", s, name)})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propStringEncodedKind, Detail: fmt.Sprintf("value %q does not decode into %s", s, name)})
 	}
 }
 
@@ -1045,9 +1045,9 @@ func stringDecodesInto(elem reflect.Type, s string) bool {
 	return json.Unmarshal(body, reflect.New(holder).Interface()) == nil
 }
 
-// stringEncodedKindTypes maps a PropStringEncodedKind token to a representative
+// stringEncodedKindTypes maps a propStringEncodedKind token to a representative
 // decode target, so applyStringEncoded can reconstruct it from the schema
-// keyword. Scalar kinds use their reflect.Kind name; StringEncodedBytes maps to a
+// keyword. Scalar kinds use their reflect.Kind name; stringEncodedBytes maps to a
 // byte slice, which encoding/json decodes from a base64 string.
 var stringEncodedKindTypes = map[string]reflect.Type{
 	reflect.Bool.String():    reflect.TypeOf(false),
@@ -1064,7 +1064,7 @@ var stringEncodedKindTypes = map[string]reflect.Type{
 	reflect.Uintptr.String(): reflect.TypeOf(uintptr(0)),
 	reflect.Float32.String(): reflect.TypeOf(float32(0)),
 	reflect.Float64.String(): reflect.TypeOf(float64(0)),
-	StringEncodedBytes:       reflect.TypeOf([]byte(nil)),
+	stringEncodedBytes:       reflect.TypeOf([]byte(nil)),
 }
 
 func stringEncodedKindType(name string) (reflect.Type, bool) {
@@ -1081,12 +1081,12 @@ func applyMinimum(schema map[string]any, value any, path string, errs *[]error) 
 		return
 	}
 	val, _ := toBigRat(num)
-	lo, valid := boundKeyword(schema, PropMinimum)
+	lo, valid := boundKeyword(schema, propMinimum)
 	switch {
 	case !valid:
 		// A malformed minimum is reported by checkSchema; skip enforcement.
 	case val.Cmp(lo) < 0:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", num.String(), boundString(schema, PropMinimum))})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMinimum, Detail: fmt.Sprintf("value %s is below minimum %s", num.String(), boundString(schema, propMinimum))})
 	}
 }
 
@@ -1097,12 +1097,12 @@ func applyMaximum(schema map[string]any, value any, path string, errs *[]error) 
 		return
 	}
 	val, _ := toBigRat(num)
-	hi, valid := boundKeyword(schema, PropMaximum)
+	hi, valid := boundKeyword(schema, propMaximum)
 	switch {
 	case !valid:
 		// A malformed maximum is reported by checkSchema; skip enforcement.
 	case val.Cmp(hi) > 0:
-		*errs = append(*errs, &FieldError{Path: path, Rule: PropMaximum, Detail: fmt.Sprintf("value %s exceeds maximum %s", num.String(), boundString(schema, PropMaximum))})
+		*errs = append(*errs, &FieldError{Path: path, Rule: propMaximum, Detail: fmt.Sprintf("value %s exceeds maximum %s", num.String(), boundString(schema, propMaximum))})
 	}
 }
 
@@ -1111,7 +1111,7 @@ func applyMaximum(schema map[string]any, value any, path string, errs *[]error) 
 // reported by checkSchema and skipped here, so nothing matches and no duplicate
 // schema error is emitted.
 func validateEnum(schema map[string]any, value any, path string, errs *[]error) {
-	raw, present := schema[PropEnum]
+	raw, present := schema[propEnum]
 	if !present {
 		return
 	}
@@ -1130,7 +1130,7 @@ func validateEnum(schema map[string]any, value any, path string, errs *[]error) 
 	}
 	*errs = append(*errs, &FieldError{
 		Path:   path,
-		Rule:   PropEnum,
+		Rule:   propEnum,
 		Detail: fmt.Sprintf("value %v is not one of [%s]", value, strings.Join(parts, ", ")),
 	})
 }
@@ -1191,7 +1191,7 @@ func jsonDeepEqual(a, b any) bool {
 // silently dropping the constraint. An absent keyword yields nil names and
 // malformed=false.
 func requiredNames(schema map[string]any) (names []string, malformed bool) {
-	raw, present := schema[PropRequired]
+	raw, present := schema[propRequired]
 	if !present {
 		return nil, false
 	}
@@ -1213,7 +1213,7 @@ func requiredNames(schema map[string]any) (names []string, malformed bool) {
 func addTypeError(errs *[]error, path, want string, value any) {
 	*errs = append(*errs, &FieldError{
 		Path:   path,
-		Rule:   PropType,
+		Rule:   propType,
 		Detail: fmt.Sprintf("expected %s, got %s", want, jsonKind(value)),
 	})
 }
@@ -1224,15 +1224,15 @@ func jsonKind(value any) string {
 	case nil:
 		return "null"
 	case bool:
-		return TypeBoolean
+		return typeBoolean
 	case json.Number, float64:
-		return TypeNumber
+		return typeNumber
 	case string:
-		return TypeString
+		return typeString
 	case []any:
-		return TypeArray
+		return typeArray
 	case map[string]any:
-		return TypeObject
+		return typeObject
 	default:
 		return "unknown"
 	}

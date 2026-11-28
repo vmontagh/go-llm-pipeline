@@ -168,7 +168,7 @@ return g.Wait()
 ```
 
 The runnable version is `Example_localAndRemote` in `pkg/pipeline`. Runnable examples for the
-analyzer (`NewTemplate`, `Extract`, `AnalyzeWithTools`, `SchemaOf`) and for `llmvcr` replay
+analyzer (`NewBuilder`, `Extract`, `AnalyzeWithTools`, `SchemaOf`) and for `llmvcr` replay
 recorded cassettes, so they run offline in `go test` and appear in the package documentation.
 
 #### Multi-turn conversations
@@ -297,7 +297,7 @@ borderline conditions surface without blocking automation.
 
 | Package | Description |
 | --- | --- |
-| `pkg/analyzer` | Template Method and Builder contracts for LLM analysis (`Event`/`Analyzer`, domain-agnostic `Asset`, sentinel errors). |
+| `pkg/analyzer` | `Builder` and `Template` for LLM analysis, typed `Extract`, tool calling, domain-agnostic `Asset`, sentinel errors. |
 | `pkg/pipeline` | Concurrency utilities: generic worker-pool `Consume`, `PauseGate`, resumable runs (`Checkpoint`, `FileCheckpoint`, `Checkpointed`), and a dead-letter queue. |
 | `pkg/provider` | Concurrency-safe `KeyPool` of API credentials with per-key cooldown and rotation, and `Guard` for adaptive concurrency and a circuit breaker. |
 | `pkg/provider/openai` | Transport half of the analyzer Template Method for OpenAI. |

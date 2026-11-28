@@ -34,7 +34,7 @@ var (
 type PublishFn = func(eventType, itemID, message string, isError bool)
 
 // TextAnalyzer is the raw-text provider surface Extract depends on. It is
-// satisfied by *Template[C, string] (see NewTextTemplate); accepting the
+// satisfied by *Template[C, string] (see NewTextBuilder); accepting the
 // interface keeps Extract decoupled from provider transport internals.
 type TextAnalyzer interface {
 	Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish PublishFn) (string, error)
@@ -222,19 +222,19 @@ func rootObjectContract(schema map[string]any) (reason string, objectRoot bool) 
 	types, present, malformed := schemaTypes(schema)
 	if present {
 		if malformed {
-			return fmt.Sprintf("malformed type %v", schema[PropType]), false
+			return fmt.Sprintf("malformed type %v", schema[propType]), false
 		}
 		for _, t := range types {
-			if t == TypeObject {
+			if t == typeObject {
 				return "", true
 			}
 		}
 		return fmt.Sprintf("type %q", strings.Join(types, ",")), false
 	}
-	if hasAnyKey(schema, PropProperties, PropRequired, PropAdditional) {
+	if hasAnyKey(schema, propProperties, propRequired, propAdditional) {
 		return "", true
 	}
-	if key, ok := firstPresentKey(schema, PropItems, PropMinItems, PropMaxItems, PropMinLength, PropMaxLength, PropPattern, PropMinimum, PropMaximum); ok {
+	if key, ok := firstPresentKey(schema, propItems, propMinItems, propMaxItems, propMinLength, propMaxLength, propPattern, propMinimum, propMaximum); ok {
 		return fmt.Sprintf("typeless %s constraint", key), false
 	}
 	return "", true
@@ -270,7 +270,7 @@ func firstPresentKey(schema map[string]any, keys ...string) (string, bool) {
 // (valid, schema-conforming JSON that cannot map to T).
 func decodeAndValidate[T any](schema map[string]any, raw string, strict bool) (T, FeedbackInput, error) {
 	var zero T
-	objects := ExtractAllJSON(raw)
+	objects := extractAllJSON(raw)
 	if len(objects) == 0 {
 		err := fmt.Errorf("%w: no JSON object found", ErrJSONMalformed)
 		return zero, FeedbackInput{Schema: schema, Raw: raw, ParseError: err}, err
@@ -363,10 +363,10 @@ func fieldErrors(err error) []*FieldError {
 	return out
 }
 
-// NewTextTemplate wires a Template that returns the provider's raw text
-// unchanged, ready to satisfy TextAnalyzer for Extract.
-func NewTextTemplate[C any](p provider.Provider[C], opts ...TemplateConfigurator) (*Template[C, string], error) {
-	return NewTemplate[C, string](p, rawTextParser, opts...)
+// NewTextBuilder returns a Builder whose Template returns the provider's raw
+// text unchanged, ready to satisfy TextAnalyzer for Extract.
+func NewTextBuilder[C any](p provider.Provider[C]) *Builder[C, string] {
+	return NewBuilder[C, string](p, rawTextParser)
 }
 
 func rawTextParser(s string) (string, error) { return s, nil }

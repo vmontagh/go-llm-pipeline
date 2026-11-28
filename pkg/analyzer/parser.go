@@ -8,8 +8,8 @@ import (
 	partialopts "github.com/blaze2305/partial-json-parser/options"
 )
 
-// ExtractAllJSON locates every complete JSON object in the raw response.
-func ExtractAllJSON(raw string) []string {
+// extractAllJSON locates every complete JSON object in the raw response.
+func extractAllJSON(raw string) []string {
 	var results []string
 	raw = strings.TrimSpace(raw)
 

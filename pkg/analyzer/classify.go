@@ -8,14 +8,15 @@ import (
 
 	"github.com/cenkalti/backoff/v4"
 
+	"github.com/vmontagh/go-llm-pipeline/pkg/policy"
 	"github.com/vmontagh/go-llm-pipeline/pkg/provider"
 )
 
 const handleProviderErrorRegion = "HandleProviderError"
 
-func escalateTier(tier ErrorTier, err error, rc provider.RetryContext, policy RetryPolicy) ErrorTier {
-	thresholdMet := func(t ErrorTier) bool {
-		tp := policy.Lookup(t)
+func escalateTier(tier policy.ErrorTier, err error, rc provider.RetryContext, rp policy.RetryPolicy) policy.ErrorTier {
+	thresholdMet := func(t policy.ErrorTier) bool {
+		tp := rp.Lookup(t)
 		if tp.EscalateAfterAttempts > 0 && rc.Attempt >= tp.EscalateAfterAttempts {
 			return true
 		}
@@ -25,24 +26,24 @@ func escalateTier(tier ErrorTier, err error, rc provider.RetryContext, policy Re
 		return false
 	}
 	switch tier {
-	case TierShortTransient, TierShortRateLimit:
+	case policy.TierShortTransient, policy.TierShortRateLimit:
 		if thresholdMet(tier) {
-			return TierLongTransientBounded
+			return policy.TierLongTransientBounded
 		}
-	case TierLongTransientBounded:
+	case policy.TierLongTransientBounded:
 		if isAnalyzerQuotaClass(err) && thresholdMet(tier) {
-			return TierLongTransientInfinite
+			return policy.TierLongTransientInfinite
 		}
 	}
 	return tier
 }
 
-func classifyAndCooldown[T any](lease *provider.Lease[T], tier ErrorTier, policy RetryPolicy, retryAfter time.Duration, err error) error {
-	tp := policy.Lookup(tier)
+func classifyAndCooldown[T any](lease *provider.Lease[T], tier policy.ErrorTier, rp policy.RetryPolicy, retryAfter time.Duration, err error) error {
+	tp := rp.Lookup(tier)
 	lease.MarkCooldown(tp, retryAfter)
-	wrapped := WithCode(TierCode(tier, err), err)
+	wrapped := policy.WithCode(policy.TierCode(tier, err), err)
 	switch tier {
-	case TierShortTransient, TierShortRateLimit:
+	case policy.TierShortTransient, policy.TierShortRateLimit:
 		return wrapped
 	default:
 		return backoff.Permanent(wrapped)
@@ -63,9 +64,9 @@ type providerErrorInfo struct {
 
 type handleProviderErrorRequest[T any] struct {
 	Lease      *provider.Lease[T]
-	Tier       ErrorTier
+	Tier       policy.ErrorTier
 	Err        error
-	Policy     RetryPolicy
+	Policy     policy.RetryPolicy
 	RetryAfter time.Duration
 	RC         provider.RetryContext
 	Info       providerErrorInfo
@@ -84,14 +85,14 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 	}
 
 	switch tier {
-	case TierLongTransientInfinite, TierLongTransientBounded, TierShortRateLimit:
+	case policy.TierLongTransientInfinite, policy.TierLongTransientBounded, policy.TierShortRateLimit:
 		msg := fmt.Sprintf("%s credential %d/%d cooled for %v after rate-limit/quota: %v",
 			req.Info.Provider, req.Info.CredentialIdx+1, req.Info.CredentialCount, effectiveCooldown, req.Err)
 		if len(req.Info.ResponseBody) > 0 {
 			msg = fmt.Sprintf("%s: %s", msg, string(req.Info.ResponseBody))
 		}
 		if req.Info.Publish != nil {
-			req.Info.Publish(EventLLMRetrying, req.Info.JobID, msg, false)
+			req.Info.Publish(eventLLMRetrying, req.Info.JobID, msg, false)
 		}
 		req.Info.Logger.WarnContext(ctx, "credential cooled after rate-limit/quota",
 			"provider", req.Info.Provider,
@@ -100,16 +101,16 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 			"cooldown", effectiveCooldown,
 			"err", req.Err,
 		)
-	case TierShortTransient:
+	case policy.TierShortTransient:
 		msg := fmt.Sprintf("Retrying %s due to transient error: %v", req.Info.Model, req.Err)
 		if req.Info.Publish != nil {
-			req.Info.Publish(EventLLMRetrying, req.Info.JobID, msg, true)
+			req.Info.Publish(eventLLMRetrying, req.Info.JobID, msg, true)
 		}
 		req.Info.Logger.DebugContext(ctx, "retrying due to transient error",
 			"model", req.Info.Model,
 			"err", req.Err,
 		)
-	case TierTerminal:
+	case policy.TierTerminal:
 		req.Info.Logger.DebugContext(ctx, "terminal error",
 			"provider", req.Info.Provider,
 			"credential", req.Info.CredentialIdx+1,
@@ -118,9 +119,9 @@ func handleProviderError[T any](ctx context.Context, req handleProviderErrorRequ
 		)
 	}
 
-	wrapped := WithCode(TierCode(tier, req.Err), req.Err)
+	wrapped := policy.WithCode(policy.TierCode(tier, req.Err), req.Err)
 	switch tier {
-	case TierShortTransient, TierShortRateLimit:
+	case policy.TierShortTransient, policy.TierShortRateLimit:
 		return wrapped
 	default:
 		return backoff.Permanent(wrapped)

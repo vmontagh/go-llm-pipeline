@@ -2,22 +2,15 @@
 package analyzer
 
 import (
-	"errors"
+	"google.golang.org/grpc/codes"
+
+	"github.com/vmontagh/go-llm-pipeline/pkg/policy"
 )
 
-// Event defines the contract for any event emitted by an Analyzer.
-type Event interface {
-	EventType() string
-	ItemID() string
-	Message() string
-	IsError() bool
+const eventLLMRetrying = "LLM_RETRYING"
+
+// isAnalyzerQuotaClass reports whether err is in a quota or rate-limit family.
+func isAnalyzerQuotaClass(err error) bool {
+	c := policy.Code(err)
+	return c == codes.ResourceExhausted || c == codes.FailedPrecondition
 }
-
-var (
-	// ErrParsing is returned when the analyzer output cannot be parsed.
-	ErrParsing = errors.New("failed to parse analyzer output")
-	// ErrRetryableResponse is returned when the LLM response is retryable.
-	ErrRetryableResponse = errors.New("retryable LLM response")
-	// ErrMalformedResponse is returned when the API response is malformed.
-	ErrMalformedResponse = errors.New("malformed response returned")
-)
