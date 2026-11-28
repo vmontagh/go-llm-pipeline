@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -28,11 +29,11 @@ func newRedirectServer(t *testing.T, newServer func(http.Handler) *httptest.Serv
 }
 
 // post sends a POST with a body through c and returns the response body.
-func post(t *testing.T, c *http.Client, url string) (string, error) {
+func post(t *testing.T, c *http.Client, target string) (string, error) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, url, http.NoBody)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, http.NoBody)
 	if err != nil {
-		t.Fatalf("NewRequest(%q) error = %v", url, err)
+		t.Fatalf("NewRequest(%q) error = %v", target, err)
 	}
 	resp, err := c.Do(req)
 	if err != nil {
@@ -87,6 +88,34 @@ func TestSameOriginClientRefusesCrossOrigin(t *testing.T) {
 				t.Error("redirect target received a request")
 			}
 		})
+	}
+}
+
+func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
+	t.Parallel()
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
+	t.Cleanup(other.Close)
+	otherURL, err := url.Parse(other.URL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", other.URL, err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		http.Redirect(rw, r, "/next", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(srv.Close)
+	rewrite := &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+		req.URL.Host = otherURL.Host
+		return nil
+	}}
+
+	_, err = post(t, SameOriginClient(rewrite, 0), srv.URL)
+
+	if !errors.Is(err, ErrCrossOriginRedirect) {
+		t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
+	}
+	if leaked.Load() {
+		t.Error("rewritten redirect target received a request")
 	}
 }
 
