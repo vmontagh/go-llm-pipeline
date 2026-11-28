@@ -37,6 +37,10 @@ change touches Markdown docs, also run `gomarklint .` and resolve any issues;
 credentials in tests need a trailing `// gitleaks:allow` comment so
 `make secrets` accepts them.
 
+**New features and bug fixes must include tests** in the same pull request. A
+bug fix needs a test that fails without the fix. Reviewers will ask for tests
+when a change adds or alters behavior without them.
+
 ### Fuzzing the analyzer schema layer
 
 `pkg/analyzer/differential_test.go` uses Go's native fuzzing framework to pin that
