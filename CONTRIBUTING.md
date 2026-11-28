@@ -67,6 +67,35 @@ a regression seed. Only one target can be fuzzed at a time.
   "failed to" in error strings and log messages.
 - Ensure `make fmt` has been run so formatting is consistent.
 
+### Releasing
+
+Releases are cut by pushing a `vX.Y.Z` tag on `main`. Nothing is uploaded by
+hand. The [release workflow](.github/workflows/release.yml) runs
+[GoReleaser](https://goreleaser.com/) (configured in `.goreleaser.yml`) to:
+
+1. Build a source archive and `checksums.txt`.
+2. Sign `checksums.txt` keylessly with Sigstore `cosign`
+   (`checksums.txt.sigstore.json`).
+3. Record GitHub build provenance for the archive.
+4. Publish the release, which is immutable once published, and warm the Go
+   module proxy.
+
+Run `make api-diff API_BASE=<previous tag>` before choosing the version
+number. Edit the generated release notes after publishing if needed; notes stay
+editable, assets don't.
+
+To verify a release, download `checksums.txt`, `checksums.txt.sigstore.json` and
+the archive, then run:
+
+```sh
+cosign verify-blob \
+  --certificate-identity "https://github.com/vmontagh/go-llm-pipeline/.github/workflows/release.yml@refs/tags/vX.Y.Z" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --bundle checksums.txt.sigstore.json checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+gh attestation verify go-llm-pipeline_X.Y.Z.tar.gz --repo vmontagh/go-llm-pipeline
+```
+
 ### Code style
 
 This project follows the Go idiomatic guidelines documented in
