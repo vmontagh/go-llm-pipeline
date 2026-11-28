@@ -51,9 +51,10 @@ test-bdd-live:
 api-diff:
 	@set -e; tmp=$$(mktemp -d); trap 'git worktree remove --force '"$$tmp"'/base; rm -rf '"$$tmp" EXIT; \
 	git worktree add -q --detach "$$tmp/base" "$(API_BASE)"; \
+	gofiles() { (cd "$$1" && go list -e -f '{{len .GoFiles}}' "./pkg/$$2" 2>/dev/null); }; \
 	broken=0; for p in $(STABLE_PKGS); do \
-		[ -d "$$tmp/base/pkg/$$p" ] || { echo "pkg/$$p: new at $(API_BASE), skipped"; continue; }; \
-		[ -d "pkg/$$p" ] || { echo "pkg/$$p: removed since $(API_BASE)"; broken=1; continue; }; \
+		[ "$$(gofiles "$$tmp/base" $$p)" != 0 ] || { echo "pkg/$$p: new at $(API_BASE), skipped"; continue; }; \
+		[ "$$(gofiles . $$p)" != 0 ] || { echo "pkg/$$p: removed since $(API_BASE)"; broken=1; continue; }; \
 		(cd "$$tmp/base" && $(APIDIFF) -w "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
 		out=$$($(APIDIFF) "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
 		if [ -z "$$out" ]; then echo "pkg/$$p: no API changes vs $(API_BASE)"; continue; fi; \
