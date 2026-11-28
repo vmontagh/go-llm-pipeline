@@ -76,14 +76,15 @@ const (
 	resultKey = "result"
 )
 
-// ErrCrossOriginRedirect is returned when the API answers with a redirect to
-// a different scheme, host or port. Such redirects are refused because
-// net/http would forward the X-Goog-Api-Key header and, for 307/308, the
-// prompt and image body to the new origin.
-var ErrCrossOriginRedirect = httputil.ErrCrossOriginRedirect
-
-// ErrTooManyRedirects is returned after too many same-origin redirects.
-var ErrTooManyRedirects = httputil.ErrTooManyRedirects
+var (
+	// ErrCrossOriginRedirect is returned when the API answers with a
+	// redirect to a different scheme, host or port. Such redirects are
+	// refused because net/http would forward the X-Goog-Api-Key header and,
+	// for 307/308, the prompt and image body to the new origin.
+	ErrCrossOriginRedirect = httputil.ErrCrossOriginRedirect
+	// ErrTooManyRedirects is returned after too many same-origin redirects.
+	ErrTooManyRedirects = httputil.ErrTooManyRedirects
+)
 
 // Tracer is the tracing interface required by the Gemini transport.
 type Tracer interface {

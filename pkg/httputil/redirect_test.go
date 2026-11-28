@@ -5,7 +5,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +14,59 @@ import (
 )
 
 var errTest = errors.New("test error")
+
+// routes maps request paths to handlers for serve.
+type routes map[string]http.Handler
+
+// serve starts a test server for r and closes it when the test ends.
+func serve(t *testing.T, r routes) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	for path, h := range r {
+		mux.Handle(path, h)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// redirectTo answers with a 307 to target.
+func redirectTo(target string) http.Handler {
+	return http.RedirectHandler(target, http.StatusTemporaryRedirect)
+}
+
+// counter counts the requests a handler receives.
+type counter struct{ hits atomic.Int32 }
+
+// count wraps next, which may be nil for a handler that answers 200 OK.
+func (c *counter) count(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		c.hits.Add(1)
+		if next != nil {
+			next.ServeHTTP(rw, r)
+		}
+	})
+}
+
+// newSink starts a server that must never be reached; check it with
+// assertRefused.
+func newSink(t *testing.T) (*httptest.Server, *counter) {
+	t.Helper()
+	var c counter
+	return serve(t, routes{"/": c.count(nil)}), &c
+}
+
+// assertRefused checks that err is a cross-origin refusal and that sink got
+// no request.
+func assertRefused(t *testing.T, err error, sink *counter) {
+	t.Helper()
+	if !errors.Is(err, ErrCrossOriginRedirect) {
+		t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
+	}
+	if got := sink.hits.Load(); got != 0 {
+		t.Errorf("redirect target received %d requests, want 0", got)
+	}
+}
 
 // newRedirectServer answers every request with a 307 to target(srv), where
 // srv is the redirecting server itself.
@@ -28,7 +80,7 @@ func newRedirectServer(t *testing.T, newServer func(http.Handler) *httptest.Serv
 	return srv
 }
 
-// post sends a POST with a body through c and returns the response body.
+// post sends a POST through c and returns the response body.
 func post(t *testing.T, c *http.Client, target string) (string, error) {
 	t.Helper()
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, target, http.NoBody)
@@ -56,12 +108,12 @@ func TestSameOriginClientRefusesCrossOrigin(t *testing.T) {
 	tests := []struct {
 		name      string
 		newServer func(http.Handler) *httptest.Server
-		target    func(redirector, other *httptest.Server) string
+		target    func(redirector, sink *httptest.Server) string
 	}{
 		{
 			name:      "different host",
 			newServer: httptest.NewServer,
-			target:    func(_, other *httptest.Server) string { return other.URL },
+			target:    func(_, sink *httptest.Server) string { return sink.URL },
 		},
 		{
 			name:      "HTTPS to HTTP downgrade on the same host",
@@ -74,19 +126,12 @@ func TestSameOriginClientRefusesCrossOrigin(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var leaked atomic.Bool
-			other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
-			t.Cleanup(other.Close)
-			redirector := newRedirectServer(t, tt.newServer, func(srv *httptest.Server) string { return tt.target(srv, other) })
+			sink, hits := newSink(t)
+			redirector := newRedirectServer(t, tt.newServer, func(srv *httptest.Server) string { return tt.target(srv, sink) })
 
 			_, err := post(t, SameOriginClient(redirector.Client(), 0), redirector.URL)
 
-			if !errors.Is(err, ErrCrossOriginRedirect) {
-				t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
-			}
-			if leaked.Load() {
-				t.Error("redirect target received a request")
-			}
+			assertRefused(t, err, hits)
 		})
 	}
 }
@@ -94,7 +139,8 @@ func TestSameOriginClientRefusesCrossOrigin(t *testing.T) {
 func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
+		name string
+		// rewrite runs inside the caller's CheckRedirect; host is the sink's.
 		rewrite func(req *http.Request, via []*http.Request, host string)
 	}{
 		{
@@ -120,34 +166,16 @@ func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var leaked atomic.Bool
-			other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
-			t.Cleanup(other.Close)
-			otherURL, err := url.Parse(other.URL)
-			if err != nil {
-				t.Fatalf("url.Parse(%q) error = %v", other.URL, err)
-			}
-			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/next" {
-					http.Redirect(rw, r, other.URL, http.StatusTemporaryRedirect)
-					return
-				}
-				http.Redirect(rw, r, "/next", http.StatusTemporaryRedirect)
-			}))
-			t.Cleanup(srv.Close)
+			sink, hits := newSink(t)
+			srv := serve(t, routes{"/": redirectTo("/next"), "/next": redirectTo(sink.URL)})
 			caller := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				tt.rewrite(req, via, otherURL.Host)
+				tt.rewrite(req, via, sink.Listener.Addr().String())
 				return nil
 			}}
 
-			_, err = post(t, SameOriginClient(caller, 0), srv.URL)
+			_, err := post(t, SameOriginClient(caller, 0), srv.URL)
 
-			if !errors.Is(err, ErrCrossOriginRedirect) {
-				t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
-			}
-			if leaked.Load() {
-				t.Error("rewritten redirect target received a request")
-			}
+			assertRefused(t, err, hits)
 		})
 	}
 }
@@ -171,16 +199,12 @@ func TestSameOriginClientFollowsSameOrigin(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Has("moved") {
-					if _, err := io.WriteString(rw, okBody); err != nil {
-						t.Errorf("WriteString() = %v", err)
-					}
-					return
+			ok := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+				if _, err := io.WriteString(rw, okBody); err != nil {
+					t.Errorf("WriteString() = %v", err)
 				}
-				http.Redirect(rw, r, r.URL.Path+"?moved", http.StatusTemporaryRedirect)
-			}))
-			t.Cleanup(srv.Close)
+			})
+			srv := serve(t, routes{"/": redirectTo("/ok"), "/ok": ok})
 
 			got, err := post(t, SameOriginClient(&http.Client{CheckRedirect: tt.checkRedirect}, 0), srv.URL)
 
@@ -202,30 +226,23 @@ func TestSameOriginClientStopsRedirectLoop(t *testing.T) {
 	}{
 		{name: "default client"},
 		{
-			name: "caller callback accepts every redirect",
-			client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
-				return nil
-			}},
+			name:   "caller callback accepts every redirect",
+			client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return nil }},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var hits atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				hits.Add(1)
-				http.Redirect(rw, r, r.URL.Path, http.StatusTemporaryRedirect)
-			}))
-			t.Cleanup(srv.Close)
+			var loop counter
+			srv := serve(t, routes{"/": loop.count(redirectTo("/"))})
 
 			_, err := post(t, SameOriginClient(tt.client, 0), srv.URL)
 
 			if !errors.Is(err, ErrTooManyRedirects) {
 				t.Errorf("Do() error = %v, want %v", err, ErrTooManyRedirects)
 			}
-			const wantHits = 10
-			if got := hits.Load(); got != wantHits {
-				t.Errorf("server hits = %d, want %d", got, wantHits)
+			if got := loop.hits.Load(); got != maxRedirects {
+				t.Errorf("server hits = %d, want %d", got, maxRedirects)
 			}
 		})
 	}
@@ -265,6 +282,7 @@ func TestSameOriginClientTimeout(t *testing.T) {
 func TestSameOriginRedirectsOrigin(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
+		// from is the first request URL; empty means no earlier request.
 		from, to string
 		wantErr  error
 	}{
@@ -272,20 +290,27 @@ func TestSameOriginRedirectsOrigin(t *testing.T) {
 		{from: "https://example.com/a", to: "https://example.com:443/b"},
 		{from: "http://example.com:80/a", to: "HTTP://example.com/b"},
 		{from: "http://[::1]:8080/a", to: "http://[::1]:8080/b"},
+		{from: "http://[FE80::1%25eth0]:8080/a", to: "http://[fe80::1%25eth0]:8080/b"},
+		{from: "https://kelvin.example/a", to: "https://\u212Aelvin.example/b"},
 		{from: "https://example.com/a", to: "https://example.com:8443/b", wantErr: ErrCrossOriginRedirect},
 		{from: "https://example.com/a", to: "http://example.com:443/b", wantErr: ErrCrossOriginRedirect},
 		{from: "https://example.com/a", to: "https://api.example.com/b", wantErr: ErrCrossOriginRedirect},
-		{from: "http://[FE80::1%25eth0]:8080/a", to: "http://[fe80::1%25eth0]:8080/b"},
 		{from: "https://i.example/a", to: "https://\u0130.example/b", wantErr: ErrCrossOriginRedirect},
 		{from: "http://[fe80::1%25ethA]:8080/a", to: "http://[fe80::1%25etha]:8080/b", wantErr: ErrCrossOriginRedirect},
+		// IDNA rejects '_', so these names fall back to an exact match.
+		{from: "https://a_b.example/a", to: "https://A_B.example/b", wantErr: ErrCrossOriginRedirect},
+		{to: "https://example.com/b", wantErr: ErrCrossOriginRedirect},
 	}
 	for _, tt := range tests {
 		t.Run(tt.from+" to "+tt.to, func(t *testing.T) {
 			t.Parallel()
-			from := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.from, http.NoBody)
+			var via []*http.Request
+			if tt.from != "" {
+				via = append(via, httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.from, http.NoBody))
+			}
 			to := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.to, http.NoBody)
 
-			err := sameOriginRedirects(nil)(to, []*http.Request{from})
+			err := sameOriginRedirects(nil)(to, via)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("redirect %q to %q error mismatch (-want +got):\n%s", tt.from, tt.to, diff)

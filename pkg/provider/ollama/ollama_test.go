@@ -85,48 +85,54 @@ func captureRequestBody(t *testing.T) (client *http.Client, gotBody *[]byte) {
 	return client, &body
 }
 
+// newCrossOriginRedirect starts a server that redirects every request to a
+// second server, and returns the first server's URL and a func reporting
+// whether the second one was reached.
+func newCrossOriginRedirect(t *testing.T) (redirectorURL string, leaked func() bool) {
+	t.Helper()
+	var hit atomic.Bool
+	sink := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hit.Store(true) }))
+	t.Cleanup(sink.Close)
+	redirector := httptest.NewServer(http.RedirectHandler(sink.URL, http.StatusTemporaryRedirect))
+	t.Cleanup(redirector.Close)
+	return redirector.URL, hit.Load
+}
+
+func callProvider(t *testing.T, host string, client *http.Client) error {
+	t.Helper()
+	p := ollama.NewProvider(host, "m", ollama.WithHTTPClient(client))
+	return p.Call(t.Context(), &provpkg.Lease[struct{}]{}, "prompt", nil).Err
+}
+
+// callEmbedder disables retries: a refused redirect is a transient error.
+func callEmbedder(t *testing.T, host string, client *http.Client) error {
+	t.Helper()
+	e := ollama.NewEmbedder(host, "m", ollama.WithHTTPClient(client), ollama.WithMaxRetries(0))
+	_, err := e.Embed(t.Context(), "x")
+	return err
+}
+
 func TestCrossOriginRedirectRefused(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
-		do   func(t *testing.T, host string, client *http.Client) error
+		call func(t *testing.T, host string, client *http.Client) error
 	}{
-		{
-			name: "provider",
-			do: func(t *testing.T, host string, client *http.Client) error {
-				t.Helper()
-				p := ollama.NewProvider(host, "m", ollama.WithHTTPClient(client))
-				return p.Call(t.Context(), &provpkg.Lease[struct{}]{}, "prompt", nil).Err
-			},
-		},
-		{
-			name: "embedder",
-			do: func(t *testing.T, host string, client *http.Client) error {
-				t.Helper()
-				e := ollama.NewEmbedder(host, "m", ollama.WithHTTPClient(client), ollama.WithMaxRetries(0))
-				_, err := e.Embed(t.Context(), "x")
-				return err
-			},
-		},
+		{name: "provider", call: callProvider},
+		{name: "embedder", call: callEmbedder},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			var leaked atomic.Bool
-			other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
-			t.Cleanup(other.Close)
-			redirector := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-				http.Redirect(rw, r, other.URL, http.StatusTemporaryRedirect)
-			}))
-			t.Cleanup(redirector.Close)
+			host, leaked := newCrossOriginRedirect(t)
 			caller := &http.Client{}
 
-			err := tt.do(t, redirector.URL, caller)
+			err := tt.call(t, host, caller)
 
 			if !errors.Is(err, httputil.ErrCrossOriginRedirect) {
 				t.Errorf("error = %v, want %v", err, httputil.ErrCrossOriginRedirect)
 			}
-			if leaked.Load() {
+			if leaked() {
 				t.Error("redirect target received the request")
 			}
 			if caller.CheckRedirect != nil {
