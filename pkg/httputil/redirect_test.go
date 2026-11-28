@@ -93,29 +93,50 @@ func TestSameOriginClientRefusesCrossOrigin(t *testing.T) {
 
 func TestSameOriginClientRechecksAfterCallerCheckRedirect(t *testing.T) {
 	t.Parallel()
-	var leaked atomic.Bool
-	other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
-	t.Cleanup(other.Close)
-	otherURL, err := url.Parse(other.URL)
-	if err != nil {
-		t.Fatalf("url.Parse(%q) error = %v", other.URL, err)
+	tests := []struct {
+		name    string
+		rewrite func(req *http.Request, via []*http.Request, host string)
+	}{
+		{
+			name:    "callback rewrites the redirect URL",
+			rewrite: func(req *http.Request, _ []*http.Request, host string) { req.URL.Host = host },
+		},
+		{
+			name: "callback also rewrites the first request URL",
+			rewrite: func(req *http.Request, via []*http.Request, host string) {
+				req.URL.Host = host
+				via[0].URL.Host = host
+			},
+		},
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		http.Redirect(rw, r, "/next", http.StatusTemporaryRedirect)
-	}))
-	t.Cleanup(srv.Close)
-	rewrite := &http.Client{CheckRedirect: func(req *http.Request, _ []*http.Request) error {
-		req.URL.Host = otherURL.Host
-		return nil
-	}}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var leaked atomic.Bool
+			other := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { leaked.Store(true) }))
+			t.Cleanup(other.Close)
+			otherURL, err := url.Parse(other.URL)
+			if err != nil {
+				t.Fatalf("url.Parse(%q) error = %v", other.URL, err)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				http.Redirect(rw, r, "/next", http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(srv.Close)
+			caller := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				tt.rewrite(req, via, otherURL.Host)
+				return nil
+			}}
 
-	_, err = post(t, SameOriginClient(rewrite, 0), srv.URL)
+			_, err = post(t, SameOriginClient(caller, 0), srv.URL)
 
-	if !errors.Is(err, ErrCrossOriginRedirect) {
-		t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
-	}
-	if leaked.Load() {
-		t.Error("rewritten redirect target received a request")
+			if !errors.Is(err, ErrCrossOriginRedirect) {
+				t.Errorf("Do() error = %v, want %v", err, ErrCrossOriginRedirect)
+			}
+			if leaked.Load() {
+				t.Error("rewritten redirect target received a request")
+			}
+		})
 	}
 }
 

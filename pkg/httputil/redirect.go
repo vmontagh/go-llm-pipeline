@@ -45,7 +45,9 @@ func SameOriginClient(client *http.Client, timeout time.Duration) *http.Client {
 // HTTPS-to-HTTP downgrades.
 func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
-		if err := checkOrigin(req, via); err != nil {
+		// Snapshot the origin first: next can mutate both req.URL and via.
+		want := origin(via[0].URL)
+		if err := checkOrigin(want, req.URL); err != nil {
 			return err
 		}
 		if len(via) >= maxRedirects {
@@ -57,16 +59,13 @@ func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*
 		if err := next(req, via); err != nil {
 			return err
 		}
-		// next may have rewritten req.URL, so check again before net/http
-		// sends the request.
-		return checkOrigin(req, via)
+		return checkOrigin(want, req.URL)
 	}
 }
 
-func checkOrigin(req *http.Request, via []*http.Request) error {
-	orig := via[0].URL
-	if origin(req.URL) != origin(orig) {
-		return fmt.Errorf("%w: %s://%s to %s://%s", ErrCrossOriginRedirect, orig.Scheme, orig.Host, req.URL.Scheme, req.URL.Host)
+func checkOrigin(want string, target *url.URL) error {
+	if got := origin(target); got != want {
+		return fmt.Errorf("%w: %s to %s", ErrCrossOriginRedirect, want, got)
 	}
 	return nil
 }
