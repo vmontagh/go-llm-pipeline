@@ -38,7 +38,11 @@ func post(t *testing.T, c *http.Client, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			t.Errorf("closing response body: %v", err)
+		}
+	}()
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatalf("reading response: %v", err)
@@ -130,21 +134,38 @@ func TestSameOriginClientFollowsSameOrigin(t *testing.T) {
 
 func TestSameOriginClientStopsRedirectLoop(t *testing.T) {
 	t.Parallel()
-	var hits atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
-		http.Redirect(rw, r, r.URL.Path, http.StatusTemporaryRedirect)
-	}))
-	t.Cleanup(srv.Close)
-
-	_, err := post(t, SameOriginClient(nil, 0), srv.URL)
-
-	if !errors.Is(err, ErrTooManyRedirects) {
-		t.Errorf("Do() error = %v, want %v", err, ErrTooManyRedirects)
+	tests := []struct {
+		name   string
+		client *http.Client
+	}{
+		{name: "default client"},
+		{
+			name: "caller callback accepts every redirect",
+			client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+				return nil
+			}},
+		},
 	}
-	const wantHits = 10
-	if got := hits.Load(); got != wantHits {
-		t.Errorf("server hits = %d, want %d", got, wantHits)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var hits atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
+				http.Redirect(rw, r, r.URL.Path, http.StatusTemporaryRedirect)
+			}))
+			t.Cleanup(srv.Close)
+
+			_, err := post(t, SameOriginClient(tt.client, 0), srv.URL)
+
+			if !errors.Is(err, ErrTooManyRedirects) {
+				t.Errorf("Do() error = %v, want %v", err, ErrTooManyRedirects)
+			}
+			const wantHits = 10
+			if got := hits.Load(); got != wantHits {
+				t.Errorf("server hits = %d, want %d", got, wantHits)
+			}
+		})
 	}
 }
 

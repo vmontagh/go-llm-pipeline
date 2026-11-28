@@ -46,11 +46,11 @@ func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*
 		if req.URL.Scheme != orig.Scheme || req.URL.Host != orig.Host {
 			return fmt.Errorf("%w: %s://%s to %s://%s", ErrCrossOriginRedirect, orig.Scheme, orig.Host, req.URL.Scheme, req.URL.Host)
 		}
-		if next != nil {
-			return next(req, via)
-		}
 		if len(via) >= maxRedirects {
 			return fmt.Errorf("%w: stopped after %d", ErrTooManyRedirects, maxRedirects)
+		}
+		if next != nil {
+			return next(req, via)
 		}
 		return nil
 	}
