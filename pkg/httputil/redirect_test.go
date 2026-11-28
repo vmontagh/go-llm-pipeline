@@ -241,8 +241,11 @@ func TestSameOriginClientStopsRedirectLoop(t *testing.T) {
 			if !errors.Is(err, ErrTooManyRedirects) {
 				t.Errorf("Do() error = %v, want %v", err, ErrTooManyRedirects)
 			}
-			if got := loop.hits.Load(); got != maxRedirects {
-				t.Errorf("server hits = %d, want %d", got, maxRedirects)
+			// net/http's documented default limit, stated independently of
+			// maxRedirects.
+			const wantHits = 10
+			if got := loop.hits.Load(); got != wantHits {
+				t.Errorf("server hits = %d, want %d", got, wantHits)
 			}
 		})
 	}
