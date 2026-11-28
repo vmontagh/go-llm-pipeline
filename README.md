@@ -320,9 +320,11 @@ borderline conditions surface without blocking automation.
 
 ### API stability
 
-`pkg/analyzer` and `pkg/llmvcr` are stable: their exported API follows semantic versioning, so
-before v1.0.0 a breaking change ships only in a new minor release and is listed in the release
-notes. All other packages are experimental and may change in any release.
+`pkg/analyzer` and `pkg/llmvcr` are stable, together with `pkg/provider` and `pkg/policy`, whose
+types appear in the analyzer API. Their exported API follows semantic versioning, so before v1.0.0
+a breaking change ships only in a new minor release and is listed in the release notes. All other
+packages, including the provider implementations under `pkg/provider/`, are experimental and may
+change in any release.
 
 Two checks guard the stable API:
 

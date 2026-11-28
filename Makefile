@@ -6,7 +6,7 @@ APIDIFF := go run golang.org/x/exp/cmd/apidiff@v0.0.0-20261128033645-f63ec7c7eed
 MODULE := github.com/vmontagh/go-llm-pipeline
 # STABLE_PKGS are the packages under the API stability guarantee (see README).
 # Keep in sync with stablePackages in internal/apisnapshot.
-STABLE_PKGS := analyzer llmvcr
+STABLE_PKGS := analyzer llmvcr policy provider
 # API_BASE is the revision api-diff compares against.
 API_BASE ?= origin/main
 # SECRETS_REVS selects the commits `make secrets` scans, as `git log` revision

@@ -25,7 +25,7 @@ var update = flag.Bool("update", false, "rewrite the API snapshots in api/")
 
 // stablePackages are the packages whose exported API is frozen. Changing one
 // needs a snapshot update (make api) that reviewers can see.
-var stablePackages = []string{"analyzer", "llmvcr"}
+var stablePackages = []string{"analyzer", "llmvcr", "policy", "provider"}
 
 func TestStableAPISnapshot(t *testing.T) {
 	for _, name := range stablePackages {
