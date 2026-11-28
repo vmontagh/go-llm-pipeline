@@ -47,12 +47,13 @@ test-bdd-live:
 # api-diff prints every change to the API of a stable package since API_BASE
 # and fails on incompatible ones. apidiff always exits 0, so the target checks
 # its report instead. A package missing at API_BASE is new and has nothing to
-# break.
+# break; a stable package removed since API_BASE is an incompatible change.
 api-diff:
 	@set -e; tmp=$$(mktemp -d); trap 'git worktree remove --force '"$$tmp"'/base; rm -rf '"$$tmp" EXIT; \
 	git worktree add -q --detach "$$tmp/base" "$(API_BASE)"; \
 	broken=0; for p in $(STABLE_PKGS); do \
 		[ -d "$$tmp/base/pkg/$$p" ] || { echo "pkg/$$p: new at $(API_BASE), skipped"; continue; }; \
+		[ -d "pkg/$$p" ] || { echo "pkg/$$p: removed since $(API_BASE)"; broken=1; continue; }; \
 		(cd "$$tmp/base" && $(APIDIFF) -w "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
 		out=$$($(APIDIFF) "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
 		if [ -z "$$out" ]; then echo "pkg/$$p: no API changes vs $(API_BASE)"; continue; fi; \
