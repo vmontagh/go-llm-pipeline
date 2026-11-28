@@ -1,7 +1,15 @@
-.PHONY: build test test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
+.PHONY: build test api-diff test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
 
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
+APIDIFF := go run golang.org/x/exp/cmd/apidiff@v0.0.0-20261128033645-f63ec7c7eed0
+MODULE := github.com/vmontagh/go-llm-pipeline
+# STABLE_PKGS are the packages under the API stability guarantee (see README).
+STABLE_PKGS := analyzer llmvcr policy provider
+# API_BASE is the revision api-diff compares against. ALLOW_BREAKING=1 reports
+# incompatible changes without failing.
+API_BASE ?= origin/main
+ALLOW_BREAKING ?=
 # SECRETS_REVS selects the commits `make secrets` scans, as `git log` revision
 # arguments: SECRETS_REVS=--all scans every branch and tag, HEAD..HEAD only
 # the tree.
@@ -35,6 +43,26 @@ test-bdd:
 test-bdd-live:
 	rm -f integ-test/testdata/cassettes/*.yaml
 	VCR_MODE=record go test -tags=live ./integ-test/... -v -count=1 -godog.tags="@live-local"
+
+# api-diff prints every change to the API of a stable package since API_BASE
+# and fails on incompatible ones. apidiff always exits 0, so the target checks
+# its report instead. A package missing at API_BASE is new and has nothing to
+# break; a stable package removed since API_BASE is an incompatible change.
+api-diff:
+	@set -e; tmp=$$(mktemp -d); trap 'git worktree remove --force '"$$tmp"'/base; rm -rf '"$$tmp" EXIT; \
+	git worktree add -q --detach "$$tmp/base" "$(API_BASE)"; \
+	gofiles() { (cd "$$1" && go list -e -f '{{len .GoFiles}}' "./pkg/$$2" 2>/dev/null); }; \
+	broken=0; for p in $(STABLE_PKGS); do \
+		[ "$$(gofiles "$$tmp/base" $$p)" != 0 ] || { echo "pkg/$$p: new at $(API_BASE), skipped"; continue; }; \
+		[ "$$(gofiles . $$p)" != 0 ] || { echo "pkg/$$p: removed since $(API_BASE)"; broken=1; continue; }; \
+		(cd "$$tmp/base" && $(APIDIFF) -w "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
+		out=$$($(APIDIFF) "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
+		if [ -z "$$out" ]; then echo "pkg/$$p: no API changes vs $(API_BASE)"; continue; fi; \
+		echo "pkg/$$p: API changes vs $(API_BASE):"; echo "$$out"; \
+		case "$$out" in *"Incompatible changes:"*) broken=1;; esac; \
+	done; \
+	if [ $$broken = 1 ] && [ "$(ALLOW_BREAKING)" != 1 ]; then \
+		echo "api-diff: incompatible changes to a stable package; set ALLOW_BREAKING=1 if intended" >&2; exit 1; fi
 
 lint:
 	golangci-lint run ./...

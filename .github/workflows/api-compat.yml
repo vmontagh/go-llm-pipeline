@@ -1,0 +1,44 @@
+name: API compatibility
+
+# Lists the API changes a pull request makes to the stable packages (see
+# README, "API stability") and fails on incompatible ones. Add the
+# breaking-change label to accept an intended break; label events re-run this
+# check, and edited covers a changed base branch.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  apidiff:
+    name: Check stable API compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Compare with base branch
+        shell: bash
+        env:
+          ALLOW_BREAKING: ${{ contains(github.event.pull_request.labels.*.name, 'breaking-change') && '1' || '' }}
+        run: |
+          {
+            echo '## Stable API changes'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          # The checkout is the PR merged into its base; the first parent is that
+          # exact base revision, even if the base branch has moved since.
+          make api-diff API_BASE=HEAD^1 ALLOW_BREAKING="$ALLOW_BREAKING" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || status=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
