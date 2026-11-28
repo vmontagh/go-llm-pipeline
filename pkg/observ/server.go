@@ -62,23 +62,36 @@ func (s *Server) Start() error {
 	return s.StartListener(l)
 }
 
-// StartListener runs the HTTP server on the given listener. This is a blocking call.
+// StartListener runs the HTTP server on the given listener. This is a blocking
+// call. It takes ownership of l and closes it on return, including when it
+// rejects l's address before serving, as http.Server.Serve does.
 func (s *Server) StartListener(l net.Listener) error {
-	host, _, err := net.SplitHostPort(l.Addr().String())
+	if err := checkLoopback(l.Addr()); err != nil {
+		// The address error is what the caller needs; a close failure on a
+		// listener that never served adds nothing actionable.
+		_ = l.Close()
+		return err
+	}
+	if err := s.server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return fmt.Errorf("observability server error: %w", err)
+	}
+	return nil
+}
+
+// checkLoopback returns an error unless addr is a loopback host and port.
+func checkLoopback(addr net.Addr) error {
+	host, _, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		return fmt.Errorf("invalid address: %w", err)
 	}
 	if host == "" {
 		return fmt.Errorf("%w: got empty host", ErrPProfNonLoopback)
 	}
-	if host != "localhost" {
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return fmt.Errorf("%w: got %q", ErrPProfNonLoopback, host)
-		}
+	if host == "localhost" {
+		return nil
 	}
-	if err := s.server.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		return fmt.Errorf("observability server error: %w", err)
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("%w: got %q", ErrPProfNonLoopback, host)
 	}
 	return nil
 }

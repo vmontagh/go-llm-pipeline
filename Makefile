@@ -1,4 +1,4 @@
-.PHONY: build test api-diff test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
+.PHONY: build test api-diff test-contrib test-unit-cover cover-check test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
 
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
@@ -29,6 +29,26 @@ test-contrib:
 
 test-unit-cover:
 	go test -race -coverprofile=coverage.out ./...
+
+# cover-check runs the tests like test-unit-cover (writing coverage.out) and
+# fails when any package with statements is below COVER_MIN percent statement
+# coverage, as reported per package by `go test`. Packages
+# without statements are skipped. To exempt a package, add its import path to
+# COVER_EXCLUDE together with a comment giving the reason.
+COVER_MIN ?= 80
+COVER_EXCLUDE :=
+cover-check:
+	@out=$$(go test -race -coverprofile=coverage.out ./...) || { echo "$$out"; exit 1; }; \
+	echo "$$out" | awk -v min=$(COVER_MIN) -v exclude="$(COVER_EXCLUDE)" ' \
+		BEGIN { n = split(exclude, ex, " "); for (i = 1; i <= n; i++) skip[ex[i]] = 1 } \
+		match($$0, /coverage: [0-9.]+% of statements/) { \
+			pkg = ($$1 == "ok") ? $$2 : $$1; \
+			pct = substr($$0, RSTART + 10, RLENGTH - 10) + 0; \
+			if (pkg in skip) next; \
+			if (pct < min) { printf "%s: %.1f%% < %d%%\n", pkg, pct, min; bad = 1 } \
+		} \
+		END { if (bad) { print "cover-check: packages above are below the coverage minimum"; exit 1 } \
+			print "cover-check: every package is at or above " min "% statement coverage" }'
 
 # test-bdd runs the godog integration suite's @fake lane: cassettes are replayed
 # in-process with no network access, so it is safe for pre-submit CI.

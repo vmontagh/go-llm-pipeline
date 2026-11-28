@@ -99,6 +99,7 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - provider
+      - policy
 
   provider:
     anyProjectDeps: false
@@ -187,6 +188,7 @@ deps:
     anyVendorDeps: false
     mayDependOn:
       - llmvcr
+      - llmfixtures
 
   llmvcr:
     anyProjectDeps: false

@@ -591,6 +591,17 @@ func TestPatchInteractionBody(t *testing.T) {
 			newBody:   "new_request",
 			wantBody:  "new_request",
 		},
+		{
+			name:     "success patch response",
+			newBody:  "new_response",
+			wantBody: "new_response",
+		},
+		{
+			name:    "negative index error",
+			index:   -1,
+			newBody: "new",
+			wantErr: ErrIndexOutOfBounds,
+		},
 	}
 
 	for _, tt := range tests {

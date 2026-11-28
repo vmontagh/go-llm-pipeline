@@ -19,6 +19,7 @@ All common tasks are wired to `make` targets:
 | `make build` | Compile all packages. |
 | `make test` | Run the full test suite with the race detector. |
 | `make test-unit-cover` | Run tests with a coverage profile (`coverage.out`). |
+| `make cover-check` | Fail if any package is below 80% statement coverage (`COVER_MIN`). |
 | `make lint` | Run `golangci-lint`. |
 | `make lint-arch` | Run the architecture linter (`go-arch-lint`). |
 | `make vuln` | Report reachable known vulnerabilities (`govulncheck`). |
@@ -40,6 +41,10 @@ credentials in tests need a trailing `// gitleaks:allow` comment so
 **New features and bug fixes must include tests** in the same pull request. A
 bug fix needs a test that fails without the fix. Reviewers will ask for tests
 when a change adds or alters behavior without them.
+
+**Every package must keep at least 80% statement coverage**, as reported per
+package by `go test -cover ./...`. Run `make cover-check` before submitting; CI
+runs it too and fails on any package below the minimum.
 
 ### Fuzzing the analyzer schema layer
 
