@@ -199,3 +199,32 @@ func TestSameOriginClientTimeout(t *testing.T) {
 		})
 	}
 }
+
+func TestSameOriginRedirectsOrigin(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		from, to string
+		wantErr  error
+	}{
+		{from: "https://example.com/a", to: "https://EXAMPLE.com/b"},
+		{from: "https://example.com/a", to: "https://example.com:443/b"},
+		{from: "http://example.com:80/a", to: "HTTP://example.com/b"},
+		{from: "http://[::1]:8080/a", to: "http://[::1]:8080/b"},
+		{from: "https://example.com/a", to: "https://example.com:8443/b", wantErr: ErrCrossOriginRedirect},
+		{from: "https://example.com/a", to: "http://example.com:443/b", wantErr: ErrCrossOriginRedirect},
+		{from: "https://example.com/a", to: "https://api.example.com/b", wantErr: ErrCrossOriginRedirect},
+	}
+	for _, tt := range tests {
+		t.Run(tt.from+" to "+tt.to, func(t *testing.T) {
+			t.Parallel()
+			from := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.from, http.NoBody)
+			to := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tt.to, http.NoBody)
+
+			err := sameOriginRedirects(nil)(to, []*http.Request{from})
+
+			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
+				t.Errorf("redirect %q to %q error mismatch (-want +got):\n%s", tt.from, tt.to, diff)
+			}
+		})
+	}
+}

@@ -3,7 +3,10 @@ package httputil
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -43,7 +46,7 @@ func SameOriginClient(client *http.Client, timeout time.Duration) *http.Client {
 func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		orig := via[0].URL
-		if req.URL.Scheme != orig.Scheme || req.URL.Host != orig.Host {
+		if origin(req.URL) != origin(orig) {
 			return fmt.Errorf("%w: %s://%s to %s://%s", ErrCrossOriginRedirect, orig.Scheme, orig.Host, req.URL.Scheme, req.URL.Host)
 		}
 		if len(via) >= maxRedirects {
@@ -55,3 +58,18 @@ func sameOriginRedirects(next func(*http.Request, []*http.Request) error) func(*
 		return nil
 	}
 }
+
+// origin returns u's scheme, host and port in canonical form: lower-case
+// host, with the scheme's default port filled in, so EXAMPLE.com and
+// example.com:443 compare equal over HTTPS. url.Parse already lower-cases
+// the scheme.
+func origin(u *url.URL) string {
+	scheme := u.Scheme
+	port := u.Port()
+	if port == "" {
+		port = defaultPorts[scheme]
+	}
+	return scheme + "://" + net.JoinHostPort(strings.ToLower(u.Hostname()), port)
+}
+
+var defaultPorts = map[string]string{"http": "80", "https": "443"}
