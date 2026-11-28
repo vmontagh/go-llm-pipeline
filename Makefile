@@ -1,7 +1,14 @@
-.PHONY: build test test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
+.PHONY: build test api api-diff test-contrib test-unit-cover test-bdd test-bdd-live lint lint-arch vuln secrets clean fmt vet tidy
 
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.10.0
 GITLEAKS := go run github.com/zricethezav/gitleaks/v8@v8.30.1
+APIDIFF := go run golang.org/x/exp/cmd/apidiff@v0.0.0-20261128033645-f63ec7c7eed0
+MODULE := github.com/vmontagh/go-llm-pipeline
+# STABLE_PKGS are the packages under the API stability guarantee (see README).
+# Keep in sync with stablePackages in internal/apisnapshot.
+STABLE_PKGS := analyzer llmvcr
+# API_BASE is the revision api-diff compares against.
+API_BASE ?= origin/main
 # SECRETS_REVS selects the commits `make secrets` scans, as `git log` revision
 # arguments: SECRETS_REVS=--all scans every branch and tag, HEAD..HEAD only
 # the tree.
@@ -35,6 +42,25 @@ test-bdd:
 test-bdd-live:
 	rm -f integ-test/testdata/cassettes/*.yaml
 	VCR_MODE=record go test -tags=live ./integ-test/... -v -count=1 -godog.tags="@live-local"
+
+# api rewrites the API snapshots in api/ after an intended change to a stable
+# package. make test fails while a snapshot is out of date.
+api:
+	go test ./internal/apisnapshot -count=1 -update
+
+# api-diff fails if a stable package breaks compatibility with API_BASE.
+# apidiff always exits 0, so any reported incompatible change fails the target.
+# A package missing at API_BASE is new and has nothing to break.
+api-diff:
+	@set -e; tmp=$$(mktemp -d); trap 'git worktree remove --force '"$$tmp"'/base; rm -rf '"$$tmp" EXIT; \
+	git worktree add -q --detach "$$tmp/base" "$(API_BASE)"; \
+	fail=0; for p in $(STABLE_PKGS); do \
+		[ -d "$$tmp/base/pkg/$$p" ] || { echo "pkg/$$p: new at $(API_BASE), skipped"; continue; }; \
+		(cd "$$tmp/base" && $(APIDIFF) -w "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
+		out=$$($(APIDIFF) -incompatible "$$tmp/$$p.export" $(MODULE)/pkg/$$p); \
+		if [ -n "$$out" ]; then echo "pkg/$$p: incompatible changes vs $(API_BASE):"; echo "$$out"; fail=1; \
+		else echo "pkg/$$p: compatible with $(API_BASE)"; fi; \
+	done; exit $$fail
 
 lint:
 	golangci-lint run ./...

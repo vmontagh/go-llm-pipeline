@@ -1,0 +1,178 @@
+package analyzer
+
+const DefaultMaxAssetBytes int64 = 64 << 20
+
+const DefaultMaxToolSteps = 8
+
+const MetadataContentType = "contentType"
+
+var (
+	ErrJSONMalformed = errors.New("analyzer: response is not valid JSON")
+	ErrDecode = errors.New("analyzer: response did not map to target type")
+	ErrMaxAttemptsExceeded = errors.New("analyzer: extraction exceeded max attempts")
+	ErrNilAnalyzer = errors.New("analyzer: nil TextAnalyzer passed to Extract")
+)
+
+var (
+	ErrInvalidTool = errors.New("analyzer: invalid tool")
+	ErrInvalidToolArguments = errors.New("analyzer: invalid tool arguments")
+	ErrUnknownTool = errors.New("analyzer: unknown tool")
+	ErrMaxToolSteps = errors.New("analyzer: tool loop exceeded max steps")
+)
+
+var ErrNilParser = errors.New("analyzer: nil parser")
+
+var ErrNilProvider = errors.New("analyzer: nil provider")
+
+var ErrPayloadTooLarge = errors.New("analyzer: asset payload exceeds maximum size")
+
+var ErrSchemaDerivation = errors.New("analyzer: schema derivation failed")
+
+var ErrSchemaValidation = errors.New("analyzer: schema validation failed")
+
+var ErrUnknownCallOutcome = errors.New("analyzer: provider returned unknown CallOutcome")
+
+func Extract[T any](ctx context.Context, a TextAnalyzer, req ExtractRequest, opts ...ExtractOption) (T, error)
+
+func SchemaOf(v any) (map[string]any, error)
+
+func Validate(schema map[string]any, data []byte) error
+
+type Asset struct {
+	ID string
+	Payload io.Reader
+	Metadata map[string]any
+}
+
+func AssetFromBytes(id string, b []byte, metadata map[string]any) Asset
+
+func AssetFromReader(id string, r io.Reader, metadata map[string]any) Asset
+
+func AssetFromString(id, s string, metadata map[string]any) Asset
+
+type Builder[T any, R any] struct {
+	// contains filtered or unexported fields
+}
+
+func NewBuilder[T any, R any](p provider.Provider[T], parser func(string) (R, error)) *Builder[T, R]
+
+func NewTextBuilder[C any](p provider.Provider[C]) *Builder[C, string]
+
+func (b *Builder[T, R]) Build() (*Template[T, R], error)
+
+func (b *Builder[T, R]) WithBackOff(bo backoff.BackOff) *Builder[T, R]
+
+func (b *Builder[T, R]) WithGuard(opts ...provider.GuardOption) *Builder[T, R]
+
+func (b *Builder[T, R]) WithLogger(l *slog.Logger) *Builder[T, R]
+
+func (b *Builder[T, R]) WithMaxAssetBytes(n int64) *Builder[T, R]
+
+func (b *Builder[T, R]) WithMaxElapsedTime(d time.Duration) *Builder[T, R]
+
+func (b *Builder[T, R]) WithMaxParseRetries(r int) *Builder[T, R]
+
+func (b *Builder[T, R]) WithRetryPolicy(p policy.RetryPolicy) *Builder[T, R]
+
+func (b *Builder[T, R]) WithScrubFunc(fn func(string) string) *Builder[T, R]
+
+func (b *Builder[T, R]) WithShortCooldownRetryThreshold(d time.Duration) *Builder[T, R]
+
+func (b *Builder[T, R]) WithTracer(t Tracer) *Builder[T, R]
+
+type ExtractOption interface {
+	// contains filtered or unexported methods
+}
+
+func WithFeedbackFormatter(fn func(FeedbackInput) string) ExtractOption
+
+func WithMaxAttempts(n int) ExtractOption
+
+func WithSchema(schema map[string]any) ExtractOption
+
+func WithStrictDecoding(strict bool) ExtractOption
+
+type ExtractRequest struct {
+	Prompt string
+	ImageData []byte
+	JobID string
+	Publish PublishFn
+}
+
+type FeedbackInput struct {
+	Schema map[string]any
+	Raw string
+	ParseError error
+	Fields []*FieldError
+}
+
+type FieldError struct {
+	Path string
+	Rule string
+	Detail string
+}
+
+func (e *FieldError) Error() string
+
+func (e *FieldError) Unwrap() error
+
+type PublishFn = func(eventType, itemID, message string, isError bool)
+
+type Template[T any, R any] struct {
+	// contains filtered or unexported fields
+}
+
+func (t *Template[T, R]) Analyze(
+	ctx context.Context,
+	prompt string,
+	imageData []byte,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) (R, error)
+
+func (t *Template[T, R]) AnalyzeAsset(
+	ctx context.Context,
+	prompt string,
+	asset Asset,
+	publish func(eventType, itemID, message string, isError bool),
+) (R, error)
+
+func (t *Template[T, R]) AnalyzeMessages(
+	ctx context.Context,
+	msgs []provider.Message,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) (R, error)
+
+func (t *Template[T, R]) AnalyzeWithTools(ctx context.Context, msgs []provider.Message, loop ToolLoop, jobID string, publish PublishFn) (R, error)
+
+func (t *Template[T, R]) Name() string
+
+func (t *Template[T, R]) Provider() provider.Provider[T]
+
+func (t *Template[T, R]) StreamMessages(
+	ctx context.Context,
+	msgs []provider.Message,
+	jobID string,
+	publish func(eventType, itemID, message string, isError bool),
+) iter.Seq2[provider.Chunk, error]
+
+type TextAnalyzer interface {
+	Analyze(ctx context.Context, prompt string, imageData []byte, jobID string, publish PublishFn) (string, error)
+}
+
+type Tool struct {
+	// contains filtered or unexported fields
+}
+
+func NewTool[A, R any](name, description string, fn func(context.Context, A) (R, error)) (Tool, error)
+
+type ToolLoop struct {
+	Tools []Tool
+	MaxSteps int
+	ReportInvalidCalls bool
+}
+
+type Tracer interface {
+	StartRegion(ctx context.Context, name string) interface{ End() }
+}

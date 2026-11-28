@@ -1,0 +1,206 @@
+package llmvcr
+
+const GoldenUpdateEnv = "LLMVCR_UPDATE"
+
+var ErrCassetteMiss = errors.New("llmvcr: refusing live network call (cassette miss)")
+
+var ErrIndexOutOfBounds = errors.New("llmvcr: interaction index out of bounds")
+
+var ErrInvalidPatch = errors.New("llmvcr: invalid patch")
+
+var ErrUnknownMode = errors.New("llmvcr: unknown mode")
+
+func DefaultMatcher(r *http.Request, i RecordedRequest) bool
+
+func ExecuteAll(scenarios []Scenario) error
+
+func FormatCassette(path string) (bool, error)
+
+func FormatInteraction(i *Interaction) bool
+
+func FormatJSON(raw string) string
+
+func GeminiQuotaExceeded() string
+
+func GeminiResponse(text string) string
+
+func Golden(t testing.TB, name string, got any)
+
+func InspectCassette(w io.Writer, path string) error
+
+func OllamaQuotaExceeded() string
+
+func OllamaResponse(text string) string
+
+func OpenAIQuotaExceeded() string
+
+func OpenAIResponse(text string) string
+
+func PatchInteractionBody(path string, index int, isRequest bool, newBody string) (string, error)
+
+func PrintPrettyResult(w io.Writer, path string, changed bool) error
+
+func SaveCassette(path string, c *Cassette) error
+
+type Action interface {
+	Apply(matched *Interaction, allInteractions []Interaction) (replacement []Interaction, err error)
+}
+
+func Chain(actions ...Action) Action
+
+func InjectBefore(interactions ...Interaction) Action
+
+func MutateBody(fn func(string) (string, error)) Action
+
+func ReplaceBody(body string) Action
+
+func ReplaceHeaders(headers map[string][]string) Action
+
+func ReplaceStatusCode(code int) Action
+
+func ScrubBody(fn func(string) string) Action
+
+func SyncContentLength() Action
+
+type Cassette struct {
+	Interactions []Interaction `yaml:"interactions"`
+	Version      int           `yaml:"version"`
+}
+
+func LoadCassette(path string) (*Cassette, error)
+
+type Interaction struct {
+	ID       int             `yaml:"id"`
+	Request  InteractionReq  `yaml:"request"`
+	Response InteractionResp `yaml:"response"`
+}
+
+func GeminiInteraction(code int, body string) Interaction
+
+func OllamaInteraction(code int, body string) Interaction
+
+func OpenAIInteraction(code int, body string) Interaction
+
+type InteractionMatcher interface {
+	Match(req *InteractionReq) bool
+}
+
+func And(matchers ...InteractionMatcher) InteractionMatcher
+
+func BodyContains(substr string) InteractionMatcher
+
+func HeaderEquals(key, value string) InteractionMatcher
+
+func MethodEquals(method string) InteractionMatcher
+
+func NthMatch(inner InteractionMatcher, n int) InteractionMatcher
+
+func Or(matchers ...InteractionMatcher) InteractionMatcher
+
+func URLContains(substr string) InteractionMatcher
+
+func URLQueryParam(key, value string) InteractionMatcher
+
+type InteractionReq struct {
+	Body             string              `yaml:"body"`
+	ContentLength    int                 `yaml:"content_length"`
+	Form             map[string][]string `yaml:"form"`
+	Headers          map[string][]string `yaml:"headers"`
+	Host             string              `yaml:"host"`
+	Method           string              `yaml:"method"`
+	Proto            string              `yaml:"proto"`
+	ProtoMajor       int                 `yaml:"proto_major"`
+	ProtoMinor       int                 `yaml:"proto_minor"`
+	RemoteAddr       string              `yaml:"remote_addr"`
+	RequestURI       string              `yaml:"request_uri"`
+	Trailer          map[string][]string `yaml:"trailer"`
+	TransferEncoding []string            `yaml:"transfer_encoding"`
+	URL              string              `yaml:"url"`
+}
+
+type InteractionResp struct {
+	Body             string              `yaml:"body"`
+	Code             int                 `yaml:"code"`
+	ContentLength    int                 `yaml:"content_length"`
+	Duration         string              `yaml:"duration"`
+	Headers          map[string][]string `yaml:"headers"`
+	Proto            string              `yaml:"proto"`
+	ProtoMajor       int                 `yaml:"proto_major"`
+	ProtoMinor       int                 `yaml:"proto_minor"`
+	Status           string              `yaml:"status"`
+	Trailer          map[string][]string `yaml:"trailer"`
+	TransferEncoding []string            `yaml:"transfer_encoding"`
+	Uncompressed     bool                `yaml:"uncompressed"`
+}
+
+type MatcherFunc func(*http.Request, RecordedRequest) bool
+
+type Mode int
+
+const (
+	ModeReplayOnly Mode = iota
+	ModeRecordOnce
+	ModeRecordOnly
+)
+
+type Option func(*config)
+
+func WithAdditionalScrubRules(rules ...Rule) Option
+
+func WithFailFastOnMiss(enabled bool) Option
+
+func WithMatcher(fn MatcherFunc) Option
+
+func WithPrettyJSON(enabled bool) Option
+
+func WithRedactHeaders(headers ...string) Option
+
+func WithRedactQueryParams(params ...string) Option
+
+func WithScrubber(s *Scrubber) Option
+
+type Patch struct {
+	Match  InteractionMatcher
+	Action Action
+}
+
+type RecordedRequest struct {
+	Method string
+	URL string
+}
+
+type Recorder struct {
+	// contains filtered or unexported fields
+}
+
+func New(cassettePath string, mode Mode, opts ...Option) (*Recorder, error)
+
+func (r *Recorder) HTTPClient() *http.Client
+
+func (r *Recorder) Stop() error
+
+type Rule struct {
+	// contains filtered or unexported fields
+}
+
+func MustRegexpRule(pattern, replacement string) Rule
+
+func RegexpRule(pattern, replacement string) (Rule, error)
+
+type Scenario struct {
+	BaseCassette   string
+	TargetCassette string
+	Patches        []Patch
+}
+
+func (s *Scenario) Execute() error
+
+type Scrubber struct {
+	// contains filtered or unexported fields
+}
+
+func DefaultScrubber() *Scrubber
+
+func NewScrubber(rules ...Rule) *Scrubber
+
+func (s *Scrubber) Scrub(text string) string

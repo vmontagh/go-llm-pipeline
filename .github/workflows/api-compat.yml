@@ -1,0 +1,33 @@
+name: API compatibility
+
+# Fails a pull request that breaks the API of a stable package (see README,
+# "API stability"). Add the breaking-change label to accept an intended break;
+# the label events re-run this check.
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  apidiff:
+    name: Check stable API compatibility
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'breaking-change') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Compare with base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: make api-diff API_BASE="origin/$BASE_REF"

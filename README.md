@@ -318,6 +318,19 @@ borderline conditions surface without blocking automation.
 | `contrib/tiktoken` | Optional separate module: an exact OpenAI `cost.Counter` built on tiktoken-go with embedded encodings. The core module does not depend on it. |
 | `pkg/doctor` | Environment-readiness diagnostics (file descriptors, hosted-API latency and key validity, local Ollama) exposed as a library API. |
 
+### API stability
+
+`pkg/analyzer` and `pkg/llmvcr` are stable: their exported API follows semantic versioning, so
+before v1.0.0 a breaking change ships only in a new minor release and is listed in the release
+notes. All other packages are experimental and may change in any release.
+
+Two checks guard the stable API:
+
+- `make test` compares each stable package with its snapshot in `api/`. After an intended change,
+  run `make api` and commit the updated snapshot so reviewers see the diff.
+- The API compatibility workflow runs `make api-diff`, which uses `apidiff` to fail a pull request
+  that breaks compatibility with `main`. Add the `breaking-change` label to accept an intended break.
+
 ### Determinism and testing
 
 Deterministic, zero-cost CI is a first-class goal. The determinism toolkit is centered on
@@ -472,6 +485,8 @@ Common `make` targets:
 | --- | --- |
 | `make build` | Compile all packages. |
 | `make test` | Run the full test suite with the race detector. |
+| `make api` | Rewrite the API snapshots in `api/` for the stable packages. |
+| `make api-diff` | Fail on incompatible changes to a stable package since `API_BASE` (default `origin/main`). |
 | `make test-unit-cover` | Run tests with a coverage profile. |
 | `make lint` | Run `golangci-lint`. |
 | `make lint-arch` | Run the architecture linter (`go-arch-lint`). |

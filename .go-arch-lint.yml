@@ -11,6 +11,8 @@ components:
     in: internal/doclinks/**
   llmfixtures:
     in: internal/llmfixtures/**
+  apisnapshot:
+    in: internal/apisnapshot/**
   trace:
     in: pkg/trace/**
   httputil:
@@ -69,6 +71,11 @@ deps:
     anyVendorDeps: true
     mayDependOn:
       - doclinks
+  apisnapshot:
+    anyProjectDeps: false
+    anyVendorDeps: true
+    mayDependOn:
+      - apisnapshot
 
   logger:
     anyProjectDeps: false
