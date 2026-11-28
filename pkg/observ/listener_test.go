@@ -17,16 +17,24 @@ type fakeAddr string
 func (a fakeAddr) Network() string { return "tcp" }
 func (a fakeAddr) String() string  { return string(a) }
 
-// addrListener is a net.Listener that only reports an address. Embedding the
-// interface leaves Accept and Close unimplemented: StartListener must reject
-// the address before it ever serves.
+// addrListener is a net.Listener that reports an address and records Close.
+// Embedding the interface leaves Accept unimplemented: StartListener must
+// reject the address before it ever serves.
 type addrListener struct {
 	net.Listener
-	addr fakeAddr
+	addr   fakeAddr
+	closed bool
 }
 
-func (l addrListener) Addr() net.Addr { return l.addr }
+func (l *addrListener) Addr() net.Addr { return l.addr }
 
+func (l *addrListener) Close() error {
+	l.closed = true
+	return nil
+}
+
+// TestStartListenerRejectsNonLoopback also checks that StartListener, which
+// owns its listener, closes one it rejects.
 func TestStartListenerRejectsNonLoopback(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -46,10 +54,15 @@ func TestStartListenerRejectsNonLoopback(t *testing.T) {
 			t.Parallel()
 			srv := observ.NewServer(string(tt.addr))
 
-			err := srv.StartListener(addrListener{addr: tt.addr})
+			l := &addrListener{addr: tt.addr}
+
+			err := srv.StartListener(l)
 
 			if diff := cmp.Diff(tt.wantErr, err, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("StartListener(%q) error mismatch (-want +got):\n%s", tt.addr, diff)
+			}
+			if !l.closed {
+				t.Errorf("StartListener(%q) left the rejected listener open, want it closed", tt.addr)
 			}
 		})
 	}
