@@ -408,3 +408,39 @@ func TestWithAdditionalScrubRules(t *testing.T) {
 		}
 	}
 }
+
+// TestRecord_RedactsCustomHeadersAndQueryParams checks that header and query
+// names registered through the options are redacted on top of the defaults.
+// The values are opaque, so only the name-based options can catch them.
+func TestRecord_RedactsCustomHeadersAndQueryParams(t *testing.T) {
+	t.Parallel()
+	const (
+		customHeader = "X-Session-Token"
+		customParam  = "session"
+		headerSecret = "opaque-header-value-0001"
+		paramSecret  = "opaque-query-value-0002"
+	)
+	srv := newJSONServer(t, `{"ok":true}`)
+	cassettePath := filepath.Join(t.TempDir(), "custom")
+
+	rec, err := llmvcr.New(cassettePath, llmvcr.ModeRecordOnce,
+		llmvcr.WithRedactHeaders(customHeader),
+		llmvcr.WithRedactQueryParams(customParam),
+	)
+	if err != nil {
+		t.Fatalf("New() = %v", err)
+	}
+	header := http.Header{}
+	header.Set(customHeader, headerSecret)
+	doPOST(t, rec.HTTPClient(), srv.URL+"/v1/chat?"+customParam+"="+paramSecret, `{}`, header)
+	if err := rec.Stop(); err != nil {
+		t.Fatalf("Stop() = %v", err)
+	}
+
+	got := readCassette(t, cassettePath+".yaml")
+	for _, secret := range []string{headerSecret, paramSecret} {
+		if strings.Contains(got, secret) {
+			t.Errorf("cassette contains unredacted value %q:\n%s", secret, got)
+		}
+	}
+}
