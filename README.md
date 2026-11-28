@@ -2,6 +2,7 @@
 
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/vmontagh/go-llm-pipeline/badge)](https://scorecard.dev/viewer/?uri=github.com/vmontagh/go-llm-pipeline)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17231/badge)](https://www.bestpractices.dev/projects/17231)
+[![codecov](https://codecov.io/gh/vmontagh/go-llm-pipeline/graph/badge.svg)](https://codecov.io/gh/vmontagh/go-llm-pipeline)
 
 An idiomatic, low-dependency Go toolkit for local-first, deterministic LLM orchestration and structured data extraction.
 
