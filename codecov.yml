@@ -1,0 +1,13 @@
+# Codecov statuses are informational; the Cobertura step in presubmit.yml is
+# the coverage gate.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+comment:
+  layout: "diff, flags, files"
+  require_changes: true
