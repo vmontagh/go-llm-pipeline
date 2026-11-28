@@ -7,16 +7,20 @@ disclosure of vulnerabilities.
 
 Please **do not** open a public issue for security vulnerabilities.
 
-Instead, report privately using GitHub's private vulnerability reporting:
+Instead, report privately using GitHub's
+[private vulnerability reporting](https://docs.github.com/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability):
 
-1. Go to the repository's **Security** tab.
-2. Click **Report a vulnerability** to open a private security advisory.
-3. Include a clear description, affected versions, reproduction steps, and any
+1. Open a [new private security advisory](https://github.com/vmontagh/go-llm-pipeline/security/advisories/new)
+   (or go to the **Security** tab and click **Report a vulnerability**).
+2. Include a clear description, affected versions, reproduction steps, and any
    proof-of-concept or suggested remediation.
 
+Published fixes are listed under
+[security advisories](https://github.com/vmontagh/go-llm-pipeline/security/advisories).
+
 If you cannot use private vulnerability reporting, open a minimal issue asking a
-maintainer to enable a private channel — without disclosing the vulnerability
-details publicly.
+maintainer for a private channel, without disclosing the vulnerability details
+publicly.
 
 ### Response expectations
 
